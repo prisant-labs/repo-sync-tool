@@ -1,0 +1,103 @@
+---
+effort: E-06
+title: IPC Contract (the typed seam)
+status: ready
+tier: MUST
+scope: V1 (non-GUI)
+depends_on: [E-05]
+source: docs/internal/v1-architecture-and-decisions.md (Section 4.4); docs/internal/strategy-and-roadmap.md Section 4.2 (DDL the payload fields mirror)
+---
+
+# E-06 - IPC Contract (the typed seam)
+
+## Task Summary
+
+> Agents keep this block current as work proceeds.
+
+- **State:** not started.
+- **Next:** define the payload structs and `AppError` reference in `crates/reposync-core/src/ipc.rs` (Tauri-free, serde + `specta::Type`), declare the command and event SIGNATURES in `src-tauri` (`commands/`, `events.rs`), then wire `tauri-specta` codegen in `src-tauri/main.rs` to emit `src/lib/bindings.ts`.
+- **Blockers:** none beyond E-05 (Error taxonomy), which owns `AppError` - the error half of every command return.
+
+## Context
+
+This effort **is the seam**. The entire RepoSync backend lives on one side of a single boundary - the typed IPC contract - and the entire frontend lives on the other. Freezing this contract is what unblocks both halves to proceed independently and indefinitely: the backend implements real `git -> SQLite -> emitted event` behind each command while the frontend renders against the same typed surface (first with stubs and mock data of the real shape, later against the live backend), and neither side blocks the other (brief Section 6, the seam principle). For an agent-driven build by one developer, the single largest avoidable failure mode is **contract drift**: a Rust command signature and a hand-written TypeScript wrapper diverging silently into runtime `undefined`s the type checker never catches. The fix is to make the Rust types the single source of truth and generate the TypeScript from them.
+
+Concretely, this effort delivers three things, and the core/shell split is load-bearing for each. First, the **payload structs** (`RepoSummary`, `RepoDetail`, `CheckResult`, `UpdateResult`, `ScanResult`, `ActivityRecord`, `DailySummary`, `Settings`, and the rest) and the `AppError` reference (from E-05) defined in `crates/reposync-core/src/ipc.rs`, deriving `serde` + `specta::Type` only - Tauri-free, so the E-01 hygiene gate stays green. Second, the **frozen command and event SIGNATURES** - the `#[tauri::command]` functions, the `tauri_specta::Event`-deriving event types, and the `collect_commands!`/`collect_events!` + `.export()` glue - which live in `src-tauri` (`commands/`, `events.rs`, `main.rs`), NOT in core, because `#[tauri::command]` and `tauri_specta` require Tauri and would break the no-Tauri hygiene gate. The signatures are grouped exactly as the brief groups them: Registry, Git ops, Quick actions, Activity/summaries, Settings, plus the server-push event set; their bodies are stubs the downstream efforts fill. Third, the **`tauri-specta` codegen workflow** in `src-tauri/main.rs` that emits `src/lib/bindings.ts`, guarded by `#[cfg(debug_assertions)]`.
+
+Two postures are load-bearing. The payload types and the `AppError` reference live in `reposync-core::ipc` and carry **no Tauri dependency** (serde + `specta::Type` only); every Tauri-touching artifact - the command signatures, the event types, the builder, the `.export()` call - lives in `src-tauri`, preserving the E-01 hygiene rule. And `tauri-specta` v2 is at **release-candidate** stage, so its and `specta`'s versions must be pinned exactly and re-checked at each dependency review, with a documented fallback (a hand-maintained `bindings.ts` plus a serde round-trip CI test) held in reserve as the contingency, not the plan.
+
+## In scope
+
+- **Payload structs** in `crates/reposync-core/src/ipc.rs` (Tauri-free), each deriving `serde::Serialize`/`Deserialize` + `specta::Type`: `RepoSummary`, `RepoDetail`, `CheckResult`, `UpdateResult`, `ScanResult`, `ActivityRecord`, `DailySummary`, `Settings`, plus supporting types referenced by the command surface (`RepoId`, `RepoFilter`, `ActivityFilter`, `UpdatePolicy`/`UpdateMode`, `WeeklySummary` as a V1.1-stubbed type, and the event payload structs). The `AppError` reference (from E-05) is the error half; it too lives in core. The concrete field sets are enumerated against the authoritative DDL below.
+- **The frozen command SIGNATURES**, which live in `src-tauri` (`commands/`), not in core - each is a `#[tauri::command] #[specta::specta]` function, which requires Tauri and therefore cannot live in the no-Tauri core. Signatures are the frozen artifact; bodies are stubs. Grouped:
+  - **Registry:** `repo_list(filter) -> Vec<RepoSummary>`, `repo_get(id) -> RepoDetail`, `repo_add_path(path) -> RepoId`, `repo_scan_parent(path) -> ScanResult`, `repo_remove(id)`, `repo_set_enabled(id, bool)`, `repo_set_policy(id, UpdatePolicy)`.
+  - **Git ops:** `repo_check_now(id) -> CheckResult`, `repo_update_now(id, UpdateMode) -> UpdateResult`, `repo_refresh_metadata(id) -> RepoDetail`.
+  - **Quick actions:** `repo_open_folder/terminal/editor/remote(id)`.
+  - **Activity / summaries:** `activity_list(filter) -> Vec<ActivityRecord>`, `summary_today() -> DailySummary`, `summary_week() -> WeeklySummary`.
+  - **Settings:** `settings_get() -> Settings`, `settings_set(Settings)`.
+  - Every fallible command returns `Result<T, AppError>` (E-05 owns `AppError`).
+  - **Naming normalization:** the brief's Section 4.4 writes the list command as `repos_list`; this effort uses `repo_list` (singular, ratified 2026-06-19) for consistency with every other `repo_*` command. Because codegen turns these into load-bearing TypeScript symbols, the name is fixed here as `repo_list` and used everywhere downstream.
+- **The frozen event SIGNATURES** (server-push) with typed payloads, which also live in `src-tauri` (`events.rs`) as `tauri_specta::Event`-deriving types: `repo:state-changed`, `repo:check-started`, `repo:check-completed`, `repo:update-started`, `repo:update-completed`, `scheduler:tick`, `notification:fired`, `error:raised`. The event payload STRUCTS (the data each carries) live in `reposync-core::ipc` and are Tauri-free; the `Event` derive that binds a payload to an event name lives in the shell.
+- **The `tauri-specta` codegen glue** in `src-tauri/src/main.rs`: a `tauri_specta::Builder` collecting `collect_commands![...]` and `collect_events![...]`, calling `.export(...)` to emit `src/lib/bindings.ts`, guarded by `#[cfg(debug_assertions)]` so production builds do no file I/O.
+- **Version pinning + re-check action:** `tauri-specta` and `specta` pinned to exact versions in `Cargo.toml`; a documented re-check step at each quarterly dependency review.
+- **The fallback contingency, documented:** if the RC proves unstable, a single hand-maintained `bindings.ts` plus a CI test round-tripping a sample of each payload through `serde_json` against a TS-side schema. Documented as the contingency, wired only if triggered.
+- A committed `src/lib/bindings.ts` checked into the repo so the frontend can build without first running the Rust exporter, plus a CI check that the generated file is up to date.
+
+## Enumerated payload fields (against the authoritative DDL)
+
+The payload field sets are enumerated here against the authoritative DDL in `strategy-and-roadmap.md` Section 4.2 (the `CREATE TABLE` statements), so the generated TypeScript is determined rather than left to interpretation. Fields are marked **provisional-additive** where a later effort may add to them; adding a field is a non-breaking contract revision caught by the stale-`bindings.ts` check.
+
+- **`ActivityRecord`** mirrors `activity_records` one-to-one: `id`, `repo_id`, `timestamp`, `action_type`, `status`, `reason_code`, `summary`, `commit_range`, `raw_command`, `raw_stdout`, `raw_stderr`, `exit_code`, `duration_ms`. (`reason_code` through `duration_ms` are nullable in the DDL, so `Option<...>` on the Rust side.)
+- **`Settings`** mirrors the `settings` singleton: `global_check_minutes`, `quiet_hours_start`, `quiet_hours_end`, `notify_on_release`, `notify_on_failure`, `git_executable_path`, `editor_command`, `terminal_command`, `autostart`, `activity_retention_d`, `github_token_present`. (The `id = 1` CHECK column is internal and not exposed on the wire.) The keyring PAT stays a V1.1 seam; `github_token_present` is the only token-related field in V1.
+- **`RepoSummary` vs `RepoDetail`** derive a concrete split from `repos` + `repo_local_state` + `repo_remote_meta`:
+  - **`RepoSummary`** is the list-row essentials: `id`, `local_name`, `host_type`, `ahead_count`, `behind_count`, `is_dirty`, `is_detached`, `enabled`, `auto_paused`, `last_checked_at`, `last_error_code`, `latest_release_tag`. (`auto_paused` is a derived/scheduler-owned flag, provisional-additive; the rest map to `repos` and `repo_local_state` columns plus the one `repo_remote_meta` field the list row shows.)
+  - **`RepoDetail`** is `RepoSummary` plus the full local/remote/state fields and notes: from `repos` the `local_path`, `remote_origin_url`, `default_branch`, `update_mode`, `check_frequency_min`, `created_at`, `notes`; from `repo_local_state` the `active_branch`, `head_sha`, `upstream_branch`, `last_local_commit_at`, `last_updated_at`, `last_attempted_at`, `next_check_at`; from `repo_remote_meta` the `description`, `topics_json`, `latest_release_at`, `latest_release_url`, `is_archived`, `last_remote_sha`, `last_fetched_at`.
+- **`DailySummary`** field shape is **owned by E-11 (Summary engine)**, not this effort: `updated_count`, `releases_count`, `attention_count`, `no_change_count`, plus the three item lists (updated repos, new releases, attention items). E-06 CONSUMES this shape and binds it to the transport; E-11 is the source of truth for the field names. `WeeklySummary` stays a V1.1 stub.
+- `CheckResult`, `UpdateResult`, and `ScanResult` are operation-result shapes owned by their producing efforts (E-03 Git engine, E-07 Update-policy engine, the scan path); E-06 freezes their presence in the seam and their fields are provisional-additive, settled when the producing effort lands.
+
+## Out of scope
+
+- The **implementation bodies** of the commands (E-02 Persistence, E-03 Git engine, E-07 Update-policy engine, E-08 Scheduler, E-09 Activity writer, E-10 GitHub client, E-11 Summary engine all implement behavior behind these frozen signatures). This effort freezes the signatures and types, not the logic.
+- The **`AppError` enum itself** (E-05 Error taxonomy owns it; this effort references it as the error half of every command return).
+- The **frontend screens** that consume `bindings.ts` (UI/UX work, out of all these efforts); this effort only guarantees the typed surface they will code against.
+- The **tray and window wiring** that emits some events at runtime (E-08 Scheduler emits `scheduler:tick`; the command/event handlers emit the rest); this effort defines the typed event payloads and the emit helpers' signatures, not the emit sites.
+- **PAT / keyring auth** in `Settings` beyond the `github_token_present` boolean already in the data model; the keyring path is a V1.1 seam (brief scope ledger).
+
+## Contract / deliverables
+
+1. `crates/reposync-core/src/ipc.rs` defines every payload struct (and the event payload structs), each deriving `serde::Serialize`/`Deserialize` + `specta::Type` only, with `AppError` as the error half of fallible commands - and no `tauri` dependency in core. Field sets are enumerated against the DDL (see the enumerated-fields section).
+2. The full command SIGNATURES (Registry / Git ops / Quick actions / Activity-summaries / Settings) and event SIGNATURES live in `src-tauri` (`commands/`, `events.rs`) as `#[tauri::command] #[specta::specta]` functions and `tauri_specta::Event`-deriving types, grouped as in the brief, with `repo_list` (not `repos_list`) as the normalized list-command name. They are not in core, because the Tauri/`tauri_specta` macros they require would break the no-Tauri hygiene gate.
+3. The `tauri-specta` glue in `src-tauri/main.rs` (the `collect_commands!`/`collect_events!` + `.export()`) generates both command and event types into `src/lib/bindings.ts`, guarded by `#[cfg(debug_assertions)]`.
+4. `tauri-specta` and `specta` are pinned to exact versions; the re-check action and the fallback contingency are documented.
+5. `src/lib/bindings.ts` is committed and a CI check fails if it is stale relative to the Rust source; the frontend builds against the typed `commands.*`/`events.*` rather than raw `invoke`/`listen`.
+
+## Acceptance criteria
+
+- [ ] AC1: All payload structs (`RepoSummary`, `RepoDetail`, `CheckResult`, `UpdateResult`, `ScanResult`, `ActivityRecord`, `DailySummary`, `Settings`, and supporting types) live in `crates/reposync-core/src/ipc.rs` and derive `serde::Serialize`/`Deserialize` + `specta::Type`, with their field sets enumerated against the authoritative DDL (`activity_records`, `settings`, `repos`/`repo_local_state`/`repo_remote_meta`; `DailySummary` shape owned by E-11). Source: brief Section 4.3, 4.4; DDL in strategy-and-roadmap.md Section 4.2.
+- [ ] AC2: The command SIGNATURES live in `src-tauri` (`commands/`) as `#[tauri::command] #[specta::specta]` functions (NOT in `reposync-core`, since those macros require Tauri), match the brief's grouping and signatures (Registry, Git ops, Quick actions, Activity/summaries, Settings) with the list command normalized to `repo_list`, and every fallible command returns `Result<T, AppError>`. Source: brief Section 4.4 ("Command surface (Phase 1), grouped"), 4.3 (only the shell touches Tauri).
+- [ ] AC3: The event surface matches the brief exactly - `repo:state-changed`, `repo:check-started/completed`, `repo:update-started/completed`, `scheduler:tick`, `notification:fired`, `error:raised` - each with a typed payload whose STRUCT lives Tauri-free in `reposync-core::ipc` while the `tauri_specta::Event` derive that binds payload to event name lives in `src-tauri/events.rs`; `tauri-specta` v2 generates types for both commands and events. Source: brief Section 4.4 ("Event surface"; "tauri-specta v2 generates types for both commands and events").
+- [ ] AC4: `tauri-specta` codegen emits `src/lib/bindings.ts` and is guarded by `#[cfg(debug_assertions)]` so production builds do no file I/O; only the `tauri-specta` glue lives in `src-tauri`, never in `reposync-core`. Source: brief Section 4.4 (codegen workflow), 4.3 (only `tauri-specta` in the shell).
+- [ ] AC5: `tauri-specta` and `specta` are pinned to exact versions in `Cargo.toml`; the exact pin is captured at scaffold time (the brief flags v2 as a release candidate, so the concrete version is recorded when the workspace is scaffolded rather than asserted in this doc), under E-01's "pin all Tauri-related crates" version-pin AC, and the spec/plan record the "confirm current version + re-check at each quarterly dependency review" action. Source: brief Section 4.4 (version-status caveat, "pin them exactly... re-check at each quarterly dependency review"); E-01 (Foundation) version-pin AC.
+- [ ] AC6: The fallback contingency is documented (hand-maintained `bindings.ts` + a CI serde round-trip test per payload), and a CI check asserts the committed `bindings.ts` is current with the Rust source. Source: brief Section 4.4 (fallback contingency).
+- [ ] AC7: `reposync-core` still has no `tauri`/`tauri-*` dependency; the E-01 dependency-hygiene gate stays green (`specta` allowed in core; `tauri-specta` only in `src-tauri`). Source: brief Section 4.3.
+
+## Dependencies
+
+- Upstream: E-05 (Error taxonomy) - `AppError` is the error half of every fallible command return; E-01 (Foundation) - owns the `ipc.rs` stub, the `src-tauri` shell, the workspace, and the no-Tauri hygiene gate.
+- Downstream: every backend effort implements behind these frozen signatures (E-02 Persistence, E-03 Git engine, E-07 Update-policy engine, E-08 Scheduler, E-09 Activity writer, E-10 GitHub client, E-11 Summary engine), and E-12 (Tracer bullet) drives `repo_add_path` + `repo_check_now` end to end through this contract. The frontend codes entirely against the generated `bindings.ts`.
+
+## V1.1 extension points
+
+- `WeeklySummary` and `summary_week()` are present in the contract but stubbed (brief scope ledger cuts weekly summary to V1.1); freezing the signature now keeps the seam stable when it is implemented.
+- Adding a command, an event, or a payload field is an **additive** contract revision: a new entry in `collect_commands!`/`collect_events!` or an optional field, regenerating `bindings.ts`. Removing or renaming one is a deliberate breaking change that the stale-`bindings.ts` CI check makes loud.
+- The keyring PAT path adds fields/commands to the `Settings` surface in V1.1 behind the same generation workflow, without re-architecting the seam.
+- A switch from the `tauri-specta` RC to its stable release is a pin bump plus a regenerate-and-diff, not a contract change.
+
+## Decisions
+
+- **Resolved (commit vs generate `bindings.ts`): commit it, with a stale-check CI gate.** `src/lib/bindings.ts` is committed to the repo so the frontend builds without first running the Rust exporter, and the regenerate-and-diff CI gate (AC6) fails the build on any drift. This keeps the frontend unblocked while drift stays loud. This was previously an open question; it is recorded here as a decision consistent with the existing AC6 gate, not left open.
+- **Resolved (`RepoSummary` vs `RepoDetail` split):** the concrete field split is enumerated in the "Enumerated payload fields" section above, derived from `repos` + `repo_local_state` + `repo_remote_meta`: Summary is the list-row essentials, Detail is Summary plus the full local/remote/state fields and notes. Remaining boundary tweaks are additive and caught by the stale-bindings check.
+
+## Open questions
+
+- Whether `repo_open_folder/terminal/editor/remote` return `Result<(), AppError>` or a richer result; recommendation `Result<(), AppError>` since they shell out and the outcome is success-or-error, confirmed during E-03/E-09 wiring.
