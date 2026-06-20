@@ -1,0 +1,12 @@
+# Line-ending normalization for a cross-platform (Windows + macOS + Linux CI) repo.
+#
+# Store ALL text files with LF in the repository and check them out as LF on every
+# platform. This keeps diffs clean across runners and, importantly, keeps the E-04
+# git-fixture harness output byte-stable (CRLF drift would flake the git2-vs-CLI
+# cross-check). Rust, Node, and pnpm tooling are all LF-agnostic on Windows.
+* text=auto eol=lf
+
+# Binary assets: never normalize or attempt text/EOL conversion on these.
+*.png binary
+*.ico binary
+*.icns binary
