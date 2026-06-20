@@ -1,0 +1,14 @@
+[package]
+name = "reposync-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# reposync-core is the Tauri-free logic crate. In E-01 it is a compiling
+# skeleton with no business logic. The load-bearing invariant (AC2) is that
+# this crate must NOT depend on tauri or any tauri-* crate, even transitively.
+# Its only dependencies are serde (derive), thiserror, and specta.
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+specta = { workspace = true }

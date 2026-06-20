@@ -1,0 +1,161 @@
+# RepoSync CI - effort E-01 (Foundation) owns this workflow.
+#
+# What this gates:
+#   - cargo check / clippy (-D warnings) / cargo test            (E-01 AC: Rust gates)
+#   - pnpm typecheck / pnpm lint                                 (E-01 AC: frontend gates)
+#   - reposync-core has NO tauri dependency, even transitively   (E-01 AC2: dependency hygiene)
+#   - both Windows and macOS runners build AND bundle            (E-01 AC4: matrix green)
+#   - the exact git version is pinned and asserted on Windows    (E-01 AC8 / E-04 fixture harness)
+#
+# macOS posture: macOS is "compiles + bundles in CI" only and is NOT a test-execution
+# target for the fixture suite (the suite runs on Windows). macOS still builds and bundles
+# here because E-01 AC4 requires both runners green. macOS bundling is UNSIGNED on purpose -
+# code signing and notarization are human-only (see EXECUTION.md) and arrive as a later job.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Single source of truth for the pinned git version (E-01 AC8).
+  #
+  # WHY this is pinned and asserted: E-04 (the git fixture test harness) cross-checks the
+  # git2 reads against the git CLI porcelain/plumbing output and requires that output to be
+  # BYTE-STABLE across runners and over time. A drifting git version on a hosted runner would
+  # silently change porcelain formatting and flake the cross-check. Floor is git 2.30 (the
+  # E-03 git-engine floor); this value sits well above it.
+  #
+  # To bump git: change ONLY this value. It overrides whatever the runner image ships.
+  GIT_VERSION: "2.47.1"
+  # Pin the Tauri CLI used for the build + bundle step to the same 2.x line as the Rust
+  # tauri crate. Exact pin keeps bundling reproducible across runners.
+  TAURI_CLI_VERSION: "2.11.3"
+  # Faster, quieter cargo in CI.
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Do not cancel the macOS leg if Windows fails (or vice versa); we want both signals.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Pin git EXACTLY on the fixture-suite runner (E-01 AC8 / E-04) ------------------
+      # The byte-stable git pin matters only on Windows, where the E-04 fixture harness runs
+      # and cross-checks git2 reads against git CLI porcelain output. Install GIT_VERSION on
+      # Windows and assert it. macOS (compile + bundle only, not a fixture-suite target) uses
+      # the runner's stock git, since Homebrew exposes no arbitrary historical git versions
+      # and asserting an exact macOS git version would fail the leg for no functional gain.
+      - name: Pin git (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install git --version=$env:GIT_VERSION -y --no-progress --allow-downgrade
+          # Refresh PATH so the freshly installed git is the one we resolve.
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+          refreshenv
+
+      - name: Assert git version matches GIT_VERSION (Windows only)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          installed="$(git --version)"
+          echo "Found: $installed"
+          echo "Expected to contain: $GIT_VERSION"
+          case "$installed" in
+            *"$GIT_VERSION"*)
+              echo "git version OK"
+              ;;
+            *)
+              echo "::error::git version mismatch. Expected '$GIT_VERSION' but got '$installed'."
+              echo "::error::Update the GIT_VERSION env in .github/workflows/ci.yml (single source of truth)."
+              exit 1
+              ;;
+          esac
+
+      # --- Toolchains ---------------------------------------------------------------------
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The lockfile MUST be committed. --frozen-lockfile fails the build if pnpm-lock.yaml
+      # is missing or out of date, which keeps CI dependency resolution reproducible.
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --- Gates --------------------------------------------------------------------------
+      - name: cargo check
+        run: cargo check --workspace --all-targets
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --all -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm lint
+        run: pnpm lint
+
+      # --- Dependency-hygiene gate (E-01 AC2) ---------------------------------------------
+      # reposync-core must never pull tauri, even transitively. This is the most load-bearing
+      # assertion in the foundation: it fails the build the instant anything drags tauri into
+      # the core crate. We grep the resolved dependency tree and exit 1 on any match.
+      - name: Assert reposync-core has no tauri dependency
+        shell: bash
+        run: |
+          echo "Resolving dependency tree for reposync-core..."
+          tree="$(cargo tree -p reposync-core)"
+          echo "$tree"
+          if echo "$tree" | grep -i 'tauri'; then
+            echo "::error::reposync-core depends on tauri (directly or transitively). The core crate must stay Tauri-free."
+            exit 1
+          fi
+          echo "OK: reposync-core has no tauri dependency."
+
+      # --- Build + bundle (E-01 AC4) ------------------------------------------------------
+      # Pin the Tauri CLI to TAURI_CLI_VERSION and bundle on each runner. macOS bundling is
+      # UNSIGNED (no signing secrets are present; signing is human-only per EXECUTION.md).
+      # Artifacts are produced for inspection only; we do NOT upload to GitHub Releases.
+      - name: Install Tauri CLI (pinned)
+        run: cargo install tauri-cli --version "${TAURI_CLI_VERSION}" --locked
+        shell: bash
+
+      - name: Build and bundle
+        run: cargo tauri build
+        shell: bash

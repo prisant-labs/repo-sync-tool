@@ -1,0 +1,39 @@
+# src-tauri - the thin Tauri v2 shell for RepoSync.
+#
+# Owning effort: E-01 (Foundation, Workspace, and CI).
+# This crate is the desktop binary. All product logic lives in the
+# Tauri-free `reposync-core` crate; this shell only wires the runtime,
+# IPC surface (E-06), events, tray, and windows on top of that core.
+#
+# Versions for shared crates are pinned in the root [workspace.dependencies]
+# table and referenced here with `workspace = true` so later efforts flip
+# them on consistently. The tauri* / specta / tauri-specta pins are EXACT
+# at the workspace root (AC7).
+
+[package]
+name = "reposync"
+version = "0.1.0"
+description = "RepoSync - a cross-platform repository sync tray utility"
+authors = ["RepoSync contributors"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/product-on-purpose/repo-sync-tool"
+default-run = "reposync"
+
+# Tauri v2 library pattern: the app entry point lives in the library
+# (`reposync_lib::run`) and `main.rs` just calls it. The library crate
+# types are required for the mobile entry point and desktop linking.
+[lib]
+name = "reposync_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true, features = [] }
+tauri-specta = { workspace = true }
+specta = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reposync-core = { path = "../crates/reposync-core" }

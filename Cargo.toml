@@ -1,0 +1,53 @@
+# RepoSync Cargo workspace root (effort E-01 - Foundation).
+#
+# This is a virtual manifest: it builds no crate of its own. The two real
+# members are the Tauri-free logic crate (reposync-core) and the thin Tauri
+# shell (src-tauri). The load-bearing rule, set here and enforced in CI: the
+# core crate must never depend on tauri or any tauri-* crate, even transitively.
+#
+# [workspace.dependencies] declares EVERY pin the project will use so later
+# efforts can flip a dependency on with `workspace = true` instead of choosing
+# a version locally. In E-01 only a subset is actually consumed by a crate
+# (reposync-core: serde + thiserror + specta; src-tauri: tauri + tauri-build +
+# tauri-specta + serde + reposync-core). tokio, sqlx, and git2 are declared but
+# not yet consumed by any crate - they are reserved for E-02/E-03/E-08.
+
+[workspace]
+resolver = "2"
+members = ["crates/reposync-core", "src-tauri"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["RepoSync contributors"]
+repository = "https://github.com/product-on-purpose/repo-sync-tool"
+
+[workspace.dependencies]
+# Tauri stack. EXACT pins (= prefix) are load-bearing per AC7: tauri-specta v2
+# is a release candidate and a silent RC bump would break IPC codegen (E-06).
+tauri = "=2.11.3"
+tauri-build = "=2.6.3"
+specta = "=2.0.0-rc.25"
+specta-typescript = "=0.0.12"
+tauri-specta = "=2.0.0-rc.25"
+
+# Shared logic-crate dependencies.
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+
+# Declared now, consumed by later efforts (E-02 persistence, E-03 git engine,
+# E-08 scheduler). Not yet a dependency of any crate in E-01.
+tokio = { version = "1.52.3", features = ["full"] }
+sqlx = { version = "0.9.0", default-features = false }
+git2 = "0.21.0"
+
+# Small-binary posture toward the <30MB bundle goal (brief Section 4.10a).
+# Applies to release builds of the whole workspace, including the Tauri shell.
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

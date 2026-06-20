@@ -14,9 +14,9 @@ source: docs/internal/v1-architecture-and-decisions.md (Sections 4.3, 6)
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started.
-- **Next:** create the Cargo workspace and the `reposync-core` module skeleton.
-- **Blockers:** none. This is the root effort; everything else depends on it.
+- **State:** complete and committed on branch `build/e-01-foundation`. Workspace + `reposync-core` (Tauri-free stubs) + `src-tauri` shell (real icons, downloadBootstrapper WebView2) + frontend + repo hygiene + Windows/macOS CI are all in place. Local gate GREEN on Rust 1.96.0 stable: `cargo check`, `clippy --all-targets -- -D warnings`, `cargo test`, `cargo fmt --check`, and the `cargo tree -p reposync-core` no-tauri hygiene gate all pass; frontend `pnpm install`/`typecheck`/`lint`/`build` pass. A Codex adversarial review ran; its one CI blocker (a macOS git-pin assert that would fail the macOS leg) is fixed (exact git pin now scoped to the Windows runner per E-04), and two non-blocking findings are filed in `docs/backlog.md` (BL-NI-01, BL-NI-02). AC1, AC2, AC3, AC5, AC6, AC7 closed; AC8 static-verified.
+- **Next:** push `build/e-01-foundation` to run the Windows+macOS CI matrix and close AC4 (the only remaining criterion). Then start the week-1 tracer (minimal E-02 + E-03 + E-12).
+- **Blockers:** none for local work. AC4 (dual-OS CI bundle green) requires a push, which is human-gated per `EXECUTION.md`.
 
 ## Context
 
