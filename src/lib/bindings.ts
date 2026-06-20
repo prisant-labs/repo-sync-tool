@@ -22,14 +22,83 @@ export const commands = {
 	 *  [`CheckResult`] to the caller.
 	 */
 	repoCheckNow: (id: number) => typedError<CheckResult, AppErrorPayload>(__TAURI_INVOKE("repo_check_now", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  List tracked repos (summary view), filtered. */
+	repoList: (filter: RepoFilter) => typedError<RepoSummary[], AppErrorPayload>(__TAURI_INVOKE("repo_list", { filter })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Get the full detail of a single tracked repo. */
+	repoGet: (id: number) => typedError<RepoDetail, AppErrorPayload>(__TAURI_INVOKE("repo_get", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Scan a parent folder for candidate git repositories. */
+	repoScanParent: (path: string) => typedError<ScanResult, AppErrorPayload>(__TAURI_INVOKE("repo_scan_parent", { path })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Remove a tracked repo (does not touch the working tree). */
+	repoRemove: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_remove", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Enable or disable scheduled checks for a repo. */
+	repoSetEnabled: (id: number, enabled: boolean) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_set_enabled", { id, enabled })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Set the per-repo update policy. */
+	repoSetPolicy: (id: number, policy: UpdatePolicy) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_set_policy", { id, policy })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Run an "update now" for a repo in the given mode. */
+	repoUpdateNow: (id: number, mode: UpdateMode) => typedError<UpdateResult, AppErrorPayload>(__TAURI_INVOKE("repo_update_now", { id, mode })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Refresh GitHub / remote metadata for a repo. */
+	repoRefreshMetadata: (id: number) => typedError<RepoDetail, AppErrorPayload>(__TAURI_INVOKE("repo_refresh_metadata", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Open the repo's folder in the OS file manager. */
+	repoOpenFolder: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_folder", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Open the repo in a terminal. */
+	repoOpenTerminal: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_terminal", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Open the repo in the configured editor. */
+	repoOpenEditor: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_editor", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Open the repo's remote (origin URL) in the browser. */
+	repoOpenRemote: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_remote", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  List activity-log records, filtered. */
+	activityList: (filter: ActivityFilter) => typedError<ActivityRecord[], AppErrorPayload>(__TAURI_INVOKE("activity_list", { filter })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Get today's daily summary. */
+	summaryToday: () => typedError<DailySummary, AppErrorPayload>(__TAURI_INVOKE("summary_today")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Get the current week's summary (V1.1 stub). */
+	summaryWeek: () => typedError<WeeklySummary, AppErrorPayload>(__TAURI_INVOKE("summary_week")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Read the settings singleton. */
+	settingsGet: () => typedError<Settings, AppErrorPayload>(__TAURI_INVOKE("settings_get")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Write the settings singleton. */
+	settingsSet: (settings: Settings) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("settings_set", { settings })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 };
 
 /** Events */
 export const events = {
+	errorRaised: makeEvent<ErrorRaised>("error:raised", (v) => ({...v,error:({...v.error,context:v.error.context==null?v.error.context:v.error.context})}), (v) => ({...v,error:({...v.error,context:v.error.context==null?v.error.context:v.error.context})})),
+	notificationFired: makeEvent<NotificationFired>("notification:fired"),
 	repoCheckCompleted: makeEvent<CheckCompleted>("repo:check-completed"),
+	repoCheckStarted: makeEvent<CheckStarted>("repo:check-started"),
+	repoStateChanged: makeEvent<StateChanged>("repo:state-changed"),
+	repoUpdateCompleted: makeEvent<UpdateCompleted>("repo:update-completed"),
+	repoUpdateStarted: makeEvent<UpdateStarted>("repo:update-started"),
+	schedulerTick: makeEvent<SchedulerTick>("scheduler:tick"),
 };
 
 /* Types */
+/**  Filter for `activity_list`. All fields optional; absent means "no constraint". */
+export type ActivityFilter = {
+	repoId: number | null,
+	actionType: string | null,
+	status: string | null,
+	limit: number | null,
+};
+
+/**
+ *  One row of the `activity_records` audit trail. Maps verbatim to the schema
+ *  (4.2): every git/check/update operation is recorded with its raw output.
+ */
+export type ActivityRecord = {
+	id: number,
+	repoId: number,
+	timestamp: number,
+	actionType: string,
+	status: string,
+	reasonCode: string | null,
+	summary: string | null,
+	commitRange: string | null,
+	rawCommand: string | null,
+	rawStdout: string | null,
+	rawStderr: string | null,
+	exitCode: number | null,
+	durationMs: number | null,
+};
+
 /**
  *  The on-the-wire representation of an [`AppError`]. Every error the core sends
  *  across IPC reduces to this flat shape.
@@ -44,6 +113,9 @@ export type AppErrorPayload = {
 	/**  Variant-specific detail (path, exit_code, stderr, cause, ...). */
 	context: unknown | null,
 };
+
+/**  Which branches a repo is allowed to update. */
+export type BranchPolicy = "default_branch_only" | "tracked_upstream_only" | "approved_branches" | "any_branch";
 
 /**
  *  Typed "check completed" event, broadcast after every `repo_check_now`.
@@ -76,8 +148,249 @@ export type CheckResult = {
 	checkedAt: number,
 };
 
+/**  Typed `repo:check-started` event (a check began for a repo). */
+export type CheckStarted = CheckStartedPayload;
+
+/**  Payload for the `repo:check-started` event. */
+export type CheckStartedPayload = {
+	repoId: number,
+};
+
+/**
+ *  A daily roll-up of repo activity.
+ * 
+ *  E-11 (summaries) owns field authority for this type; any change here is
+ *  additive (new fields/buckets), never a rename or removal, so the binding and
+ *  downstream consumers stay stable.
+ */
+export type DailySummary = {
+	date: string,
+	updatedCount: number,
+	releasesCount: number,
+	attentionCount: number,
+	noChangeCount: number,
+	updated: SummaryItem[],
+	newReleases: SummaryItem[],
+	attention: SummaryItem[],
+};
+
+/**  What to do when the working tree is dirty at update time. */
+export type DirtyHandling = "skip" | "warn_and_block" | "auto_stash" | "fetch_only_when_dirty";
+
+/**
+ *  Typed `error:raised` event (a backend error reached the global surface).
+ * 
+ *  DEVIATION from the other six events' `pub struct X(pub Payload)` newtype
+ *  shape, forced by a tauri-specta rc.25 codegen defect. This is the only event
+ *  whose payload transitively carries the `serde_json::Value` field
+ *  (`AppErrorPayload.context`) that the builder's semantic remap rewrites to
+ *  `unknown`. That remap makes tauri-specta emit a runtime payload transform for
+ *  the event. For a tuple newtype `ErrorRaised(Payload)`, tauri-specta rc.25
+ *  walks the newtype body as an unnamed-field struct and indexes the payload as
+ *  `v[0]`, while the generated TS type (correctly) collapses the newtype to the
+ *  inner object - so the `v[0]`-indexing transform does not typecheck (verified:
+ *  `#[serde(transparent)]` / `#[specta(transparent)]` does NOT help, because
+ *  specta still emits a single unnamed-field struct DataType). Declaring the
+ *  event as a NAMED single-field struct makes the transform walk the field by
+ *  name (`v.error...`) instead, which typechecks.
+ * 
+ *  The wire shape is unchanged: a tuple newtype of `{ error: AppErrorPayload }`
+ *  and this named struct both serialize to `{ "error": { ...AppErrorPayload } }`,
+ *  so the frontend contract is identical. The generated TS `ErrorRaised` is
+ *  `{ error: AppErrorPayload }`.
+ */
+export type ErrorRaised = {
+	error: AppErrorPayload,
+};
+
+/**  Typed `notification:fired` event (a desktop notification was raised). */
+export type NotificationFired = NotificationFiredPayload;
+
+/**  Payload for the `notification:fired` event. */
+export type NotificationFiredPayload = {
+	kind: string,
+	repoId: number | null,
+	title: string,
+	body: string,
+};
+
+/**
+ *  The full detail of a tracked repo (detail view). Repeats every
+ *  [`RepoSummary`] field verbatim (NOT `serde(flatten)` - it is fragile with
+ *  specta rc.25) and adds the rest of `repos` + `repo_local_state` +
+ *  `repo_remote_meta`.
+ */
+export type RepoDetail = {
+	id: number,
+	localName: string,
+	hostType: string,
+	aheadCount: number | null,
+	behindCount: number | null,
+	isDirty: boolean,
+	isDetached: boolean,
+	enabled: boolean,
+	autoPaused: boolean,
+	lastCheckedAt: number | null,
+	lastErrorCode: string | null,
+	latestReleaseTag: string | null,
+	localPath: string,
+	remoteOriginUrl: string | null,
+	defaultBranch: string | null,
+	updateMode: string,
+	checkFrequencyMin: number,
+	createdAt: number,
+	notes: string | null,
+	activeBranch: string | null,
+	headSha: string | null,
+	upstreamBranch: string | null,
+	lastLocalCommitAt: number | null,
+	lastUpdatedAt: number | null,
+	lastAttemptedAt: number | null,
+	nextCheckAt: number | null,
+	consecutiveFailures: number,
+	description: string | null,
+	topicsJson: string | null,
+	latestReleaseAt: number | null,
+	latestReleaseUrl: string | null,
+	isArchived: boolean,
+	lastRemoteSha: string | null,
+	lastFetchedAt: number | null,
+};
+
+/**  Filter for `repo_list`. All fields optional; absent means "no constraint". */
+export type RepoFilter = {
+	enabledOnly: boolean | null,
+	hostType: string | null,
+	query: string | null,
+};
+
 /**  Stable identifier for a tracked repo (its `repos.id`). */
 export type RepoId = number;
+
+/**
+ *  The at-a-glance form of a tracked repo (list view). A flattened join of
+ *  `repos` + `repo_local_state` + the latest release tag.
+ */
+export type RepoSummary = {
+	id: number,
+	localName: string,
+	hostType: string,
+	aheadCount: number | null,
+	behindCount: number | null,
+	isDirty: boolean,
+	isDetached: boolean,
+	enabled: boolean,
+	autoPaused: boolean,
+	lastCheckedAt: number | null,
+	lastErrorCode: string | null,
+	latestReleaseTag: string | null,
+};
+
+/**  A candidate repository found while scanning a parent folder. */
+export type ScanCandidate = {
+	localPath: string,
+	localName: string,
+	alreadyTracked: boolean,
+	remoteOriginUrl: string | null,
+};
+
+/**  The result of scanning a parent folder for git repositories. */
+export type ScanResult = {
+	parentPath: string,
+	discovered: ScanCandidate[],
+};
+
+/**  Typed `scheduler:tick` event (the scheduler ran a cycle). */
+export type SchedulerTick = SchedulerTickPayload;
+
+/**  Payload for the `scheduler:tick` event. */
+export type SchedulerTickPayload = {
+	checked: number,
+	due: number,
+	at: number,
+};
+
+/**
+ *  The singleton `settings` row. `github_token_present` is a derived boolean -
+ *  the token itself lives in the OS keychain, never on the wire.
+ */
+export type Settings = {
+	globalCheckMinutes: number,
+	quietHoursStart: number | null,
+	quietHoursEnd: number | null,
+	notifyOnRelease: boolean,
+	notifyOnFailure: boolean,
+	gitExecutablePath: string | null,
+	editorCommand: string | null,
+	terminalCommand: string | null,
+	autostart: boolean,
+	activityRetentionD: number,
+	githubTokenPresent: boolean,
+};
+
+/**  Typed `repo:state-changed` event (a repo's cached state was updated). */
+export type StateChanged = StateChangedPayload;
+
+/**  Payload for the `repo:state-changed` event. */
+export type StateChangedPayload = {
+	repoId: number,
+	lastErrorCode: string | null,
+};
+
+/**  One repo's line in a summary bucket (updated / new release / attention). */
+export type SummaryItem = {
+	repoId: number,
+	localName: string,
+	detail: string | null,
+};
+
+/**  Typed `repo:update-completed` event (an update finished for a repo). */
+export type UpdateCompleted = UpdateCompletedPayload;
+
+/**  Payload for the `repo:update-completed` event. */
+export type UpdateCompletedPayload = {
+	repoId: number,
+	outcome: string,
+};
+
+/**
+ *  How a repo is updated. snake_case on the wire to match the `update_mode`
+ *  column values.
+ */
+export type UpdateMode = "check_only" | "fetch_only" | "pull_ff_only" | "pull_standard" | "pull_rebase";
+
+/**  The full per-repo update policy (E-07). */
+export type UpdatePolicy = {
+	mode: UpdateMode,
+	dirtyHandling: DirtyHandling,
+	branchPolicy: BranchPolicy,
+};
+
+/**  The outcome of an "update now" run for a single repo. */
+export type UpdateResult = {
+	repoId: number,
+	mode: string,
+	outcome: string,
+	commitRange: string | null,
+	ahead: number | null,
+	behind: number | null,
+	updatedAt: number,
+};
+
+/**  Typed `repo:update-started` event (an update began for a repo). */
+export type UpdateStarted = UpdateStartedPayload;
+
+/**  Payload for the `repo:update-started` event. */
+export type UpdateStartedPayload = {
+	repoId: number,
+	mode: string,
+};
+
+/**  A weekly roll-up: a window of [`DailySummary`] days. V1.1 stub (E-11 / V1.1). */
+export type WeeklySummary = {
+	weekStart: string,
+	days: DailySummary[],
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

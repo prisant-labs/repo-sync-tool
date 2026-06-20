@@ -19,8 +19,16 @@ mod windows;
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events};
 
-use commands::{repo_add_path, repo_check_now};
-use events::CheckCompleted;
+use commands::{
+    activity_list, repo_add_path, repo_check_now, repo_get, repo_list, repo_open_editor,
+    repo_open_folder, repo_open_remote, repo_open_terminal, repo_refresh_metadata, repo_remove,
+    repo_scan_parent, repo_set_enabled, repo_set_policy, repo_update_now, settings_get,
+    settings_set, summary_today, summary_week,
+};
+use events::{
+    CheckCompleted, CheckStarted, ErrorRaised, NotificationFired, SchedulerTick, StateChanged,
+    UpdateCompleted, UpdateStarted,
+};
 
 /// Shared, managed application state injected into every command.
 ///
@@ -55,8 +63,41 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     );
 
     tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(collect_commands![repo_add_path, repo_check_now])
-        .events(collect_events![CheckCompleted])
+        .commands(collect_commands![
+            // tracer (E-12)
+            repo_add_path,
+            repo_check_now,
+            // E-06 full surface
+            repo_list,
+            repo_get,
+            repo_scan_parent,
+            repo_remove,
+            repo_set_enabled,
+            repo_set_policy,
+            repo_update_now,
+            repo_refresh_metadata,
+            repo_open_folder,
+            repo_open_terminal,
+            repo_open_editor,
+            repo_open_remote,
+            activity_list,
+            summary_today,
+            summary_week,
+            settings_get,
+            settings_set,
+        ])
+        .events(collect_events![
+            // tracer (E-12)
+            CheckCompleted,
+            // E-06 full surface
+            StateChanged,
+            CheckStarted,
+            UpdateStarted,
+            UpdateCompleted,
+            SchedulerTick,
+            NotificationFired,
+            ErrorRaised,
+        ])
         // The IPC payloads carry `i64` repo ids, ahead/behind counts, and unix
         // second timestamps. specta-typescript refuses to emit i64/u64 by
         // default (BigInt precision risk); cast them to TS `number`. Every such

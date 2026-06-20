@@ -107,6 +107,23 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      # --- Stale-bindings gate (E-06 IPC contract) ----------------------------------------
+      # The committed src/lib/bindings.ts is generated from the live tauri-specta surface by
+      # the export_bindings test. Regenerate it here and fail if the working tree drifts: a
+      # contract change (new command/event/type) that was not re-exported and committed would
+      # otherwise ship a frontend type surface that lies about the backend. Windows-only
+      # because the export_bindings test (a Tauri-linked [[test]] target) needs the
+      # comctl32-v6 activation manifest that build.rs attaches only on Windows.
+      - name: Assert bindings.ts is up to date
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cargo test -p reposync --test export_bindings
+          if ! git diff --exit-code -- src/lib/bindings.ts; then
+            echo "::error::src/lib/bindings.ts is stale. Run the export_bindings test and commit the result."
+            exit 1
+          fi
+
       - name: pnpm typecheck
         run: pnpm typecheck
 

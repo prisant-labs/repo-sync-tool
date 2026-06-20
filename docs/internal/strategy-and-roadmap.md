@@ -240,7 +240,7 @@ The IPC boundary is the API. Treat it like any other API: stable, typed, version
 
 ```rust
 // Repo registry
-#[tauri::command] async fn repos_list(filter: RepoFilter) -> Result<Vec<RepoSummary>, AppError>;
+#[tauri::command] async fn repo_list(filter: RepoFilter) -> Result<Vec<RepoSummary>, AppError>;
 #[tauri::command] async fn repo_get(id: RepoId) -> Result<RepoDetail, AppError>;
 #[tauri::command] async fn repo_add_path(path: PathBuf) -> Result<RepoId, AppError>;
 #[tauri::command] async fn repo_scan_parent(path: PathBuf) -> Result<ScanResult, AppError>;

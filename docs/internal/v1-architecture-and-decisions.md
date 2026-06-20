@@ -476,7 +476,7 @@ The IPC boundary is the product's real API surface. For an agent-driven build by
 
 **Command surface (Phase 1), grouped:**
 
-- **Registry:** `repos_list(filter) -> Vec<RepoSummary>`, `repo_get(id) -> RepoDetail`, `repo_add_path(path) -> RepoId`, `repo_scan_parent(path) -> ScanResult`, `repo_remove(id)`, `repo_set_enabled(id, bool)`, `repo_set_policy(id, UpdatePolicy)`.
+- **Registry:** `repo_list(filter) -> Vec<RepoSummary>`, `repo_get(id) -> RepoDetail`, `repo_add_path(path) -> RepoId`, `repo_scan_parent(path) -> ScanResult`, `repo_remove(id)`, `repo_set_enabled(id, bool)`, `repo_set_policy(id, UpdatePolicy)`.
 - **Git ops:** `repo_check_now(id) -> CheckResult`, `repo_update_now(id, UpdateMode) -> UpdateResult`, `repo_refresh_metadata(id) -> RepoDetail`.
 - **Quick actions:** `repo_open_folder/terminal/editor/remote(id)`.
 - **Activity / summaries:** `activity_list(filter) -> Vec<ActivityRecord>`, `summary_today() -> DailySummary`, `summary_week() -> WeeklySummary`.
@@ -921,7 +921,7 @@ Being honest about the dividing line: the following cannot be finished without U
 - **Density and virtualization for large lists.** How the repo table behaves at 100+ repos - column set, row density, when TanStack Virtual kicks in, saved-view UX.
 - **The tray popup layout.** What sections appear, in what order, how compact, what one-tap actions live there versus in the main window.
 
-The crucial mitigation: every one of these can be *stubbed against the frozen IPC contract*. A placeholder Dashboard that renders mock `RepoSummary[]` of the real shape, a Repos table wired to the real `repos_list` command returning seed data, a tray popup with hardcoded sections - all let UI/UX exploration proceed on its own timeline while backend work proceeds on its own timeline. Neither blocks the other, because both are coding against the same typed seam. When a screen design lands, swapping mock data for the live command is a small, local change, not a re-architecture.
+The crucial mitigation: every one of these can be *stubbed against the frozen IPC contract*. A placeholder Dashboard that renders mock `RepoSummary[]` of the real shape, a Repos table wired to the real `repo_list` command returning seed data, a tray popup with hardcoded sections - all let UI/UX exploration proceed on its own timeline while backend work proceeds on its own timeline. Neither blocks the other, because both are coding against the same typed seam. When a screen design lands, swapping mock data for the live command is a small, local change, not a re-architecture.
 
 ### Suggested 2-3 week "Phase 0 + tracer bullet" sequence
 

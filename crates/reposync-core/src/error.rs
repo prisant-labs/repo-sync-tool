@@ -296,10 +296,15 @@ impl AppError {
     /// Whether retrying this error may succeed without user action. Derived, not
     /// serialized: true only for transient transport/availability failures.
     pub fn retryable(&self) -> bool {
-        matches!(
-            self,
-            AppError::Offline | AppError::Timeout | AppError::RateLimited { .. } | AppError::DbLocked
-        )
+        match self {
+            AppError::Offline
+            | AppError::Timeout
+            | AppError::RateLimited { .. }
+            | AppError::DbLocked => true,
+            // GitHub 5xx are transient (server-side); 4xx are terminal.
+            AppError::GithubApiError { status } => matches!(status, 500 | 502 | 503 | 504),
+            _ => false,
+        }
     }
 
     /// Variant-specific detail rendered into the wire `context` field.
@@ -555,6 +560,12 @@ mod tests {
         assert!(AppError::Timeout.retryable());
         assert!(AppError::RateLimited { reset_at: 0 }.retryable());
         assert!(AppError::DbLocked.retryable());
+
+        // GitHub 5xx are transient and therefore retryable.
+        assert!(AppError::GithubApiError { status: 503 }.retryable());
+        assert!(AppError::GithubApiError { status: 500 }.retryable());
+        // GitHub 4xx are terminal and not retryable.
+        assert!(!AppError::GithubApiError { status: 403 }.retryable());
 
         // A sample of terminal variants are not.
         assert!(!AppError::PathMissing { path: "p".into() }.retryable());
