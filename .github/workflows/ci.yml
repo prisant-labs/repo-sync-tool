@@ -27,15 +27,13 @@ permissions:
   contents: read
 
 env:
-  # Single source of truth for the pinned git version (E-01 AC8).
+  # Single source of truth for the exact git version (E-01 AC8). Enforced on Windows only
+  # via portable MinGit (see the "Pin git (Windows)" step), because the E-04 git fixture
+  # harness runs on Windows and cross-checks git2 reads against git CLI porcelain output,
+  # which must be BYTE-STABLE across runs. macOS (compile + bundle only) uses stock git.
+  # Floor is git 2.30 (the E-03 engine floor); this value sits well above it.
   #
-  # WHY this is pinned and asserted: E-04 (the git fixture test harness) cross-checks the
-  # git2 reads against the git CLI porcelain/plumbing output and requires that output to be
-  # BYTE-STABLE across runners and over time. A drifting git version on a hosted runner would
-  # silently change porcelain formatting and flake the cross-check. Floor is git 2.30 (the
-  # E-03 git-engine floor); this value sits well above it.
-  #
-  # To bump git: change ONLY this value. It overrides whatever the runner image ships.
+  # To bump git: change ONLY this value (must be a real git-for-windows release tag).
   GIT_VERSION: "2.47.1"
   # Pin the Tauri CLI used for the build + bundle step to the same 2.x line as the Rust
   # tauri crate. Exact pin keeps bundling reproducible across runners.
@@ -68,10 +66,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install git --version=$env:GIT_VERSION -y --no-progress --allow-downgrade
-          # Refresh PATH so the freshly installed git is the one we resolve.
-          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
-          refreshenv
+          # Use portable MinGit for an EXACT git version. Reinstalling git over the runner's
+          # preinstalled git (via choco) is unreliable - the silent installer conflicts and
+          # exits non-zero. MinGit is a plain zip with no installer, so the exact pin is robust.
+          $ver = "$env:GIT_VERSION"
+          $url = "https://github.com/git-for-windows/git/releases/download/v$ver.windows.1/MinGit-$ver-64-bit.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "mingit.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "mingit"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+          # Prepend MinGit's cmd dir so its git.exe shadows the preinstalled git in later steps.
+          "$dest\cmd" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Assert git version matches GIT_VERSION (Windows only)
         if: runner.os == 'Windows'
@@ -100,10 +106,10 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      # pnpm version comes from the "packageManager" field in package.json (single source of
+      # truth). Do NOT also set a "version" input here - action-setup errors if both exist.
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node
         uses: actions/setup-node@v4
