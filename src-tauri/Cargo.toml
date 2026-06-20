@@ -32,8 +32,14 @@ tauri-build = { workspace = true }
 
 [dependencies]
 tauri = { workspace = true, features = [] }
-tauri-specta = { workspace = true }
+tauri-specta = { workspace = true, features = ["derive", "typescript"] }
 specta = { workspace = true }
+specta-typescript = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reposync-core = { path = "../crates/reposync-core" }
+# E-12 tracer: the shell hosts the async runtime, the SQLite pool, and the
+# git engine that reposync-core operates on. tokio is the runtime tauri-specta
+# commands run under; sqlx provides the SqlitePool type held in AppState.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tokio = { workspace = true }

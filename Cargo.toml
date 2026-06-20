@@ -41,7 +41,10 @@ thiserror = "2.0.18"
 # E-08 scheduler). Not yet a dependency of any crate in E-01.
 tokio = { version = "1.52.3", features = ["full"] }
 sqlx = { version = "0.9.0", default-features = false }
-git2 = "0.21.0"
+# default-features = false here so the per-crate consumer can opt into ONLY
+# vendored-libgit2 (no OpenSSL, no libssh2, no network transports). Network git
+# goes through the git CLI, never git2. Required for the dependency-hygiene gate.
+git2 = { version = "0.21.0", default-features = false }
 
 # Small-binary posture toward the <30MB bundle goal (brief Section 4.10a).
 # Applies to release builds of the whole workspace, including the Tauri shell.

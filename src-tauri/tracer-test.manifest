@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    Activation-context manifest for the src-tauri TEST binaries only.
+
+    The Tauri runtime links comctl32 v6 symbols (e.g. TaskDialogIndirect) that
+    exist only in the side-by-side comctl32 v6 assembly. The shipped reposync.exe
+    gets a v6-requesting manifest embedded by tauri-build, but `cargo test`
+    executables do not, so without this the test loader resolves against the v5
+    System32 comctl32, which lacks those exports, and the process fails to start
+    with STATUS_ENTRYPOINT_NOT_FOUND (0xC0000139) before any test runs.
+
+    build.rs embeds this into test binaries via `cargo::rustc-link-arg-tests`
+    so the headless `export_bindings` test can run. It is intentionally NOT
+    applied to the real binary, which keeps tauri-build's own manifest.
+  -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*" />
+    </dependentAssembly>
+  </dependency>
+</assembly>

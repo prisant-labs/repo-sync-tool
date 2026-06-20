@@ -1,33 +1,143 @@
 // RepoSync Tauri v2 shell library.
 //
-// Owning effort: E-01 (Foundation).
+// Owning effort: E-01 (Foundation); E-12 (tracer bullet) wires the first real
+// commands, event, and managed state end to end.
 //
-// This is the thin Tauri shell that hosts the Tauri-free `reposync-core`
-// crate. In E-01 it is a minimal builder that starts and runs the runtime
-// with no commands, events, tray, or windows wired up yet. Later efforts
-// fill in the stub modules referenced below:
+// This is the thin Tauri shell that hosts the Tauri-free `reposync-core` crate.
+// All product logic lives in the core; this shell only owns the runtime, the
+// IPC surface (E-06 contract), event emission, the tray, and windows.
 //   - commands  -> IPC command handlers (E-06 owns the payload contract)
 //   - events    -> backend -> frontend event emission (E-06)
 //   - tray      -> system tray icon and menu (later GUI effort)
 //   - windows   -> window creation and management (later GUI effort)
-//
-// TODO(E-06): register the generated command/event handlers and managed state.
 
 mod commands;
 mod events;
 mod tray;
 mod windows;
 
+use tauri::Manager;
+use tauri_specta::{collect_commands, collect_events};
+
+use commands::{repo_add_path, repo_check_now};
+use events::CheckCompleted;
+
+/// Shared, managed application state injected into every command.
+///
+/// Holds the long-lived SQLite pool and the (optionally) discovered git engine
+/// that `reposync-core` flows operate on. Built once in [`run`]'s setup and
+/// handed to Tauri via `app.manage`.
+///
+/// `git` is `None` when git could not be discovered at startup. Git absence must
+/// NOT prevent launch (E-03 degraded-state contract): the app still opens and
+/// git-dependent commands return [`AppError::GitNotFound`]. The full re-probe
+/// state machine is E-03 scope; this is the minimal tolerant form.
+pub struct AppState {
+    pub pool: sqlx::SqlitePool,
+    pub git: Option<reposync_core::git::SystemGitEngine>,
+}
+
+/// Build the `tauri-specta` [`Builder`](tauri_specta::Builder) for the shell.
+///
+/// Single source of truth for the command + event surface so both [`run`] and
+/// the headless `export_bindings` test register exactly the same set, keeping
+/// the generated TypeScript bindings in lockstep with the runtime handlers.
+fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
+    // `AppErrorPayload.context` is `Option<serde_json::Value>` (free-form JSON).
+    // specta-typescript cannot inline `serde_json::Value` because it is mutually
+    // recursive (Value -> Vec<Value> -> Value), so map it to the TS `unknown`
+    // type, which is the correct frontend type for an opaque JSON blob. This
+    // remap lives on the export side, leaving `reposync-core` untouched.
+    let semantic = specta_typescript::semantic::Configuration::default().define::<serde_json::Value>(
+        |_| specta_typescript::define("unknown").into(),
+        None,
+        None,
+    );
+
+    tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(collect_commands![repo_add_path, repo_check_now])
+        .events(collect_events![CheckCompleted])
+        // The IPC payloads carry `i64` repo ids, ahead/behind counts, and unix
+        // second timestamps. specta-typescript refuses to emit i64/u64 by
+        // default (BigInt precision risk); cast them to TS `number`. Every such
+        // value here fits comfortably in JS's 2^53 safe-integer range, so the
+        // cast is lossless in practice. This must be set on the shared factory
+        // so the runtime invoke surface and the exported bindings agree.
+        .dangerously_cast_bigints_to_number()
+        .semantic_types(semantic)
+}
+
 /// Application entry point invoked by `main.rs` (and the mobile entry point).
 ///
-/// Builds and runs the Tauri v2 runtime. In the E-01 skeleton this is the
-/// default builder with no handlers; it exists so the shell compiles, links,
-/// and bundles end to end.
+/// Builds the `tauri-specta` command/event surface, wires the invoke handler,
+/// mounts the events, then initializes the SQLite pool and git engine into
+/// managed [`AppState`] before running the Tauri runtime.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // TODO(E-06): chain `.invoke_handler(...)`, `.manage(...)`, tray setup,
-    // and window creation onto this builder as those efforts land.
+    let builder = specta_builder();
+
+    // Dev convenience: regenerate the bindings on every debug run so a local
+    // contract change is visible immediately. Goes through the shared
+    // `export_bindings` helper (same builder + header) so the dev-written file
+    // is byte-identical to the one the `export_bindings` test commits; the test
+    // is the canonical producer CI relies on.
+    #[cfg(debug_assertions)]
+    export_bindings("../src/lib/bindings.ts").expect("failed to export typescript bindings");
+
     tauri::Builder::default()
+        .invoke_handler(builder.invoke_handler())
+        .setup(move |app| {
+            // Register the event registry so typed emit/listen resolve names.
+            builder.mount_events(app);
+
+            // Initialize the pool + git engine synchronously during setup. The
+            // tracer accepts a blocking init; later efforts can move this off
+            // the setup thread if startup latency matters.
+            let handle = app.handle().clone();
+            tauri::async_runtime::block_on(async move {
+                let pool = reposync_core::db::open_pool(&reposync_core::paths::db_path())
+                    .await
+                    .expect("failed to open database pool");
+                reposync_core::db::run_migrations(&pool)
+                    .await
+                    .expect("failed to run database migrations");
+                // Git absence must NOT block launch (E-03 degraded-state
+                // contract). Store None on GitNotFound and log a warning; the
+                // pool/migrations above stay fatal because the DB is essential.
+                let git = match reposync_core::git::SystemGitEngine::discover() {
+                    Ok(engine) => Some(engine),
+                    Err(_) => {
+                        eprintln!(
+                            "warning: git executable not found; git-dependent \
+                             actions will report GitNotFound until git is available"
+                        );
+                        None
+                    }
+                };
+                handle.manage(AppState { pool, git });
+            });
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running RepoSync");
+}
+
+/// Export the TypeScript IPC bindings to `path`, headlessly (no GUI launch).
+///
+/// Canonical producer of the committed `src/lib/bindings.ts`: it builds the
+/// exact same `tauri-specta` surface the runtime uses (via [`specta_builder`])
+/// and writes the TypeScript. Exposed so the headless `export_bindings`
+/// integration test (in `tests/`) can call it. The integration test - not a
+/// `--lib` unit test - is required on Windows because the comctl32-v6 manifest
+/// that lets a Tauri-linked test executable start is attached only to `[[test]]`
+/// targets (see `build.rs`).
+pub fn export_bindings(path: &str) -> Result<(), specta_typescript::Error> {
+    // The generated file uses `any` in its runtime shim, which the project
+    // eslint config rejects. It is machine-generated and never hand-edited, so
+    // exempt the whole file from eslint via a leading `/* eslint-disable */`.
+    // (It type-checks cleanly under tsc, so no `@ts-nocheck` is needed - and
+    // `ban-ts-comment` would flag that anyway.)
+    let ts = specta_typescript::Typescript::default().header("/* eslint-disable */\n");
+    specta_builder().export(ts, path)
 }

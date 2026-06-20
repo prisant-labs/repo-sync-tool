@@ -14,9 +14,9 @@ source: docs/internal/v1-architecture-and-decisions.md (Sections 6, 4.1, 4.4)
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started.
-- **Next:** wire `repo_add_path` end to end (throwaway UI -> Tauri command -> core -> git2 -> SQLite) on a real Windows build, then `repo_check_now` through to an emitted event.
-- **Blockers:** none beyond E-02 (schema + pool), E-03 (git2 read + CLI fetch), and E-06 (the frozen IPC types for the two commands and the event).
+- **State:** tracer slice built and locally green on branch `build/e-01-foundation`. `reposync-core` gained minimal E-02 (paths, sqlx WAL pool, `0001_tracer.sql` with the three authoritative tables), minimal E-03 (`git2` inspect + CLI fetch/rev-list behind `SystemGitEngine`), a minimal `AppError`, the thin E-06 IPC slice (`RepoId`/`CheckResult`/`CheckCompletedPayload`), and `repo::add` + `repo::check_now`. `src-tauri` wires the two commands + the `repo:check-completed` event with `tauri-specta`-generated `bindings.ts`, a `main` window, and a throwaway debug `App.tsx`. Local gate green (14 core tests incl. a real bare-remote fetch and a canonical-duplicate test; clippy `-D warnings`; pnpm typecheck/lint/build; `reposync-core` stays tauri-free). A Codex adversarial review ran: 3 high + 2 medium findings fixed (startup panic on missing git, `statuses()`-failure-treated-as-clean, string-exact duplicate detection, `behind:None` policy conflation, stale `active_branch`); 4 lower findings filed to `docs/backlog.md` (BL-NI-04..07). Packaging spike is largely satisfied by E-01 (msi/nsis + `downloadBootstrapper`; macOS bundle green in CI); the macOS signing runbook is written here.
+- **Next:** delete the throwaway UI when real screens land. Promote the thin-slice stand-ins to their owning efforts: `tracer-inline-policy` -> E-07, direct `activity_records` INSERT -> E-09, minimal `AppError` -> E-05, the 3-table migration -> E-02 (full schema, additively), fetch `success:bool` -> E-03 (fetch-class enum, BL-NI-05), and wrap multi-row writes in transactions (E-02, BL-NI-07). Verify the Windows MSI/NSIS artifact via a real install.
+- **Blockers:** none. git absence is currently a sticky one-shot probe (E-03 owns the re-probe state machine).
 
 ## Context
 

@@ -10,7 +10,15 @@
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
-    "windows": [],
+    "windows": [
+      {
+        "label": "main",
+        "title": "RepoSync (tracer)",
+        "width": 900,
+        "height": 600,
+        "visible": true
+      }
+    ],
     "security": {
       "csp": null
     }
