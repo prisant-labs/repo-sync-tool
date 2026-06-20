@@ -46,11 +46,21 @@ sqlx = { version = "0.9.0", default-features = false }
 # goes through the git CLI, never git2. Required for the dependency-hygiene gate.
 git2 = { version = "0.21.0", default-features = false }
 
-# Small-binary posture toward the <30MB bundle goal (brief Section 4.10a).
-# Applies to release builds of the whole workspace, including the Tauri shell.
+# Per-push CI / default release profile. Tuned for a small bundle but with THIN LTO
+# and parallel codegen so per-push CI builds stay fast (a full-LTO single-codegen-unit
+# build took about 35 min on the Windows runner). Maximal-size public artifacts use the
+# [profile.dist] profile below. (brief Section 4.10a; docs/backlog.md BL-NI-09)
 [profile.release]
 opt-level = "z"
-lto = true
+lto = "thin"
 strip = true
 panic = "abort"
+codegen-units = 16
+
+# Distribution profile for public release-tag artifacts: maximal size optimization
+# (full LTO, single codegen unit), accepting the longer build time. The future release
+# workflow selects it (e.g. tauri build --profile dist); per-push CI does not use it.
+[profile.dist]
+inherits = "release"
+lto = "fat"
 codegen-units = 1

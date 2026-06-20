@@ -34,9 +34,6 @@ env:
   # VERIFIES the >= 2.30 floor (the E-03 engine requirement) instead of enforcing this exact
   # value. The robust exact-pin mechanism is tracked in docs/backlog.md (BL-NI-03).
   GIT_VERSION: "2.47.1"
-  # Pin the Tauri CLI used for the build + bundle step to the same 2.x line as the Rust
-  # tauri crate. Exact pin keeps bundling reproducible across runners.
-  TAURI_CLI_VERSION: "2.11.3"
   # Faster, quieter cargo in CI.
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -133,13 +130,13 @@ jobs:
           echo "OK: reposync-core has no tauri dependency."
 
       # --- Build + bundle (E-01 AC4) ------------------------------------------------------
-      # Pin the Tauri CLI to TAURI_CLI_VERSION and bundle on each runner. macOS bundling is
-      # UNSIGNED (no signing secrets are present; signing is human-only per EXECUTION.md).
-      # Artifacts are produced for inspection only; we do NOT upload to GitHub Releases.
-      - name: Install Tauri CLI (pinned)
-        run: cargo install tauri-cli --version "${TAURI_CLI_VERSION}" --locked
-        shell: bash
-
+      # Build + bundle on each runner with the PREBUILT @tauri-apps/cli (a pinned
+      # devDependency), via `pnpm tauri build`. This avoids `cargo install tauri-cli`,
+      # which compiles the CLI from source and added several minutes per run. The per-push
+      # release profile uses thin LTO (Cargo.toml [profile.release]) so the bundle stays
+      # fast; full-LTO distribution artifacts use [profile.dist]. macOS bundling is UNSIGNED
+      # (signing is human-only per EXECUTION.md). Artifacts are for inspection only; we do
+      # NOT upload to GitHub Releases.
       - name: Build and bundle
-        run: cargo tauri build
+        run: pnpm tauri build
         shell: bash
