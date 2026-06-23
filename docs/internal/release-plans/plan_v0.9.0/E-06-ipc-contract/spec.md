@@ -1,5 +1,6 @@
 ---
 effort: E-06
+tracking-issue: 8
 title: IPC Contract (the typed seam)
 status: ready
 tier: MUST

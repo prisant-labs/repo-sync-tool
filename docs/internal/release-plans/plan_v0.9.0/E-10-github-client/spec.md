@@ -1,5 +1,6 @@
 ---
 effort: E-10
+tracking-issue: 12
 title: GitHub Metadata Client
 status: ready
 tier: SHOULD

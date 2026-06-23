@@ -21,6 +21,7 @@ It operationalizes `docs/internal/v1-architecture-and-decisions.md` (the archite
 |---|---|---|
 | **MUST** | Add/scan repos, list + detail, manual + scheduled fetch (ff-only), activity log, error states, enable/disable, settings | E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-12 |
 | **SHOULD (keep)** | Unauthenticated GitHub enrichment + ETag caching, daily summary | E-10 (unauthenticated path), E-11 (daily only) |
+| **Integration (native chrome / OS)** | Tray native menu, desktop notifications, autostart | E-13 (MUST), E-14 (SHOULD), E-15 (SHOULD) |
 | **CUT to V1.1** | Tray popup window (keep native menu), keyring PAT, weekly summary, grouping/tags, saved filters, recipes, auto-updater | Stubbed behind seams: PAT path in E-10, weekly aggregation in E-11; the rest are UI-surface and out of these efforts entirely |
 
 ## The seam principle (why this is all buildable now)
@@ -43,10 +44,37 @@ The entire backend lives on one side of a single seam: the **typed IPC contract*
 | **E-10** | GitHub metadata client | `octocrab`/`reqwest-rustls`, ETag conditional requests, rate-limit backoff; **unauthenticated** V1 path, PAT path stubbed behind a seam for V1.1 | E-02 | 4.4, 6 |
 | **E-11** | Summary engine | Daily summary aggregation; weekly left as a V1.1 extension point | E-09 | Section 3 (SHOULD tier) + descope trigger |
 | **E-12** | Tracer bullet + packaging spike | `repo_add_path` + `repo_check_now` end to end (real git to SQLite to emitted event) on a real Windows build behind a throwaway UI; early Windows MSI from CI | E-02, E-03, E-06 (thin-slice-sufficient on E-06: needs only the `repo_add_path` / `repo_check_now` / `repo:check-completed` contract slice, not full E-06) | 6 |
+| **E-13** | Tray native menu | Native right-click menu (Show / Check All / Pause-Resume / Open recent / Settings / Quit) wired to commands; close-to-tray; native chrome in `tray.rs` | E-01, E-08, E-02 | 8 |
+| **E-14** | Desktop notifications | OS toasts for new release / failure / auth via `tauri-plugin-notification`; pure firing-decision + coalescing; quiet-hours aware | E-08, E-10, E-09, E-02 | 11 |
+| **E-15** | Autostart | Launch-on-login via `tauri-plugin-autostart` keyed off the `autostart` setting; startup reconciliation; start minimized | E-02, E-01 | platform seam |
+
+> **Note on E-13 to E-15 (integration efforts, added 2026-06-23):** these close a category-C gap surfaced in the 2026-06-22 audit: the tray menu, notifications, and autostart were named in the brief but owned by no effort. They are **native chrome / OS integration, not webview screens**, so they are UI-independent and buildable now. Tiers (E-13 MUST, E-14/E-15 SHOULD) are provisional, flagged in each spec's open questions.
 
 > **Note on E-11 (summary engine):** the brief has no Section 6 summary workstream. E-11 is a plan-level expansion of the SHOULD-tier "daily summary" scope item (brief Section 3), and is governed by its own pre-committed descope trigger (cut to V1.1 if not green by end of week 5).
 
 > **Dependency-edge semantics:** an edge is either *thin-slice-sufficient* (the downstream effort needs only a named contract or interface slice of its upstream, not the upstream's full completion) or *full-completion-required* (the downstream effort cannot start until the upstream is finished and frozen). E-12's edge to E-06 is thin-slice-sufficient (the `repo_add_path` / `repo_check_now` / `repo:check-completed` slice only), and week-1 uses only *minimal* slices of E-02 (schema + runner) and E-03 (one git2 read + CLI fetch); the remaining edges in the graph below are full-completion-required.
+
+## Per-effort docs and tracking
+
+Each effort's contract (`spec.md`) and execution (`implementation-plan.md`) live in the current release folder; the per-effort build status is aggregated in [plan_v0.9.0.md](release-plans/plan_v0.9.0/plan_v0.9.0.md). The **Issue** column is the live tracking layer (one GitHub issue per effort, milestone = release); it is filled when issues are created.
+
+| Effort | Spec | Impl plan | Build status | Issue |
+|--------|------|-----------|--------------|-------|
+| E-01 | [spec](release-plans/plan_v0.9.0/E-01-foundation/spec.md) | [plan](release-plans/plan_v0.9.0/E-01-foundation/implementation-plan.md) | Done | #3 |
+| E-02 | [spec](release-plans/plan_v0.9.0/E-02-persistence/spec.md) | [plan](release-plans/plan_v0.9.0/E-02-persistence/implementation-plan.md) | Partial (tracer) | #4 |
+| E-03 | [spec](release-plans/plan_v0.9.0/E-03-git-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-03-git-engine/implementation-plan.md) | Partial (tracer) | #5 |
+| E-04 | [spec](release-plans/plan_v0.9.0/E-04-git-fixture-harness/spec.md) | [plan](release-plans/plan_v0.9.0/E-04-git-fixture-harness/implementation-plan.md) | Not started | #6 |
+| E-05 | [spec](release-plans/plan_v0.9.0/E-05-error-taxonomy/spec.md) | [plan](release-plans/plan_v0.9.0/E-05-error-taxonomy/implementation-plan.md) | Done | #7 |
+| E-06 | [spec](release-plans/plan_v0.9.0/E-06-ipc-contract/spec.md) | [plan](release-plans/plan_v0.9.0/E-06-ipc-contract/implementation-plan.md) | Done | #8 |
+| E-07 | [spec](release-plans/plan_v0.9.0/E-07-update-policy-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-07-update-policy-engine/implementation-plan.md) | Not started | #9 |
+| E-08 | [spec](release-plans/plan_v0.9.0/E-08-scheduler/spec.md) | [plan](release-plans/plan_v0.9.0/E-08-scheduler/implementation-plan.md) | Not started | #10 |
+| E-09 | [spec](release-plans/plan_v0.9.0/E-09-activity-log/spec.md) | [plan](release-plans/plan_v0.9.0/E-09-activity-log/implementation-plan.md) | Not started | #11 |
+| E-10 | [spec](release-plans/plan_v0.9.0/E-10-github-client/spec.md) | [plan](release-plans/plan_v0.9.0/E-10-github-client/implementation-plan.md) | Not started | #12 |
+| E-11 | [spec](release-plans/plan_v0.9.0/E-11-summary-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-11-summary-engine/implementation-plan.md) | Not started | #13 |
+| E-12 | [spec](release-plans/plan_v0.9.0/E-12-tracer-bullet/spec.md) | [plan](release-plans/plan_v0.9.0/E-12-tracer-bullet/implementation-plan.md) | Done | #14 |
+| E-13 | [spec](release-plans/plan_v0.9.0/E-13-tray-menu/spec.md) | [plan](release-plans/plan_v0.9.0/E-13-tray-menu/implementation-plan.md) | Not started | #15 |
+| E-14 | [spec](release-plans/plan_v0.9.0/E-14-notifications/spec.md) | [plan](release-plans/plan_v0.9.0/E-14-notifications/implementation-plan.md) | Not started | #16 |
+| E-15 | [spec](release-plans/plan_v0.9.0/E-15-autostart/spec.md) | [plan](release-plans/plan_v0.9.0/E-15-autostart/implementation-plan.md) | Not started | #17 |
 
 ## Dependency graph
 

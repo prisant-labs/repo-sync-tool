@@ -1,5 +1,6 @@
 ---
 effort: E-04
+tracking-issue: 6
 title: Git Fixture Test Harness
 status: ready
 tier: MUST

@@ -6,9 +6,9 @@ status: in-progress          # draft -> in-progress -> released
 created: 2026-06-22
 updated: 2026-06-22
 target-date:                 # TBD
-includes: [E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-10, E-11, E-12]
-spec-count: 12
-plan-count: 12
+includes: [E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-10, E-11, E-12, E-13, E-14, E-15]
+spec-count: 15
+plan-count: 15
 checklist-complete: false
 ---
 
@@ -28,7 +28,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 
 ## Aggregation
 
-> This table is maintained by hand. The **Build status** column is the live signal (sourced from the audit); spec and plan presence is hand-verified. A release tool could later regenerate it from effort frontmatter, but none is canonical yet, and the specs' current `status: ready` scheme is fine as-is.
+> This table is maintained by hand. The **Build status** column is the live signal (sourced from the audit); spec and plan presence is hand-verified. A release tool could later regenerate it from effort frontmatter, but none is canonical yet, and the specs' current `status: ready` scheme is fine as-is. Per-effort spec / implementation-plan / GitHub-issue links live in the roadmap's tracking table ([program-roadmap.md](../../program-roadmap.md)).
 
 | Effort | Title | Tier | Spec | Plan | Build status |
 |--------|-------|------|------|------|--------------|
@@ -44,10 +44,13 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-10 | GitHub Metadata Client | SHOULD | ready | ready | Not started |
 | E-11 | Summary Engine (Daily) | SHOULD | ready | ready | Not started |
 | E-12 | Tracer Bullet and Packaging Spike | MUST | ready | ready | Done |
+| E-13 | Tray Native Menu | MUST | ready | ready | Not started |
+| E-14 | Desktop Notifications | SHOULD | ready | ready | Not started |
+| E-15 | Autostart (Launch on Login) | SHOULD | ready | ready | Not started |
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
-Summary: 12 efforts in scope. 4 done (E-01, E-05, E-06, E-12), 2 partial (E-02, E-03), 6 not started (E-04, E-07, E-08, E-09, E-10, E-11), plus the unbuilt GUI.
+Summary: 15 efforts in scope. 4 done (E-01, E-05, E-06, E-12), 2 partial (E-02, E-03), 9 not started (E-04, E-07-E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
 
 ---
 

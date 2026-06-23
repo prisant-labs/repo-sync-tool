@@ -1,5 +1,6 @@
 ---
 effort: E-05
+tracking-issue: 7
 title: Error Taxonomy (AppError)
 status: ready
 tier: MUST
