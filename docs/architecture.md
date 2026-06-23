@@ -61,7 +61,7 @@ The IPC boundary is RepoSync's real API surface, and it is the single seam that 
 
 Why the seam exists: for an agent-driven build by a single developer, the largest avoidable failure is contract drift between a Rust signature and a hand-written TypeScript wrapper, which produces runtime `undefined`s the type checker never catches. Making the Rust types the single source of truth means renaming a field or changing a return type breaks the TypeScript build immediately. Freezing this contract early lets the two halves of the product be built and tested independently. tauri-specta v2 is pinned exactly because it is a release candidate; the fallback is a hand-maintained `bindings.ts` plus a CI round-trip test.
 
-Source: [v1-architecture-and-decisions.md Section 4.4 (the IPC contract as the API)](internal/v1-architecture-and-decisions.md); effort [E-06 (IPC contract)](../AGENTS/efforts/README.md).
+Source: [v1-architecture-and-decisions.md Section 4.4 (the IPC contract as the API)](internal/v1-architecture-and-decisions.md); effort [E-06 (IPC contract)](internal/program-roadmap.md).
 
 ## The "core never imports tauri" rule
 
@@ -88,9 +88,9 @@ The loop that justifies the app, with the owning efforts named:
 | Enrich (SHOULD) | Unauthenticated GitHub metadata (description, default branch, latest release) is fetched with ETag conditional requests and rate-limit backoff | E-10 (GitHub client) |
 | Daily summary (SHOULD) | A nightly aggregation rolls up what changed into an in-app card | E-11 (summary engine) |
 
-Safety properties baked into this loop: fetches are fast-forward-only and never mutate a working tree destructively; a repo that fails 3 consecutive times is auto-paused and requires manual acknowledgement; auth failures pause the repo rather than retry-looping. The error taxonomy (`AppError`, ~30 codes with remediation) is [E-05](../AGENTS/efforts/README.md), and the typed contract carrying all of this across the seam is [E-06](../AGENTS/efforts/README.md).
+Safety properties baked into this loop: fetches are fast-forward-only and never mutate a working tree destructively; a repo that fails 3 consecutive times is auto-paused and requires manual acknowledgement; auth failures pause the repo rather than retry-looping. The error taxonomy (`AppError`, ~30 codes with remediation) is [E-05](internal/program-roadmap.md), and the typed contract carrying all of this across the seam is [E-06](internal/program-roadmap.md).
 
-Source: [v1-architecture-and-decisions.md Sections 4.6, 4.7](internal/v1-architecture-and-decisions.md); [strategy-and-roadmap.md Sections 3.10, 5](internal/strategy-and-roadmap.md); effort breakdown in [AGENTS/efforts/README.md](../AGENTS/efforts/README.md).
+Source: [v1-architecture-and-decisions.md Sections 4.6, 4.7](internal/v1-architecture-and-decisions.md); [strategy-and-roadmap.md Sections 3.10, 5](internal/strategy-and-roadmap.md); effort breakdown in [docs/internal/program-roadmap.md](internal/program-roadmap.md).
 
 ## Persistence model
 
@@ -100,7 +100,7 @@ Source: [v1-architecture-and-decisions.md Sections 4.6, 4.7](internal/v1-archite
 - **OS-specific data directory (the `paths` seam).** The DB and logs live in `%LOCALAPPDATA%\RepoSync` on Windows (Local, never Roaming, never a OneDrive-synced folder, to avoid WAL/SHM corruption) and `~/Library/Application Support/RepoSync` on macOS. The `paths` module is the single place that computes a data path; nothing else does.
 - **The schema** spans six logical areas: `repos` (registry), `repo_local_state` (cached git state, with `consecutive_failures` and `auto_paused` for the 3-strikes pause), `repo_remote_meta` (host metadata, with `etag`), `activity_records` (audit trail), `groups` + `repo_groups` (tagging), and `settings` (singleton). A nullable `scoped_bookmark_blob` column on `repos` is reserved now for a possible future macOS App Store path.
 
-For the authoritative DDL, see [strategy-and-roadmap.md Section 4.2](internal/strategy-and-roadmap.md). Persistence and the `paths` seam are effort [E-02](../AGENTS/efforts/README.md); the activity writer and retention are [E-09](../AGENTS/efforts/README.md).
+For the authoritative DDL, see [strategy-and-roadmap.md Section 4.2](internal/strategy-and-roadmap.md). Persistence and the `paths` seam are effort [E-02](internal/program-roadmap.md); the activity writer and retention are [E-09](internal/program-roadmap.md).
 
 ## Tech stack
 
@@ -144,6 +144,6 @@ Source: [EXECUTION.md](../EXECUTION.md); [v1-architecture-and-decisions.md Secti
 
 ## Build status
 
-RepoSync V1 is built as a sequence of numbered efforts (E-01 through E-12), each with its own spec and plan. The current effort table, dependency graph, sequencing, scope ledger (MUST / SHOULD / CUT), and pre-committed descope triggers live in [AGENTS/efforts/README.md](../AGENTS/efforts/README.md) - that file is the single source of truth for build status and is not duplicated here.
+RepoSync V1 is built as a sequence of numbered efforts (E-01 through E-12), each with its own spec and plan. The current effort table, dependency graph, sequencing, scope ledger (MUST / SHOULD / CUT), and pre-committed descope triggers live in [docs/internal/program-roadmap.md](internal/program-roadmap.md) - that file is the single source of truth for build status and is not duplicated here.
 
 This architecture document is living: it will be updated as each effort lands and as decisions are ratified.

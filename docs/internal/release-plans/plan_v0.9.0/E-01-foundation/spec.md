@@ -32,7 +32,7 @@ Platform framing for the CI gate: Windows is the real GA bar; macOS is "compiles
 - `crates/reposync-core` with `lib.rs` and stub modules: `error.rs`, `ipc.rs`, `repo.rs`, `policy.rs`, `scheduler.rs`, `activity.rs`, `summary.rs`, `github.rs`, `paths.rs`, and `git/{mod.rs, cli.rs, inspect.rs}`. An empty `migrations/` directory.
 - `src-tauri` shell skeleton: `main.rs` (builder + managed-state placeholders), `commands/`, `events.rs`, `tray.rs`, `windows/` (empty placeholders), `tauri.conf.json` with the WebView2 `downloadBootstrapper` strategy and a <30MB bundle posture.
 - Frontend skeleton sufficient to `pnpm typecheck`/`pnpm lint` (Vite + React + TypeScript + Tailwind, plus shadcn **initialized only, zero components**); no real screens. shadcn is set up (config + theme/CSS variables) but no components are added, since no E-01 acceptance criterion exercises a shadcn component and the skeleton must not over-pull component dependencies.
-- Repo hygiene: in-repo `.gitignore` listing `_LOCAL/` (NOT `docs/internal/`, which is tracked), `LICENSE` (MIT), `.github/` templates (bug report, feature request, PR template, `FUNDING.yml`), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
+- Repo hygiene: in-repo `.gitignore` listing `_local/` (NOT `docs/internal/`, which is tracked), `LICENSE` (MIT), `.github/` templates (bug report, feature request, PR template, `FUNDING.yml`), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
 - CI workflow: Windows + macOS matrix running `cargo check`, `cargo clippy --all -- -D warnings`, `cargo test`, `pnpm typecheck`, `pnpm lint`; the `cargo tree -p reposync-core | grep -i tauri` dependency-hygiene gate; pinned `git` for the fixture harness; build + bundle on both runners.
 
 ## Out of scope
@@ -48,7 +48,7 @@ Platform framing for the CI gate: Windows is the real GA bar; macOS is "compiles
 2. `pnpm typecheck` and `pnpm lint` succeed.
 3. The CI workflow is green on both Windows and macOS runners (build + bundle).
 4. The dependency-hygiene gate proves `reposync-core` has no `tauri` in its tree.
-5. `LICENSE`, `.gitignore`, and `.github/` templates are present; `_LOCAL/` is ignored and `docs/internal/` is not.
+5. `LICENSE`, `.gitignore`, and `.github/` templates are present; `_local/` is ignored and `docs/internal/` is not.
 
 ## Acceptance criteria
 
@@ -56,7 +56,7 @@ Platform framing for the CI gate: Windows is the real GA bar; macOS is "compiles
 - [ ] AC2: `reposync-core` compiles with no `tauri`/`tauri-*` dependency; CI asserts an empty `cargo tree -p reposync-core | grep -i tauri`. Source: brief Section 4.3 ("dependency hygiene").
 - [ ] AC3: `tauri.conf.json` selects the evergreen WebView2 `downloadBootstrapper`. Source: brief Section 4.10a.
 - [ ] AC4: The CI matrix is green - both the Windows and the macOS runner build and bundle successfully (pass/fail gate). Source: brief Section 6 (CI workstream) and `EXECUTION.md`. (Context for this gate: Windows is the real GA bar and macOS is compiles-and-bundles-only until real Mac access; see the Context section. That framing does not change the gate, which is simply both runners green.)
-- [ ] AC5: `.gitignore` ignores `_LOCAL/` and does NOT ignore `docs/internal/`; `LICENSE` is MIT. Source: ratified gitignore decision (2026-06-19) recorded in `AGENTS/efforts/README.md` ("Ratified decisions this plan assumes" table, Gitignore row), which overrides the brief Section 6 repo-hygiene wording about quarantining `docs/internal/`.
+- [ ] AC5: `.gitignore` ignores `_local/` and does NOT ignore `docs/internal/`; `LICENSE` is MIT. Source: ratified gitignore decision (2026-06-19) recorded in `docs/internal/release-plans/plan_v0.9.0/README.md` ("Ratified decisions this plan assumes" table, Gitignore row), which overrides the brief Section 6 repo-hygiene wording about quarantining `docs/internal/`.
 - [ ] AC6: A throwaway/no-op `cargo test` exists in `reposync-core` so the test gate is exercised from day one.
 - [ ] AC7: `Cargo.toml` pins EXACT versions (no `^`/`~`/range, e.g. `=2.0.0`) for every `tauri*` crate and for `specta` and `tauri-specta`, because the brief Section 4.4 caveat flags `tauri-specta` v2 as a release candidate; pinning prevents a silent RC bump from breaking codegen. Source: brief Section 4.4.
 - [ ] AC8 (rescoped 2026-06-20): The CI workflow verifies the `git` floor (>= 2.30, the E-03 engine requirement) on both runners. The exact byte-stable `git` pin the E-04 fixture harness will need is DEFERRED to E-04: the harness does not exist yet, and pinning an exact `git` on the hosted runners proved unreliable in practice (choco's installer conflicts with the preinstalled git; portable MinGit's PATH ordering did not shadow it). `GIT_VERSION` in the workflow records the intended exact target; the robust exact-pin mechanism is tracked in `docs/backlog.md` (BL-NI-03) and owned by E-04. Source: brief Section 6 (CI workstream); E-04 spec. NOTE: this is a deliberate, jp-flagged narrowing of the original "pin the exact version" wording.

@@ -1,6 +1,6 @@
 # RepoSync V1 - Execution Plan (non-GUI functional efforts)
 
-This is the program-level plan for everything in RepoSync V1 that can be built, tested, and frozen **without a single final UI/UX decision**. It decomposes the backend, data, contract, and integration work into numbered efforts, each of which carries its own `spec.md` (the contract) and `plan.md` (the implementation steps) in its folder.
+This is the program-level plan for everything in RepoSync V1 that can be built, tested, and frozen **without a single final UI/UX decision**. It decomposes the backend, data, contract, and integration work into numbered efforts, each of which carries its own `spec.md` (the contract) and `implementation-plan.md` (the implementation steps) in its folder.
 
 It operationalizes `docs/internal/v1-architecture-and-decisions.md` (the architecture and decisions brief). Read that brief for the full rationale; read this for the work breakdown.
 
@@ -11,7 +11,7 @@ It operationalizes `docs/internal/v1-architecture-and-decisions.md` (the archite
 | Platform | True dual-platform, **Windows-first**, maximally common architecture; macOS degrades to "compiles + bundles in CI" until real Mac access | 2026-05-31 |
 | Autonomy boundary | **Visibility-tiered merge** (agent self-merges green PRs while private; human-reviewed once public) layered on a 7-item human-only allowlist (both adopted: the allowlist sits on top of the tiered merges). See `EXECUTION.md` | 2026-06-19 |
 | V1 scope line | **MUST / SHOULD / CUT** tiering ratified (below), with pre-committed descope triggers | 2026-06-19 |
-| Gitignore (repo hygiene) | `docs/internal/` is **TRACKED**; `_LOCAL/` is gitignored. This **OVERRIDES** the brief Section 6 repo-hygiene wording about quarantining `docs/internal/`. | 2026-06-19 |
+| Gitignore (repo hygiene) | `docs/internal/` is **TRACKED**; `_local/` is gitignored. This **OVERRIDES** the brief Section 6 repo-hygiene wording about quarantining `docs/internal/`. | 2026-06-19 |
 | Command naming | Normalized to singular `repo_list` (the brief mixed `repos_list` with the `repo_*` family). All command names use the singular `repo_*` form. | 2026-06-19 |
 | Schema additions | `repo_local_state` gains `consecutive_failures` and `auto_paused` columns (for the 3-strikes auto-pause); `repo_remote_meta` gains `etag`. All land in the **initial migration**. | 2026-06-19 |
 
@@ -98,10 +98,11 @@ The tracer bullet (E-12) is deliberately pulled forward into week 1, built on *t
 
 ## Conventions and structure
 
-- Each effort lives in `AGENTS/efforts/E-NN-slug/` with `spec.md` and `plan.md`.
+- Each effort lives in a per-effort folder `E-NN-slug/` with `spec.md` and `implementation-plan.md`, under `docs/internal/release-plans/` - either in `_unassigned/` (not yet committed to a release) or inside the release it is promoted into (`plan_vX.Y.Z/E-NN-slug/`). All 12 V1 efforts currently sit in `plan_v0.9.0/`. See `docs/internal/release-plans/README.md` for the structure and the promote/gate flow.
 - `spec.md` is the contract: frontmatter, a Task Summary block agents keep current, scope, the interface/contract, acceptance criteria with source citations into the brief, dependencies, and V1.1 extension points.
-- `plan.md` is the how: ordered steps, test strategy, files touched, risks, and a definition of done.
+- `implementation-plan.md` is the how: ordered steps, test strategy, files touched, risks, and a definition of done.
 - Hard rules: no em-dashes or en-dashes anywhere; `reposync-core` never imports `tauri`; tests are written with the logic (test-first for the pure engines E-07/E-08).
+- This file is the cross-release roadmap (dependency graph, sequencing, scope ledger). A single release's aggregation + gates + checklist live in that release's `plan_vX.Y.Z.md`.
 
 ## Source
 

@@ -25,7 +25,7 @@ as authoritative when the two disagree, and update the living doc to match.
 
 - [internal/v1-architecture-and-decisions.md](internal/v1-architecture-and-decisions.md) - the deep architecture and decisions brief.
 - [internal/strategy-and-roadmap.md](internal/strategy-and-roadmap.md) - the original plan; Section 4.2 is the authoritative database schema.
-- [../AGENTS/efforts/README.md](../AGENTS/efforts/README.md) - the V1 execution plan: ratified decisions, scope ledger (MUST / SHOULD / CUT), the effort index E-01..E-12, the dependency graph, sequencing, and descope triggers. This is the single source of truth for build status.
+- [internal/program-roadmap.md](internal/program-roadmap.md) - the V1 execution plan: ratified decisions, scope ledger (MUST / SHOULD / CUT), the effort index E-01..E-12, the dependency graph, sequencing, and descope triggers. This is the single source of truth for build status.
 - [../EXECUTION.md](../EXECUTION.md) - the autonomy and governance contract: the agent/human boundary and the CI gates that must be green before any merge.
 
 ## Living-docs and review cadence

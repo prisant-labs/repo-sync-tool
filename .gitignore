@@ -23,7 +23,7 @@ yarn-error.log*
 !.env.example
 
 # Local-only and tooling (never for the public repo)
-_LOCAL/
+_local/
 .memsearch/
 
 # Editor / IDE cruft

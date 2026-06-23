@@ -1,0 +1,74 @@
+# RepoSync release workflow - STUB (not yet exercised).
+#
+# Fires ONLY on version tags (v*), so it never runs on a normal push. On a tag it
+# builds Windows + macOS with the full-LTO `dist` profile and creates a DRAFT
+# GitHub Release with both platform artifacts attached. A human reviews and
+# publishes the draft (see docs/internal/release-plans/runbook_cut-tag-release.md, G4).
+#
+# ONE version, BOTH platforms: the version stamped into the bundles comes from
+# src-tauri/tauri.conf.json (set by scripts/bump-version.mjs). The platform lives
+# in the artifact filename, not the version.
+#
+# NOT WIRED YET (intentional):
+#   - macOS code signing + notarization (human-only per EXECUTION.md). macOS
+#     artifacts here are UNSIGNED. Say so in the Release notes.
+#   - Verify tauri-apps/tauri-action inputs and how `--profile dist` is threaded
+#     (tauri CLI vs cargo passthrough) against the action's current README before
+#     the first real cut. This file is a starting point, not a validated pipeline.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # create the GitHub Release
+
+jobs:
+  release:
+    name: release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and draft release (tauri-action)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Full-LTO distribution artifacts. Confirm how this flag is passed
+          # (see the header note) before relying on it.
+          args: --profile dist
+          tagName: ${{ github.ref_name }}
+          releaseName: RepoSync ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: true
+          releaseBody: |
+            See CHANGELOG.md for this version's notes.
+            macOS build is UNSIGNED (beta). Windows is the primary supported target.

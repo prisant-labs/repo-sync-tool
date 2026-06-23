@@ -11,7 +11,7 @@ source-of-truth docs:
 - Original strategy and the authoritative schema (Section 4.2):
   [`docs/internal/strategy-and-roadmap.md`](internal/strategy-and-roadmap.md)
 - The work breakdown (efforts E-01..E-12, scope ledger, dependency graph):
-  [`AGENTS/efforts/README.md`](../AGENTS/efforts/README.md)
+  [`docs/internal/program-roadmap.md`](internal/program-roadmap.md)
 - The build-and-ship governance contract:
   [`EXECUTION.md`](../EXECUTION.md)
 

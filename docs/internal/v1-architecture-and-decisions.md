@@ -37,7 +37,7 @@ This is the running record of where each decision stands. "Decided" means settle
 | Human/agent autonomy boundary | Needs ratification | jp | Human-only allowlist + tiered merges; capture in `EXECUTION.md` (Section 3) |
 | V1 scope line | Needs ratification | jp | Keep core loop + unauthenticated GitHub enrichment + daily summary; cut the tray popup window, keyring PAT, weekly summary, groups, saved filters, recipes, auto-updater to V1.1 (Section 3) |
 | Code signing | Needs decision (money) | jp | Decouple from GA: ship first public build unsigned, add Windows signing via Azure Trusted Signing as a fast-follow; binds at ship, not at start |
-| Go-public timing + first commit | Needs decision | jp | Go public at Phase 0 exit; quarantine `docs/internal/` and `_LOCAL/` out of public history; one-way door |
+| Go-public timing + first commit | Needs decision | jp | Go public at Phase 0 exit; quarantine `docs/internal/` and `_local/` out of public history; one-way door |
 | License | Needs decision | jp | MIT default (Apache 2.0 defensible); binds only at first public commit |
 | Brand name | Deferred to pre-GA | jp | Keep "RepoSync" working title; isolate the brand string to one constant |
 | sqlx macro posture | Agent default (confirm) | agent/jp | Runtime query API (no compile-time `DATABASE_URL`/offline-cache friction), or macros + committed `.sqlx` cache + CI check |
@@ -883,7 +883,7 @@ Every row depends on the frozen IPC contract at most, never on a finished UI. Th
 | CI | `cargo check`, `cargo clippy --all -- -D warnings`, `cargo test`, `pnpm typecheck`, `pnpm lint`; macOS + Windows runners building and bundling. Pinned git for fixtures. | No | Decision 8.10: CI is the substitute for code review on a one-dev project. Windows + macOS matrix from day one is what keeps the macOS port honest ("compiles + bundles in CI") while Windows is the real GA target. |
 | Packaging spike | Produce a signed-or-documented Windows artifact from CI *early* (MSI/NSIS via Tauri bundler, user-mode install). Document the macOS signing/notarization path even though it cannot be exercised on jp's hardware. | No | Front-loads the single riskiest cross-platform unknown for a Windows-first dev. A throwaway UI is enough to bundle; you are validating the toolchain, not the screens. |
 | `EXECUTION.md` autonomy contract | The written rules an agent follows to build autonomously: what it may change, the green-CI bar, the test-first expectation for core logic, the no-em-dash rule, scope guardrails. | No | Pure process artifact. Multiplies every other workstream's velocity and directly addresses bus-factor (8.10). |
-| Repo hygiene | `LICENSE` (MIT, 9.10), `.github/` templates (bug report, feature request, PR template, `FUNDING.yml`, per 9.11), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `.gitignore` quarantining `docs/internal/` and `_LOCAL/` so internal strategy and raw notes never reach the public repo. | No | Decisions 9.2 / 9.10 / 9.11. Must land before the first public commit. The `.gitignore` quarantine is load-bearing: this strategy doc and `_LOCAL/` are internal-only. |
+| Repo hygiene | `LICENSE` (MIT, 9.10), `.github/` templates (bug report, feature request, PR template, `FUNDING.yml`, per 9.11), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `.gitignore` quarantining `docs/internal/` and `_local/` so internal strategy and raw notes never reach the public repo. | No | Decisions 9.2 / 9.10 / 9.11. Must land before the first public commit. The `.gitignore` quarantine is load-bearing: this strategy doc and `_local/` are internal-only. |
 
 ### The tracer-bullet recommendation
 
@@ -980,7 +980,7 @@ Everything in Section 6: the `reposync-core` scaffold, the SQLite schema and mig
 ### Artifacts I can produce next, on your word
 
 - `EXECUTION.md` (the autonomy contract from Section 3, ready to drop in).
-- `LICENSE` + `.github/` templates + `.gitignore` quarantine for `docs/internal/` and `_LOCAL/`.
+- `LICENSE` + `.github/` templates + `.gitignore` quarantine for `docs/internal/` and `_local/`.
 - The Phase 0 scaffold itself, kicked off with the tracer bullet.
 - An updated `strategy-and-roadmap.md` with the platform-access risk row and per-platform acceptance criteria, so the canonical plan stops asserting macOS bars no human can verify.
 

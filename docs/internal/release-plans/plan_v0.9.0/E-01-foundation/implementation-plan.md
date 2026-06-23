@@ -17,7 +17,7 @@ Build the skeleton bottom-up: workspace first, then the Tauri-free core crate, t
 3. **Core has no Tauri.** Confirm `reposync-core/Cargo.toml` lists none of `tauri`/`tauri-*`. Add a trivial `#[test] fn skeleton_compiles() {}` so the test gate runs (AC6).
 4. **Tauri shell skeleton.** Scaffold `src-tauri` (via `pnpm create tauri-app` output, trimmed) depending on `reposync-core`. Stub `main.rs` builder, empty `commands/`, `events.rs`, `tray.rs`, `windows/`. Set `tauri.conf.json`: `downloadBootstrapper` WebView2 strategy (AC3), bundle targets MSI/NSIS (Windows) and app/dmg (macOS), identifier and product name behind a single brand constant.
 5. **Frontend skeleton.** Vite + React + TS + Tailwind + shadcn init, just enough that `pnpm typecheck` and `pnpm lint` pass. No screens; a single placeholder component is fine.
-6. **Repo hygiene.** Write in-repo `.gitignore` (`_LOCAL/`, build artifacts, `node_modules/`, `target/`; explicitly NOT `docs/internal/`). Add `LICENSE` (MIT), `.github/` templates, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
+6. **Repo hygiene.** Write in-repo `.gitignore` (`_local/`, build artifacts, `node_modules/`, `target/`; explicitly NOT `docs/internal/`). Add `LICENSE` (MIT), `.github/` templates, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`.
 7. **CI.** GitHub Actions workflow, `windows-latest` + `macos-latest` matrix: setup Rust + pnpm, pin `git`, run `cargo check`/`clippy -D warnings`/`cargo test`/`pnpm typecheck`/`pnpm lint`, run the `cargo tree -p reposync-core` hygiene gate (AC2), then `tauri build` (bundle) on each runner.
 8. **Verify.** Run the full local gate on Windows; push the branch; confirm the matrix is green on both runners.
 

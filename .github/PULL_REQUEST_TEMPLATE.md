@@ -6,7 +6,7 @@
 
 ## Related effort / issue
 
-<!-- Link the effort folder (AGENTS/efforts/E-NN-slug/) and/or issue this addresses. -->
+<!-- Link the effort folder (docs/internal/release-plans/plan_v0.9.0/E-NN-slug/) and/or issue this addresses. -->
 
 ## Checklist
 

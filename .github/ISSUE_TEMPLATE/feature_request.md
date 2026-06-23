@@ -20,7 +20,7 @@ assignees: ""
 
 ## Scope check
 
-<!-- Optional: does this fit V1, or is it a V1.1+ idea? See AGENTS/efforts/README.md for the scope ledger. -->
+<!-- Optional: does this fit V1, or is it a V1.1+ idea? See docs/internal/program-roadmap.md for the scope ledger. -->
 
 ## Additional context
 

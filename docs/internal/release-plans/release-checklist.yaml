@@ -1,0 +1,25 @@
+# Doc-update items to work through at RepoSync release time.
+#
+# This is the project's source list of docs that must be updated before a tag.
+# The release plan's Doc-Update Checklist and the cut runbook draw on it. It is a
+# plain convention worked through by hand - not tied to any skill, and not
+# canonical tooling. A release tool could consume it later if one is adopted.
+#
+# RepoSync is a desktop app, not an agent plugin, so plugin-only items
+# (plugin.json, SKILL.md, HISTORY.md, skills README) intentionally do NOT appear.
+
+docs:
+  - doc: "scripts/bump-version.mjs"
+    update: "Run it so Cargo workspace + src-tauri/Cargo.toml + package.json + tauri.conf.json all carry the release version"
+  - doc: "CHANGELOG.md"
+    update: "Move [Unreleased] into a vX.Y.Z section with the date; open a fresh [Unreleased]"
+  - doc: "README.md"
+    update: "Bump version references; install instructions for the Windows artifact"
+  - doc: "docs/architecture.md, docs/explanation.md, docs/faq.md"
+    update: "Reflect the shipped state; remove not-built-yet hedges that no longer hold"
+  - doc: "docs/internal/program-roadmap.md"
+    update: "Mark shipped efforts; record descope-trigger outcomes"
+  - doc: "docs/backlog.md"
+    update: "Move resolved items out; confirm V1.1 items parked"
+  - doc: "GitHub Release"
+    update: "Draft from the CHANGELOG section; attach Windows + (if shipping) macOS artifacts; state the macOS posture"
