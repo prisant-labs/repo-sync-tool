@@ -62,8 +62,8 @@ Each effort's contract (`spec.md`) and execution (`implementation-plan.md`) live
 |--------|------|-----------|--------------|-------|
 | E-01 | [spec](release-plans/plan_v0.9.0/E-01-foundation/spec.md) | [plan](release-plans/plan_v0.9.0/E-01-foundation/implementation-plan.md) | Done | #3 |
 | E-02 | [spec](release-plans/plan_v0.9.0/E-02-persistence/spec.md) | [plan](release-plans/plan_v0.9.0/E-02-persistence/implementation-plan.md) | Partial (tracer) | #4 |
-| E-03 | [spec](release-plans/plan_v0.9.0/E-03-git-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-03-git-engine/implementation-plan.md) | Partial (tracer) | #5 |
-| E-04 | [spec](release-plans/plan_v0.9.0/E-04-git-fixture-harness/spec.md) | [plan](release-plans/plan_v0.9.0/E-04-git-fixture-harness/implementation-plan.md) | Not started | #6 |
+| E-03 | [spec](release-plans/plan_v0.9.0/E-03-git-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-03-git-engine/implementation-plan.md) | Done | #5 |
+| E-04 | [spec](release-plans/plan_v0.9.0/E-04-git-fixture-harness/spec.md) | [plan](release-plans/plan_v0.9.0/E-04-git-fixture-harness/implementation-plan.md) | Done | #6 |
 | E-05 | [spec](release-plans/plan_v0.9.0/E-05-error-taxonomy/spec.md) | [plan](release-plans/plan_v0.9.0/E-05-error-taxonomy/implementation-plan.md) | Done | #7 |
 | E-06 | [spec](release-plans/plan_v0.9.0/E-06-ipc-contract/spec.md) | [plan](release-plans/plan_v0.9.0/E-06-ipc-contract/implementation-plan.md) | Done | #8 |
 | E-07 | [spec](release-plans/plan_v0.9.0/E-07-update-policy-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-07-update-policy-engine/implementation-plan.md) | Not started | #9 |

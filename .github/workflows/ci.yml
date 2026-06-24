@@ -112,6 +112,12 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
+      # The E-04 git fixture harness public-surface cross-check (git2 vs CLI across
+      # the 7 states). The in-crate tests already cover it under the line above; this
+      # also runs the public API path E-07/E-08 import, behind the test-support feature.
+      - name: cargo test (fixture harness public surface)
+        run: cargo test -p reposync-core --features test-support --test git_fixture_cross_check
+
       # --- Stale-bindings gate (E-06 IPC contract) ----------------------------------------
       # The committed src/lib/bindings.ts is generated from the live tauri-specta surface by
       # the export_bindings test. Regenerate it here and fail if the working tree drifts: a

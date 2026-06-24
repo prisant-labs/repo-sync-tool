@@ -9,6 +9,12 @@ pub mod cli;
 pub mod discover;
 pub mod inspect;
 
+/// E-04's git fixture test harness. Compiled for the crate's own tests and
+/// under the `test-support` feature so downstream test trees (E-07 policy,
+/// E-08 scheduler) and integration tests can import the same fabricated states.
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
+
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;

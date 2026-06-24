@@ -26,6 +26,18 @@ git2 = { workspace = true, default-features = false, features = ["vendored-libgi
 # `macros` is required for the sqlx::migrate! macro (it lives in sqlx-macros);
 # the runtime query API itself does not need it, but migrate! does.
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+# `tempfile` is an OPTIONAL dependency, enabled only by the `test-support`
+# feature (and always present as a dev-dependency below). Keeping it optional
+# means a default `cargo build` of the library does not compile the E-04 fixture
+# harness; production builds never include it.
+tempfile = { version = "3", optional = true }
+
+[features]
+# `test-support` exposes the E-04 git fixture harness (git::fixtures) to
+# integration tests and downstream test trees (E-07 policy, E-08 scheduler).
+# It pulls `tempfile` into the build, so it is OFF by default and only enabled
+# for test builds - production builds never include the harness.
+test-support = ["dep:tempfile"]
 
 [dev-dependencies]
 tempfile = "3"
