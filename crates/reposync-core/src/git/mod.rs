@@ -75,6 +75,54 @@ pub struct FetchOutcome {
     pub class: FetchClass,
 }
 
+/// Classification of a `git pull --ff-only` outcome, the mutating counterpart to
+/// [`FetchClass`] that E-07 enables.
+///
+/// Like [`FetchClass`] this is an INTERNAL `git/` type, not part of the frozen
+/// IPC contract. The update-policy engine (E-07) maps the failure classes onto
+/// its run-outcome state machine: `AuthFailure` -> pause, `NetworkFailure` ->
+/// retry, `FfNotPossible` -> the diverged-skip path. The pull is run ONLY after
+/// the policy engine already decided a fast-forward is allowed, so a
+/// `FfNotPossible` here is a late race (the remote moved between check and pull),
+/// not the normal diverged-skip the engine catches up front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullClass {
+    /// Exit 0 with evidence the working tree advanced (a fast-forward applied).
+    Success,
+    /// Exit 0 but already up to date (nothing to fast-forward).
+    NoOp,
+    /// The pull could not fast-forward (the branch diverged). E-07 maps this to
+    /// the ff-not-possible outcome.
+    FfNotPossible,
+    /// A credential/authentication failure. E-07 maps this to pause.
+    AuthFailure,
+    /// A transport/connectivity failure. E-07 maps this to retry.
+    NetworkFailure,
+    /// A non-zero exit matching no known signature. The conservative fallback.
+    Unknown,
+}
+
+impl PullClass {
+    /// Whether this class represents a successful pull (success or no-op).
+    pub fn is_success(self) -> bool {
+        matches!(self, PullClass::Success | PullClass::NoOp)
+    }
+}
+
+/// Raw outcome of a `git pull --ff-only`, captured for the activity log. Mirrors
+/// [`FetchOutcome`]'s shape so the activity writer treats fetch and pull
+/// uniformly.
+#[derive(Debug, Clone)]
+pub struct PullOutcome {
+    pub raw_command: String,
+    pub raw_stdout: String,
+    pub raw_stderr: String,
+    pub exit_code: Option<i32>,
+    pub duration_ms: i64,
+    pub success: bool,
+    pub class: PullClass,
+}
+
 /// Ahead/behind commit counts relative to an upstream. `None` when unknown
 /// (e.g. no upstream configured or the command failed).
 #[derive(Debug, Clone, Copy)]
@@ -150,6 +198,10 @@ pub trait GitEngine {
     /// Fetch all remotes (network) via the CLI backend.
     async fn fetch(&self, repo_path: &Path) -> Result<FetchOutcome, AppError>;
 
+    /// Fast-forward `pull --ff-only` (network + mutation) via the CLI backend.
+    /// The one mutating action E-07 enables; the policy engine gates it.
+    async fn pull_ff_only(&self, repo_path: &Path) -> Result<PullOutcome, AppError>;
+
     /// Ahead/behind vs. `upstream` via the CLI backend (`rev-list`).
     async fn ahead_behind(&self, repo_path: &Path, upstream: &str)
         -> Result<AheadBehind, AppError>;
@@ -196,6 +248,11 @@ impl GitEngine for SystemGitEngine {
     async fn fetch(&self, repo_path: &Path) -> Result<FetchOutcome, AppError> {
         let exe = self.require_exe()?;
         cli::fetch(exe, repo_path).await
+    }
+
+    async fn pull_ff_only(&self, repo_path: &Path) -> Result<PullOutcome, AppError> {
+        let exe = self.require_exe()?;
+        cli::pull_ff_only(exe, repo_path).await
     }
 
     async fn ahead_behind(
@@ -286,6 +343,14 @@ impl SystemGitEngine {
     pub async fn fetch(&self, repo_path: &Path) -> Result<FetchOutcome, AppError> {
         let exe = self.require_exe()?;
         cli::fetch(exe, repo_path).await
+    }
+
+    /// Fast-forward `pull --ff-only` via the git CLI - the one mutating action,
+    /// run only after the E-07 policy engine has decided a fast-forward is
+    /// allowed. Errors with [`AppError::GitNotFound`] in the unavailable state.
+    pub async fn pull_ff_only(&self, repo_path: &Path) -> Result<PullOutcome, AppError> {
+        let exe = self.require_exe()?;
+        cli::pull_ff_only(exe, repo_path).await
     }
 
     /// Compute ahead/behind vs. `upstream` via the git CLI. Errors with

@@ -38,7 +38,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-04 | Git Fixture Test Harness | MUST | ready | ready | Done |
 | E-05 | Error Taxonomy (AppError) | MUST | ready | ready | Done |
 | E-06 | IPC Contract (the typed seam) | MUST | ready | ready | Done (frozen) |
-| E-07 | Update-Policy Engine | MUST | ready | ready | Not started |
+| E-07 | Update-Policy Engine | MUST | ready | ready | Done |
 | E-08 | Scheduler | MUST | ready | ready | Not started |
 | E-09 | Activity Log Writer and Retention | MUST | ready | ready | Not started |
 | E-10 | GitHub Metadata Client | SHOULD | ready | ready | Not started |
@@ -50,7 +50,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
-Summary: 15 efforts in scope. 7 done (E-01, E-02, E-03, E-04, E-05, E-06, E-12), 8 not started (E-07-E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
+Summary: 15 efforts in scope. 8 done (E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-12), 7 not started (E-08-E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
 
 ---
 

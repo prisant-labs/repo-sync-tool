@@ -32,9 +32,21 @@ export const commands = {
 	repoRemove: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_remove", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Enable or disable scheduled checks for a repo. */
 	repoSetEnabled: (id: number, enabled: boolean) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_set_enabled", { id, enabled })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Set the per-repo update policy. */
+	/**
+	 *  Set the per-repo update policy (E-07).
+	 * 
+	 *  Thin wrapper over [`reposync_core::store::repo_set_policy`]: persists the
+	 *  repo's `update_mode`, rejecting a non-V1 mode at the boundary.
+	 */
 	repoSetPolicy: (id: number, policy: UpdatePolicy) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_set_policy", { id, policy })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Run an "update now" for a repo in the given mode. */
+	/**
+	 *  Run an "update now" for a repo in the given mode (E-07).
+	 * 
+	 *  Emits `repo:update-started` before the run, calls the shared
+	 *  [`reposync_core::repo::update_now`] decide -> execute -> record path (the same
+	 *  path the E-08 scheduler reuses), then emits `repo:update-completed` with the
+	 *  outcome and returns the full [`UpdateResult`].
+	 */
 	repoUpdateNow: (id: number, mode: UpdateMode) => typedError<UpdateResult, AppErrorPayload>(__TAURI_INVOKE("repo_update_now", { id, mode })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Refresh GitHub / remote metadata for a repo. */
 	repoRefreshMetadata: (id: number) => typedError<RepoDetail, AppErrorPayload>(__TAURI_INVOKE("repo_refresh_metadata", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),

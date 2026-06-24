@@ -105,3 +105,25 @@ pub fn emit_check_completed(app: &AppHandle, r: &CheckResult) {
     };
     let _ = CheckCompleted(payload).emit(app);
 }
+
+/// Emit the `repo:update-started` event before an update runs (E-07).
+///
+/// Best-effort, like [`emit_check_completed`]: a missing webview must not fail an
+/// update that the core is about to perform.
+pub fn emit_update_started(app: &AppHandle, repo_id: i64, mode: &str) {
+    let _ = UpdateStarted(UpdateStartedPayload {
+        repo_id,
+        mode: mode.to_string(),
+    })
+    .emit(app);
+}
+
+/// Emit the `repo:update-completed` event after an update finishes (E-07),
+/// carrying the result's stable `outcome` string. Best-effort.
+pub fn emit_update_completed(app: &AppHandle, repo_id: i64, outcome: &str) {
+    let _ = UpdateCompleted(UpdateCompletedPayload {
+        repo_id,
+        outcome: outcome.to_string(),
+    })
+    .emit(app);
+}

@@ -14,7 +14,7 @@ use reposync_core::ipc::{
     RepoSummary, ScanResult, Settings, UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
 };
 
-use crate::events::emit_check_completed;
+use crate::events::{emit_check_completed, emit_update_completed, emit_update_started};
 use crate::AppState;
 
 /// Add a repository to the registry by absolute local path.
@@ -118,31 +118,52 @@ pub async fn repo_set_enabled(
     reposync_core::store::repo_set_enabled(&state.pool, RepoId(id), enabled).await
 }
 
-/// Set the per-repo update policy.
+/// Set the per-repo update policy (E-07).
+///
+/// Thin wrapper over [`reposync_core::store::repo_set_policy`]: persists the
+/// repo's `update_mode`, rejecting a non-V1 mode at the boundary.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_set_policy(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     id: i64,
     policy: UpdatePolicy,
 ) -> Result<(), AppError> {
-    // TODO(E-07): persist the update/dirty/branch policy for `id`.
-    let _ = (id, policy);
-    Err(not_implemented())
+    reposync_core::store::repo_set_policy(&state.pool, RepoId(id), &policy).await
 }
 
-/// Run an "update now" for a repo in the given mode.
+/// Run an "update now" for a repo in the given mode (E-07).
+///
+/// Emits `repo:update-started` before the run, calls the shared
+/// [`reposync_core::repo::update_now`] decide -> execute -> record path (the same
+/// path the E-08 scheduler reuses), then emits `repo:update-completed` with the
+/// outcome and returns the full [`UpdateResult`].
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_update_now(
-    _app: tauri::AppHandle,
-    _state: tauri::State<'_, AppState>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     id: i64,
     mode: UpdateMode,
 ) -> Result<UpdateResult, AppError> {
-    // TODO(E-07): perform the update and emit update-started/completed.
-    let _ = (id, mode);
-    Err(not_implemented())
+    let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
+    // The started event carries the requested mode label (snake_case wire form).
+    emit_update_started(&app, id, update_mode_label(&mode));
+    let result = reposync_core::repo::update_now(&state.pool, git, RepoId(id), mode).await?;
+    emit_update_completed(&app, id, &result.outcome);
+    Ok(result)
+}
+
+/// The snake_case label for an [`UpdateMode`], for the `update-started` event's
+/// `mode` field (the shell does not import the core's private helper).
+fn update_mode_label(mode: &UpdateMode) -> &'static str {
+    match mode {
+        UpdateMode::CheckOnly => "check_only",
+        UpdateMode::FetchOnly => "fetch_only",
+        UpdateMode::PullFfOnly => "pull_ff_only",
+        UpdateMode::PullStandard => "pull_standard",
+        UpdateMode::PullRebase => "pull_rebase",
+    }
 }
 
 /// Refresh GitHub / remote metadata for a repo.

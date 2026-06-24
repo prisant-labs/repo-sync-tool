@@ -10,7 +10,7 @@ use std::time::Instant;
 use tokio::process::Command;
 
 use crate::error::AppError;
-use crate::git::{AheadBehind, FetchClass, FetchOutcome};
+use crate::git::{AheadBehind, FetchClass, FetchOutcome, PullClass, PullOutcome};
 
 /// Raw capture of a single git CLI invocation.
 pub(crate) struct Captured {
@@ -144,6 +144,84 @@ fn stderr_is_network_failure(stderr: &str) -> bool {
         || s.contains("ssl_error")
         || s.contains("unable to access")
             && (s.contains("timed out") || s.contains("resolve") || s.contains("connect"))
+}
+
+/// Fast-forward `pull --ff-only`. On a non-zero exit the outcome is still
+/// returned (with `success = false`); the caller decides how to surface it.
+///
+/// `--ff-only` makes git refuse to create a merge commit: if the branch cannot
+/// fast-forward, the pull fails with a non-zero exit rather than mutating, so the
+/// fast-forward-only safety rule is enforced by git itself, not just by the
+/// policy engine that gated this call.
+pub(crate) async fn pull_ff_only(
+    git_exe: &Path,
+    repo_path: &Path,
+) -> Result<PullOutcome, AppError> {
+    let captured = run_git(git_exe, repo_path, &["pull", "--ff-only"]).await?;
+    let class = classify_pull(
+        captured.exit_code,
+        &captured.raw_stdout,
+        &captured.raw_stderr,
+    );
+    Ok(PullOutcome {
+        raw_command: captured.raw_command,
+        raw_stdout: captured.raw_stdout,
+        raw_stderr: captured.raw_stderr,
+        exit_code: captured.exit_code,
+        duration_ms: captured.duration_ms,
+        success: class.is_success(),
+        class,
+    })
+}
+
+/// Classify a `git pull --ff-only` invocation into a [`PullClass`] from its exit
+/// code plus captured stdout/stderr. A PURE function over the capture: no I/O,
+/// deterministic, unit-testable from string fixtures.
+///
+/// Strategy (reuses the fetch-class auth/network signatures, then adds the
+/// pull-specific fast-forward failure): on a zero exit, distinguish a real
+/// fast-forward (the tree advanced, shown by "Fast-forward" or a `->` updating
+/// line) from a no-op ("Already up to date"). On a non-zero exit, scan stderr
+/// for an auth signature first, then a network signature, then the
+/// "not possible to fast-forward" / "Need to specify how to reconcile divergent
+/// branches" / "diverging" signatures that `--ff-only` emits when the branch has
+/// diverged; anything else is `Unknown`.
+pub(crate) fn classify_pull(exit_code: Option<i32>, stdout: &str, stderr: &str) -> PullClass {
+    if exit_code == Some(0) {
+        // git prints pull progress across both streams; inspect both.
+        let combined = format!("{stdout}\n{stderr}");
+        if pull_shows_up_to_date(&combined) {
+            PullClass::NoOp
+        } else {
+            PullClass::Success
+        }
+    } else if stderr_is_auth_failure(stderr) {
+        PullClass::AuthFailure
+    } else if stderr_is_network_failure(stderr) {
+        PullClass::NetworkFailure
+    } else if stderr_is_ff_not_possible(stderr) {
+        PullClass::FfNotPossible
+    } else {
+        PullClass::Unknown
+    }
+}
+
+/// Whether a zero-exit pull's output says the branch was already up to date
+/// (nothing to fast-forward).
+fn pull_shows_up_to_date(output: &str) -> bool {
+    let s = output.to_ascii_lowercase();
+    s.contains("already up to date") || s.contains("already up-to-date")
+}
+
+/// Whether a non-zero `pull --ff-only` stderr matches the FAST-FORWARD-IMPOSSIBLE
+/// signature git emits when the branch has diverged (so `--ff-only` refuses).
+fn stderr_is_ff_not_possible(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("not possible to fast-forward")
+        || s.contains("can only fast-forward")
+        || s.contains("need to specify how to reconcile divergent branches")
+        || s.contains("diverging branches can't be fast-forwarded")
+        || (s.contains("fast-forward") && s.contains("aborting"))
 }
 
 /// Compute ahead/behind counts between HEAD and `upstream` via
@@ -486,6 +564,95 @@ mod tests {
         assert!(!FetchClass::Unknown.is_success());
     }
 
+    // --- pull --ff-only classification (E-07) ---------------------------------
+
+    use super::classify_pull;
+    use crate::git::PullClass;
+
+    #[test]
+    fn classifies_pull_no_op_already_up_to_date() {
+        // git's modern phrasing is "Already up to date."; older is "up-to-date".
+        assert_eq!(
+            classify_pull(Some(0), "Already up to date.\n", ""),
+            PullClass::NoOp
+        );
+        assert_eq!(
+            classify_pull(Some(0), "Already up-to-date.\n", ""),
+            PullClass::NoOp
+        );
+    }
+
+    #[test]
+    fn classifies_pull_success_on_fast_forward() {
+        let stdout = "Updating abc1234..def5678\n\
+             Fast-forward\n a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n";
+        assert_eq!(classify_pull(Some(0), stdout, ""), PullClass::Success);
+    }
+
+    #[test]
+    fn classifies_pull_ff_not_possible_when_diverged() {
+        // `git pull --ff-only` on a diverged branch refuses with this message.
+        let stderr = "fatal: Not possible to fast-forward, aborting.\n";
+        assert_eq!(
+            classify_pull(Some(128), "", stderr),
+            PullClass::FfNotPossible
+        );
+    }
+
+    #[test]
+    fn classifies_pull_ff_not_possible_divergent_reconcile() {
+        // Newer git phrases the divergent-branch refusal differently under
+        // pull.ff=only / --ff-only.
+        let stderr = "fatal: Need to specify how to reconcile divergent branches.\n";
+        assert_eq!(
+            classify_pull(Some(128), "", stderr),
+            PullClass::FfNotPossible
+        );
+    }
+
+    #[test]
+    fn classifies_pull_auth_failure() {
+        let stderr = "fatal: Authentication failed for 'https://github.com/o/repo.git/'\n";
+        assert_eq!(classify_pull(Some(128), "", stderr), PullClass::AuthFailure);
+    }
+
+    #[test]
+    fn classifies_pull_network_failure() {
+        let stderr = "fatal: unable to access 'https://github.com/o/repo.git/': \
+             Could not resolve host: github.com\n";
+        assert_eq!(
+            classify_pull(Some(128), "", stderr),
+            PullClass::NetworkFailure
+        );
+    }
+
+    #[test]
+    fn pull_auth_checked_before_ff_not_possible() {
+        // A stderr that mentions BOTH auth and fast-forward must classify as
+        // auth: auth is the actionable failure, and ff-not-possible is the
+        // benign-but-blocked case checked last.
+        let stderr = "fatal: Authentication failed; not possible to fast-forward\n";
+        assert_eq!(classify_pull(Some(128), "", stderr), PullClass::AuthFailure);
+    }
+
+    #[test]
+    fn pull_unknown_is_conservative_fallback() {
+        let stderr = "fatal: the remote end hung up unexpectedly\n";
+        assert_eq!(classify_pull(Some(128), "", stderr), PullClass::Unknown);
+        assert_eq!(classify_pull(Some(1), "", ""), PullClass::Unknown);
+        assert_eq!(classify_pull(None, "", ""), PullClass::Unknown);
+    }
+
+    #[test]
+    fn pull_class_is_success_truth_table() {
+        assert!(PullClass::Success.is_success());
+        assert!(PullClass::NoOp.is_success());
+        assert!(!PullClass::FfNotPossible.is_success());
+        assert!(!PullClass::AuthFailure.is_success());
+        assert!(!PullClass::NetworkFailure.is_success());
+        assert!(!PullClass::Unknown.is_success());
+    }
+
     #[test]
     fn parses_tab_separated() {
         assert_eq!(parse_left_right_count("0\t1\n"), Some((0, 1)));
@@ -740,6 +907,166 @@ mod tests {
             ab.behind,
             Some(1),
             "clone should be 1 behind after remote commit"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_ff_only_fast_forwards_a_behind_clone() {
+        // E-07 end-to-end: a clone one commit behind its upstream fast-forwards
+        // cleanly. We fabricate the behind state inline (the fixtures live behind
+        // the test-support feature, not available to this in-crate test), fetch so
+        // the tracking ref is ahead, then pull --ff-only and assert it advanced.
+        if !git_resolvable() {
+            eprintln!("skipping pull_ff_only_fast_forwards_a_behind_clone: git not resolvable");
+            return;
+        }
+        let engine = match SystemGitEngine::discover() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let root = TempDir::new().expect("tempdir");
+        let upstream = root.path().join("upstream");
+        let work = root.path().join("work");
+        let clone = root.path().join("clone");
+        std::fs::create_dir_all(&upstream).unwrap();
+
+        assert!(git(
+            root.path(),
+            &["init", "--bare", upstream.to_str().unwrap()]
+        ));
+        assert!(git(
+            root.path(),
+            &["clone", upstream.to_str().unwrap(), work.to_str().unwrap()]
+        ));
+        assert!(git(&work, &["config", "user.email", "t@example.com"]));
+        assert!(git(&work, &["config", "user.name", "T"]));
+        std::fs::write(work.join("a.txt"), "1\n").unwrap();
+        assert!(git(&work, &["add", "a.txt"]));
+        assert!(git(&work, &["commit", "-m", "first"]));
+        assert!(git(&work, &["push", "origin", "HEAD"]));
+
+        // The clone we will fast-forward; level at clone time.
+        assert!(git(
+            root.path(),
+            &["clone", upstream.to_str().unwrap(), clone.to_str().unwrap()]
+        ));
+
+        // Advance the upstream by one commit via the work clone.
+        std::fs::write(work.join("a.txt"), "2\n").unwrap();
+        assert!(git(&work, &["add", "a.txt"]));
+        assert!(git(&work, &["commit", "-m", "second"]));
+        assert!(git(&work, &["push", "origin", "HEAD"]));
+
+        // Bring the clone's tracking ref up to date (the policy engine gates the
+        // pull on a known-behind state, so a check/fetch precedes it).
+        let fetch = engine.fetch(&clone).await.expect("fetch ok");
+        assert!(fetch.success, "fetch should succeed: {}", fetch.raw_stderr);
+
+        // Pull --ff-only: must fast-forward and classify as a real success.
+        let pull = engine.pull_ff_only(&clone).await.expect("pull ok");
+        assert!(
+            pull.success,
+            "pull --ff-only should fast-forward: {}",
+            pull.raw_stderr
+        );
+        assert_eq!(pull.exit_code, Some(0));
+        assert_eq!(
+            pull.class,
+            PullClass::Success,
+            "a fast-forward that advanced the tree classifies as Success: {} / {}",
+            pull.raw_stdout,
+            pull.raw_stderr
+        );
+        assert!(pull.raw_command.contains("pull --ff-only"));
+        assert!(pull.duration_ms >= 0);
+
+        // The working tree is now at the second commit's content. (Trim to
+        // tolerate the CRLF git may check out on Windows.)
+        let content = std::fs::read_to_string(clone.join("a.txt")).unwrap();
+        assert_eq!(content.trim(), "2", "the fast-forward must update the tree");
+
+        // And the clone is now level with its upstream (behind 0).
+        let inspect = engine.inspect(&clone).expect("inspect clone");
+        let upstream_ref = inspect
+            .upstream_branch
+            .expect("clone should have an upstream tracking branch");
+        let ab = engine
+            .ahead_behind(&clone, &upstream_ref)
+            .await
+            .expect("ahead_behind ok");
+        assert_eq!(ab.behind, Some(0), "the clone is level after the pull");
+    }
+
+    #[tokio::test]
+    async fn pull_ff_only_refuses_to_fast_forward_a_diverged_clone() {
+        // E-07 safety: --ff-only must REFUSE (non-zero, FfNotPossible) when the
+        // branch has diverged, never creating a merge commit. The clone gets a
+        // local commit AND the upstream advances, so a fast-forward is impossible.
+        if !git_resolvable() {
+            eprintln!(
+                "skipping pull_ff_only_refuses_to_fast_forward_a_diverged_clone: git missing"
+            );
+            return;
+        }
+        let engine = match SystemGitEngine::discover() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let root = TempDir::new().expect("tempdir");
+        let upstream = root.path().join("upstream");
+        let work = root.path().join("work");
+        let clone = root.path().join("clone");
+        std::fs::create_dir_all(&upstream).unwrap();
+
+        assert!(git(
+            root.path(),
+            &["init", "--bare", upstream.to_str().unwrap()]
+        ));
+        assert!(git(
+            root.path(),
+            &["clone", upstream.to_str().unwrap(), work.to_str().unwrap()]
+        ));
+        assert!(git(&work, &["config", "user.email", "t@example.com"]));
+        assert!(git(&work, &["config", "user.name", "T"]));
+        std::fs::write(work.join("a.txt"), "1\n").unwrap();
+        assert!(git(&work, &["add", "a.txt"]));
+        assert!(git(&work, &["commit", "-m", "first"]));
+        assert!(git(&work, &["push", "origin", "HEAD"]));
+
+        assert!(git(
+            root.path(),
+            &["clone", upstream.to_str().unwrap(), clone.to_str().unwrap()]
+        ));
+        assert!(git(&clone, &["config", "user.email", "t@example.com"]));
+        assert!(git(&clone, &["config", "user.name", "T"]));
+
+        // Diverge: a local commit on the clone, AND an upstream commit.
+        std::fs::write(clone.join("b.txt"), "local\n").unwrap();
+        assert!(git(&clone, &["add", "b.txt"]));
+        assert!(git(&clone, &["commit", "-m", "local divergent"]));
+
+        std::fs::write(work.join("a.txt"), "2\n").unwrap();
+        assert!(git(&work, &["add", "a.txt"]));
+        assert!(git(&work, &["commit", "-m", "second"]));
+        assert!(git(&work, &["push", "origin", "HEAD"]));
+
+        let fetch = engine.fetch(&clone).await.expect("fetch ok");
+        assert!(fetch.success, "fetch should succeed: {}", fetch.raw_stderr);
+
+        // Pull --ff-only must fail (diverged) rather than merge.
+        let pull = engine.pull_ff_only(&clone).await.expect("pull call ok");
+        assert!(
+            !pull.success,
+            "a diverged --ff-only pull must NOT succeed (it would need a merge)"
+        );
+        assert_eq!(
+            pull.class,
+            PullClass::FfNotPossible,
+            "a diverged --ff-only refusal classifies as FfNotPossible: {} / {}",
+            pull.raw_stdout,
+            pull.raw_stderr
         );
     }
 

@@ -66,7 +66,7 @@ Each effort's contract (`spec.md`) and execution (`implementation-plan.md`) live
 | E-04 | [spec](release-plans/plan_v0.9.0/E-04-git-fixture-harness/spec.md) | [plan](release-plans/plan_v0.9.0/E-04-git-fixture-harness/implementation-plan.md) | Done | #6 |
 | E-05 | [spec](release-plans/plan_v0.9.0/E-05-error-taxonomy/spec.md) | [plan](release-plans/plan_v0.9.0/E-05-error-taxonomy/implementation-plan.md) | Done | #7 |
 | E-06 | [spec](release-plans/plan_v0.9.0/E-06-ipc-contract/spec.md) | [plan](release-plans/plan_v0.9.0/E-06-ipc-contract/implementation-plan.md) | Done | #8 |
-| E-07 | [spec](release-plans/plan_v0.9.0/E-07-update-policy-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-07-update-policy-engine/implementation-plan.md) | Not started | #9 |
+| E-07 | [spec](release-plans/plan_v0.9.0/E-07-update-policy-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-07-update-policy-engine/implementation-plan.md) | Done | #9 |
 | E-08 | [spec](release-plans/plan_v0.9.0/E-08-scheduler/spec.md) | [plan](release-plans/plan_v0.9.0/E-08-scheduler/implementation-plan.md) | Not started | #10 |
 | E-09 | [spec](release-plans/plan_v0.9.0/E-09-activity-log/spec.md) | [plan](release-plans/plan_v0.9.0/E-09-activity-log/implementation-plan.md) | Not started | #11 |
 | E-10 | [spec](release-plans/plan_v0.9.0/E-10-github-client/spec.md) | [plan](release-plans/plan_v0.9.0/E-10-github-client/implementation-plan.md) | Not started | #12 |

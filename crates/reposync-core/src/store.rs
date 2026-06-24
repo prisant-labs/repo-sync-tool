@@ -16,7 +16,8 @@ use sqlx::{Row, SqlitePool};
 use crate::error::AppError;
 use crate::git::SystemGitEngine;
 use crate::ipc::{
-    RepoDetail, RepoFilter, RepoId, RepoSummary, ScanCandidate, ScanResult, Settings,
+    RepoDetail, RepoFilter, RepoId, RepoSummary, ScanCandidate, ScanResult, Settings, UpdateMode,
+    UpdatePolicy,
 };
 
 /// The maximum directory depth a parent-folder scan descends (defense against a
@@ -216,6 +217,60 @@ pub async fn repo_set_enabled(
         });
     }
     Ok(())
+}
+
+/// Persist the per-repo update policy (E-07). [`AppError::NotFound`] if the repo
+/// does not exist.
+///
+/// Of the [`UpdatePolicy`] fields, only `mode` has a v1 schema column
+/// (`repos.update_mode`); `dirty_handling` and `branch_policy` are part of the
+/// frozen IPC contract but have no v1 columns, so they are validated-and-accepted
+/// here without storage (a per-repo dirty-handling override is a named V1.1
+/// extension point in the E-07 spec). The mode string is the snake_case wire
+/// value, matching the `update_mode` column's stored form.
+///
+/// A non-V1 mode (`pull_standard` / `pull_rebase`) is REJECTED with
+/// [`AppError::InvalidPolicy`]: the engine would skip it as "mode not available
+/// in V1", so persisting it would store a mode that can never execute. Rejecting
+/// at the write boundary keeps the stored policy executable.
+pub async fn repo_set_policy(
+    pool: &SqlitePool,
+    id: RepoId,
+    policy: &UpdatePolicy,
+) -> Result<(), AppError> {
+    // Reject a non-V1 mode at the boundary (the closed-enum invariant, AC6).
+    if crate::policy::V1Mode::from_update_mode(&policy.mode).is_none() {
+        return Err(AppError::InvalidPolicy {
+            detail: format!(
+                "update mode {} is not available in V1",
+                update_mode_str(&policy.mode)
+            ),
+        });
+    }
+
+    let res = sqlx::query("UPDATE repos SET update_mode = ? WHERE id = ?")
+        .bind(update_mode_str(&policy.mode))
+        .bind(id.0)
+        .execute(pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: format!("repo {}", id.0),
+        });
+    }
+    Ok(())
+}
+
+/// The snake_case `update_mode` column value for an [`UpdateMode`] (matching the
+/// IPC enum's serde rename and the schema default `'fetch_only'`).
+fn update_mode_str(mode: &UpdateMode) -> &'static str {
+    match mode {
+        UpdateMode::CheckOnly => "check_only",
+        UpdateMode::FetchOnly => "fetch_only",
+        UpdateMode::PullFfOnly => "pull_ff_only",
+        UpdateMode::PullStandard => "pull_standard",
+        UpdateMode::PullRebase => "pull_rebase",
+    }
 }
 
 // =============================================================================
@@ -619,6 +674,66 @@ mod tests {
             repo_remove(&pool, id).await,
             Err(AppError::NotFound { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn set_policy_persists_mode_and_rejects_non_v1() {
+        use crate::ipc::{BranchPolicy, DirtyHandling, UpdateMode, UpdatePolicy};
+
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping set_policy_persists_mode_and_rejects_non_v1: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        init_repo_with_commit(repotmp.path());
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        // The schema default is fetch_only.
+        assert_eq!(repo_get(&pool, id).await.unwrap().update_mode, "fetch_only");
+
+        // Persisting a V1 mode updates the column.
+        let policy = UpdatePolicy {
+            mode: UpdateMode::PullFfOnly,
+            dirty_handling: DirtyHandling::Skip,
+            branch_policy: BranchPolicy::DefaultBranchOnly,
+        };
+        repo_set_policy(&pool, id, &policy)
+            .await
+            .expect("set policy");
+        assert_eq!(
+            repo_get(&pool, id).await.unwrap().update_mode,
+            "pull_ff_only"
+        );
+
+        // A non-V1 mode is rejected at the boundary and does NOT change the
+        // stored mode.
+        let non_v1 = UpdatePolicy {
+            mode: UpdateMode::PullStandard,
+            dirty_handling: DirtyHandling::Skip,
+            branch_policy: BranchPolicy::DefaultBranchOnly,
+        };
+        let rejected = repo_set_policy(&pool, id, &non_v1).await;
+        assert!(
+            matches!(rejected, Err(AppError::InvalidPolicy { .. })),
+            "a non-V1 mode must be rejected, got {rejected:?}"
+        );
+        assert_eq!(
+            repo_get(&pool, id).await.unwrap().update_mode,
+            "pull_ff_only",
+            "a rejected policy must leave the stored mode unchanged"
+        );
+
+        // set_policy on a missing repo is NotFound.
+        let missing = repo_set_policy(&pool, RepoId(9999), &policy).await;
+        assert!(
+            matches!(missing, Err(AppError::NotFound { .. })),
+            "set_policy on a missing repo must be NotFound, got {missing:?}"
+        );
     }
 
     #[tokio::test]
