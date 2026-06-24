@@ -10,7 +10,7 @@ use std::time::Instant;
 use tokio::process::Command;
 
 use crate::error::AppError;
-use crate::git::{AheadBehind, FetchOutcome};
+use crate::git::{AheadBehind, FetchClass, FetchOutcome};
 
 /// Raw capture of a single git CLI invocation.
 pub(crate) struct Captured {
@@ -43,10 +43,7 @@ pub(crate) async fn run_git(
     );
 
     let started = Instant::now();
-    let output = cmd
-        .output()
-        .await
-        .map_err(|_| AppError::GitNotFound)?;
+    let output = cmd.output().await.map_err(|_| AppError::GitNotFound)?;
     let duration_ms = started.elapsed().as_millis() as i64;
 
     Ok(Captured {
@@ -62,15 +59,91 @@ pub(crate) async fn run_git(
 /// returned (with `success = false`); the caller decides how to surface it.
 pub(crate) async fn fetch(git_exe: &Path, repo_path: &Path) -> Result<FetchOutcome, AppError> {
     let captured = run_git(git_exe, repo_path, &["fetch", "--all", "--prune"]).await?;
-    let success = captured.exit_code == Some(0);
+    let class = classify_fetch(
+        captured.exit_code,
+        &captured.raw_stdout,
+        &captured.raw_stderr,
+    );
     Ok(FetchOutcome {
         raw_command: captured.raw_command,
         raw_stdout: captured.raw_stdout,
         raw_stderr: captured.raw_stderr,
         exit_code: captured.exit_code,
         duration_ms: captured.duration_ms,
-        success,
+        success: class.is_success(),
+        class,
     })
+}
+
+/// Classify a `git fetch` invocation into a [`FetchClass`] from its exit code
+/// plus captured stdout/stderr (AC10). This is a PURE function over the capture:
+/// no I/O, deterministic, unit-testable from string fixtures.
+///
+/// Classification strategy (conservative): on a zero exit, distinguish a real
+/// update (refs advanced, visible as `->` arrows or a `* [new ...]` line) from a
+/// no-op ("already up to date" / empty output). On a non-zero exit, scan stderr
+/// for an auth signature first (so a 403 over HTTP is not mistaken for a network
+/// drop), then a network signature; anything else is `Unknown`.
+pub(crate) fn classify_fetch(exit_code: Option<i32>, stdout: &str, stderr: &str) -> FetchClass {
+    if exit_code == Some(0) {
+        // git prints fetch progress to STDERR, not stdout, so inspect both.
+        let combined = format!("{stdout}\n{stderr}");
+        if fetch_shows_update(&combined) {
+            FetchClass::Success
+        } else {
+            FetchClass::NoOp
+        }
+    } else if stderr_is_auth_failure(stderr) {
+        FetchClass::AuthFailure
+    } else if stderr_is_network_failure(stderr) {
+        FetchClass::NetworkFailure
+    } else {
+        FetchClass::Unknown
+    }
+}
+
+/// Whether fetch output shows the remote tracking refs actually advanced.
+/// A successful fetch that pulled commits prints lines containing `->`
+/// (ref update arrows) or `* [new branch]` / `* [new tag]` markers.
+fn fetch_shows_update(output: &str) -> bool {
+    output.lines().any(|line| {
+        let l = line.trim();
+        l.contains("->") || l.contains("[new branch]") || l.contains("[new tag]")
+    })
+}
+
+/// Whether a non-zero fetch's stderr matches a known AUTHENTICATION signature.
+/// Checked before the network signature so an HTTP 403 is classified as auth,
+/// not network.
+fn stderr_is_auth_failure(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("authentication failed")
+        || s.contains("could not read username")
+        || s.contains("could not read password")
+        || s.contains("permission denied")
+        || s.contains("access denied")
+        || s.contains("403 forbidden")
+        || s.contains("invalid username or password")
+        || s.contains("terminal prompts disabled")
+        || (s.contains("fatal: unable to access") && s.contains("403"))
+}
+
+/// Whether a non-zero fetch's stderr matches a known NETWORK/transport
+/// signature (DNS, connection, timeout, TLS handshake).
+fn stderr_is_network_failure(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    s.contains("could not resolve host")
+        || s.contains("couldn't resolve host")
+        || s.contains("could not resolve proxy")
+        || s.contains("connection timed out")
+        || s.contains("connection refused")
+        || s.contains("connection reset")
+        || s.contains("failed to connect")
+        || s.contains("network is unreachable")
+        || s.contains("operation timed out")
+        || s.contains("ssl_error")
+        || s.contains("unable to access")
+            && (s.contains("timed out") || s.contains("resolve") || s.contains("connect"))
 }
 
 /// Compute ahead/behind counts between HEAD and `upstream` via
@@ -108,6 +181,49 @@ pub(crate) async fn ahead_behind(
     }
 }
 
+/// Resolve a ref (or `HEAD`) to its object id via `git rev-parse <ref>`,
+/// through the capture point so the call is auditable. Returns `None` when the
+/// command fails or the output does not parse as a SHA. The CLI counterpart to
+/// the git2 HEAD-SHA read; the engine offers both so the all-CLI fallback is a
+/// localized swap.
+pub(crate) async fn rev_parse(
+    git_exe: &Path,
+    repo_path: &Path,
+    refname: &str,
+) -> Result<Option<String>, AppError> {
+    let captured = run_git(git_exe, repo_path, &["rev-parse", refname]).await?;
+    if captured.exit_code != Some(0) {
+        return Ok(None);
+    }
+    Ok(parse_rev_parse(&captured.raw_stdout))
+}
+
+/// Read working-tree dirtiness via `git status --porcelain=v2`, through the
+/// capture point. The CLI counterpart to the git2 dirty read.
+pub(crate) async fn status(git_exe: &Path, repo_path: &Path) -> Result<PorcelainStatus, AppError> {
+    let captured = run_git(git_exe, repo_path, &["status", "--porcelain=v2"]).await?;
+    Ok(parse_porcelain_v2(&captured.raw_stdout))
+}
+
+/// Enumerate refs and their upstreams via `git for-each-ref`, through the
+/// capture point. The format is fixed to `%(refname) %(objectname) %(upstream)`
+/// so [`parse_for_each_ref`] can read it.
+pub(crate) async fn for_each_ref(
+    git_exe: &Path,
+    repo_path: &Path,
+) -> Result<Vec<RefRow>, AppError> {
+    let captured = run_git(
+        git_exe,
+        repo_path,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname) %(upstream)",
+        ],
+    )
+    .await?;
+    Ok(parse_for_each_ref(&captured.raw_stdout))
+}
+
 /// Parse the two whitespace-separated integers from `git rev-list
 /// --left-right --count` output (e.g. `"0\t1\n"` -> `(0, 1)`). The left count
 /// is "ahead" (commits on HEAD not in upstream); the right is "behind".
@@ -118,9 +234,234 @@ pub(crate) fn parse_left_right_count(s: &str) -> Option<(i64, i64)> {
     Some((left, right))
 }
 
+/// Parse `git rev-parse <ref>` stdout into a single resolved object id.
+///
+/// `rev-parse` prints one full hex SHA per line; this returns the FIRST line as
+/// the resolved ref. Returns `None` if there is no non-empty line or the line
+/// is not a 4-40 char hex string (e.g. an error leaked to stdout). A pure
+/// function over captured stdout.
+pub(crate) fn parse_rev_parse(stdout: &str) -> Option<String> {
+    let line = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let is_hex = (4..=40).contains(&line.len()) && line.chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex {
+        Some(line.to_string())
+    } else {
+        None
+    }
+}
+
+/// The dirty/clean verdict parsed from `git status --porcelain=v2`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PorcelainStatus {
+    /// Any tracked change (ordinary `1`/`2` or unmerged `u` entry) is present.
+    pub has_tracked_changes: bool,
+    /// At least one untracked (`?`) entry is present.
+    pub has_untracked: bool,
+}
+
+impl PorcelainStatus {
+    /// Whether the working tree is dirty: any tracked change OR any untracked
+    /// file. Matches the git2 dirty definition used in `inspect.rs`.
+    pub fn is_dirty(&self) -> bool {
+        self.has_tracked_changes || self.has_untracked
+    }
+}
+
+/// Parse `git status --porcelain=v2` stdout into a [`PorcelainStatus`].
+///
+/// Porcelain v2 line kinds (the leading token of each line):
+///   - `1` ordinary changed entry (tracked change)
+///   - `2` renamed/copied entry (tracked change)
+///   - `u` unmerged entry (tracked change)
+///   - `?` untracked entry
+///   - `!` ignored entry (not dirty; we never request these)
+///   - `#` header line (branch/oid metadata; ignored)
+///
+/// A pure function over captured stdout; no I/O.
+pub(crate) fn parse_porcelain_v2(stdout: &str) -> PorcelainStatus {
+    let mut has_tracked_changes = false;
+    let mut has_untracked = false;
+    for line in stdout.lines() {
+        match line.chars().next() {
+            Some('1') | Some('2') | Some('u') => has_tracked_changes = true,
+            Some('?') => has_untracked = true,
+            // '#' headers, '!' ignored, and blank lines are not dirtiness.
+            _ => {}
+        }
+    }
+    PorcelainStatus {
+        has_tracked_changes,
+        has_untracked,
+    }
+}
+
+/// One ref row parsed from `git for-each-ref`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefRow {
+    /// The fully-qualified ref name, e.g. `refs/heads/main`.
+    pub refname: String,
+    /// The object id the ref points at (full hex SHA).
+    pub object_id: String,
+    /// The configured upstream of this ref, when present (the `%(upstream)`
+    /// field), e.g. `refs/remotes/origin/main`. Empty fields parse to `None`.
+    pub upstream: Option<String>,
+}
+
+/// Parse `git for-each-ref --format='%(refname) %(objectname) %(upstream)'`
+/// stdout into [`RefRow`]s.
+///
+/// Each non-empty line is `refname objectname [upstream]`, space-separated.
+/// A missing upstream (git emits an empty `%(upstream)` field) yields `None`.
+/// Lines with fewer than two whitespace tokens are skipped. A pure function
+/// over captured stdout; the caller controls the `--format` it pairs with this.
+pub(crate) fn parse_for_each_ref(stdout: &str) -> Vec<RefRow> {
+    let mut rows = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let (Some(refname), Some(object_id)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let upstream = parts.next().map(|s| s.to_string());
+        rows.push(RefRow {
+            refname: refname.to_string(),
+            object_id: object_id.to_string(),
+            upstream,
+        });
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_left_right_count;
+    use super::{classify_fetch, parse_left_right_count};
+    use crate::git::FetchClass;
+
+    // --- fetch classification (AC10 / BL-NI-05) -------------------------------
+    //
+    // Fixtures are captured-shape `git fetch` output. git writes fetch progress
+    // to STDERR, so the "update" and "no-op" cases put their text there.
+
+    #[test]
+    fn classifies_no_op_already_up_to_date() {
+        // A fetch that found nothing new prints no ref-update lines (often no
+        // output at all on stderr).
+        assert_eq!(classify_fetch(Some(0), "", ""), FetchClass::NoOp);
+        assert_eq!(
+            classify_fetch(Some(0), "", "Fetching origin\n"),
+            FetchClass::NoOp
+        );
+    }
+
+    #[test]
+    fn classifies_success_when_refs_advance() {
+        let stderr = "Fetching origin\n\
+             remote: Enumerating objects: 5, done.\n\
+             From github.com:o/repo\n   \
+             abc1234..def5678  main       -> origin/main\n";
+        assert_eq!(classify_fetch(Some(0), "", stderr), FetchClass::Success);
+    }
+
+    #[test]
+    fn classifies_success_on_new_branch() {
+        let stderr = "From github.com:o/repo\n \
+             * [new branch]      feature    -> origin/feature\n";
+        assert_eq!(classify_fetch(Some(0), "", stderr), FetchClass::Success);
+    }
+
+    #[test]
+    fn classifies_auth_failure_https() {
+        let stderr = "fatal: Authentication failed for 'https://github.com/o/repo.git/'\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::AuthFailure
+        );
+    }
+
+    #[test]
+    fn classifies_auth_failure_no_terminal_prompt() {
+        let stderr = "fatal: could not read Username for 'https://github.com': \
+             terminal prompts disabled\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::AuthFailure
+        );
+    }
+
+    #[test]
+    fn classifies_auth_failure_ssh_permission_denied() {
+        let stderr = "git@github.com: Permission denied (publickey).\n\
+             fatal: Could not read from remote repository.\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::AuthFailure
+        );
+    }
+
+    #[test]
+    fn classifies_network_failure_dns() {
+        let stderr = "fatal: unable to access 'https://github.com/o/repo.git/': \
+             Could not resolve host: github.com\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::NetworkFailure
+        );
+    }
+
+    #[test]
+    fn classifies_network_failure_connection_timeout() {
+        let stderr = "ssh: connect to host github.com port 22: Connection timed out\n\
+             fatal: Could not read from remote repository.\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::NetworkFailure
+        );
+    }
+
+    #[test]
+    fn classifies_network_failure_connection_refused() {
+        let stderr = "fatal: unable to access 'https://example.com/r.git/': \
+             Failed to connect to example.com port 443: Connection refused\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::NetworkFailure
+        );
+    }
+
+    #[test]
+    fn unknown_failure_is_conservative_fallback() {
+        // A non-zero exit whose stderr matches no known signature must NOT be
+        // silently mapped to auth or network.
+        let stderr = "fatal: the remote end hung up unexpectedly\n";
+        assert_eq!(classify_fetch(Some(128), "", stderr), FetchClass::Unknown);
+        // A non-zero exit with empty stderr is also Unknown.
+        assert_eq!(classify_fetch(Some(1), "", ""), FetchClass::Unknown);
+        // No exit code at all (signal-killed) with no signature -> Unknown.
+        assert_eq!(classify_fetch(None, "", ""), FetchClass::Unknown);
+    }
+
+    #[test]
+    fn auth_checked_before_network_on_http_403() {
+        // A 403 over HTTP can mention "unable to access"; auth must win.
+        let stderr = "fatal: unable to access 'https://github.com/o/repo.git/': \
+             The requested URL returned error: 403 Forbidden\n";
+        assert_eq!(
+            classify_fetch(Some(128), "", stderr),
+            FetchClass::AuthFailure
+        );
+    }
+
+    #[test]
+    fn fetch_class_is_success_truth_table() {
+        assert!(FetchClass::Success.is_success());
+        assert!(FetchClass::NoOp.is_success());
+        assert!(!FetchClass::AuthFailure.is_success());
+        assert!(!FetchClass::NetworkFailure.is_success());
+        assert!(!FetchClass::Unknown.is_success());
+    }
 
     #[test]
     fn parses_tab_separated() {
@@ -136,7 +477,140 @@ mod tests {
         assert_eq!(parse_left_right_count("a\tb"), None);
     }
 
-    use crate::git::SystemGitEngine;
+    // --- rev-parse parser (AC3) ----------------------------------------------
+
+    use super::{parse_for_each_ref, parse_porcelain_v2, parse_rev_parse, RefRow};
+
+    #[test]
+    fn rev_parse_resolves_full_sha() {
+        let out = "1f2e3d4c5b6a7980172635445362718091a2b3c4\n";
+        assert_eq!(
+            parse_rev_parse(out).as_deref(),
+            Some("1f2e3d4c5b6a7980172635445362718091a2b3c4")
+        );
+    }
+
+    #[test]
+    fn rev_parse_takes_first_line() {
+        // `git rev-parse HEAD @{u}` prints two SHAs; the first is HEAD.
+        let out = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n\
+             bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n";
+        assert_eq!(
+            parse_rev_parse(out).as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+    }
+
+    #[test]
+    fn rev_parse_rejects_non_hex() {
+        assert_eq!(parse_rev_parse(""), None);
+        assert_eq!(parse_rev_parse("\n\n"), None);
+        // An error message leaked to stdout must not parse as a SHA.
+        assert_eq!(parse_rev_parse("fatal: bad revision 'nope'"), None);
+    }
+
+    // --- status --porcelain=v2 parser (AC3) ----------------------------------
+
+    #[test]
+    fn porcelain_clean_tree() {
+        // A clean tree prints only header lines (or nothing).
+        let out = "# branch.oid 1111111111111111111111111111111111111111\n\
+             # branch.head main\n\
+             # branch.upstream origin/main\n\
+             # branch.ab +0 -0\n";
+        let status = parse_porcelain_v2(out);
+        assert!(!status.is_dirty(), "header-only output is clean");
+        assert!(!status.has_tracked_changes);
+        assert!(!status.has_untracked);
+    }
+
+    #[test]
+    fn porcelain_tracked_modification_is_dirty() {
+        // An ordinary changed entry (leading '1').
+        let out = "# branch.head main\n\
+             1 .M N... 100644 100644 100644 1111111 1111111 file.txt\n";
+        let status = parse_porcelain_v2(out);
+        assert!(status.is_dirty());
+        assert!(status.has_tracked_changes);
+        assert!(!status.has_untracked);
+    }
+
+    #[test]
+    fn porcelain_untracked_is_dirty() {
+        let out = "# branch.head main\n? new.txt\n";
+        let status = parse_porcelain_v2(out);
+        assert!(status.is_dirty());
+        assert!(!status.has_tracked_changes);
+        assert!(status.has_untracked);
+    }
+
+    #[test]
+    fn porcelain_rename_and_unmerged_are_tracked_changes() {
+        let renamed = "2 R. N... 100644 100644 100644 111 111 R100 new.txt\told.txt\n";
+        assert!(parse_porcelain_v2(renamed).has_tracked_changes);
+        let unmerged = "u UU N... 100644 100644 100644 100644 111 222 333 conflict.txt\n";
+        assert!(parse_porcelain_v2(unmerged).has_tracked_changes);
+    }
+
+    #[test]
+    fn porcelain_ignored_entries_are_not_dirty() {
+        // We never request '!' lines, but if present they must not count.
+        let out = "# branch.head main\n! ignored.log\n";
+        let status = parse_porcelain_v2(out);
+        assert!(!status.is_dirty());
+    }
+
+    // --- for-each-ref parser (AC3) -------------------------------------------
+
+    #[test]
+    fn for_each_ref_parses_branch_with_upstream() {
+        let out = "refs/heads/main 1111111111111111111111111111111111111111 \
+             refs/remotes/origin/main\n";
+        let rows = parse_for_each_ref(out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            RefRow {
+                refname: "refs/heads/main".into(),
+                object_id: "1111111111111111111111111111111111111111".into(),
+                upstream: Some("refs/remotes/origin/main".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn for_each_ref_handles_missing_upstream() {
+        // A local branch with no upstream emits an empty %(upstream) field, so
+        // the line has only two tokens.
+        let out = "refs/heads/feature 2222222222222222222222222222222222222222\n";
+        let rows = parse_for_each_ref(out);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].refname, "refs/heads/feature");
+        assert_eq!(rows[0].upstream, None);
+    }
+
+    #[test]
+    fn for_each_ref_parses_multiple_and_skips_blank() {
+        let out = "refs/heads/main aaaa refs/remotes/origin/main\n\
+             \n\
+             refs/heads/dev bbbb\n";
+        let rows = parse_for_each_ref(out);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].upstream.as_deref(),
+            Some("refs/remotes/origin/main")
+        );
+        assert_eq!(rows[1].refname, "refs/heads/dev");
+        assert_eq!(rows[1].upstream, None);
+    }
+
+    #[test]
+    fn for_each_ref_empty_input_is_empty() {
+        assert!(parse_for_each_ref("").is_empty());
+        assert!(parse_for_each_ref("\n\n").is_empty());
+    }
+
+    use crate::git::{GitEngine, SystemGitEngine};
     use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
@@ -181,10 +655,16 @@ mod tests {
         std::fs::create_dir_all(&upstream).unwrap();
 
         // Bare remote.
-        assert!(git(root.path(), &["init", "--bare", upstream.to_str().unwrap()]));
+        assert!(git(
+            root.path(),
+            &["init", "--bare", upstream.to_str().unwrap()]
+        ));
 
         // Seed it via a working clone with one commit, then push.
-        assert!(git(root.path(), &["clone", upstream.to_str().unwrap(), work.to_str().unwrap()]));
+        assert!(git(
+            root.path(),
+            &["clone", upstream.to_str().unwrap(), work.to_str().unwrap()]
+        ));
         assert!(git(&work, &["config", "user.email", "t@example.com"]));
         assert!(git(&work, &["config", "user.name", "T"]));
         std::fs::write(work.join("a.txt"), "1\n").unwrap();
@@ -196,7 +676,10 @@ mod tests {
 
         // Clone we will inspect (it is now one commit behind after the remote
         // gets a second commit).
-        assert!(git(root.path(), &["clone", upstream.to_str().unwrap(), clone.to_str().unwrap()]));
+        assert!(git(
+            root.path(),
+            &["clone", upstream.to_str().unwrap(), clone.to_str().unwrap()]
+        ));
 
         // Second commit on the remote (via the work clone).
         std::fs::write(work.join("a.txt"), "2\n").unwrap();
@@ -204,10 +687,21 @@ mod tests {
         assert!(git(&work, &["commit", "-m", "second"]));
         assert!(git(&work, &["push", "origin", "HEAD"]));
 
-        // Fetch in the clone: should succeed.
+        // Fetch in the clone: should succeed and CLASSIFY as a real update
+        // (the clone pulled the second commit's tracking-ref advance).
         let outcome = engine.fetch(&clone).await.expect("fetch ok");
-        assert!(outcome.success, "fetch should succeed: {}", outcome.raw_stderr);
+        assert!(
+            outcome.success,
+            "fetch should succeed: {}",
+            outcome.raw_stderr
+        );
         assert_eq!(outcome.exit_code, Some(0));
+        assert_eq!(
+            outcome.class,
+            FetchClass::Success,
+            "fetch that advanced origin/HEAD classifies as Success: {}",
+            outcome.raw_stderr
+        );
         assert!(outcome.duration_ms >= 0);
 
         // The clone is behind by one commit relative to its upstream.
@@ -219,6 +713,63 @@ mod tests {
             .ahead_behind(&clone, &upstream_ref)
             .await
             .expect("ahead_behind ok");
-        assert_eq!(ab.behind, Some(1), "clone should be 1 behind after remote commit");
+        assert_eq!(
+            ab.behind,
+            Some(1),
+            "clone should be 1 behind after remote commit"
+        );
+    }
+
+    /// Smoke-test the CLI read ops (`rev-parse`, `status --porcelain=v2`,
+    /// `for-each-ref`) against a throwaway repo: each runs through the capture
+    /// point and its parser, exercising the AC3 surface end-to-end.
+    #[tokio::test]
+    async fn cli_reads_against_real_repo() {
+        if !git_resolvable() {
+            eprintln!("skipping cli_reads_against_real_repo: git not resolvable");
+            return;
+        }
+        let engine = match SystemGitEngine::discover() {
+            Ok(e) => e,
+            Err(_) => {
+                eprintln!("skipping cli_reads_against_real_repo: discover failed");
+                return;
+            }
+        };
+
+        let tmp = TempDir::new().expect("tempdir");
+        let dir = tmp.path();
+        assert!(git(dir, &["init"]));
+        assert!(git(dir, &["config", "user.email", "t@example.com"]));
+        assert!(git(dir, &["config", "user.name", "T"]));
+        std::fs::write(dir.join("a.txt"), "1\n").unwrap();
+        assert!(git(dir, &["add", "a.txt"]));
+        assert!(git(dir, &["commit", "-m", "first"]));
+
+        // rev-parse HEAD resolves to a 40-char SHA.
+        let sha = engine
+            .rev_parse(dir, "HEAD")
+            .await
+            .expect("rev_parse ok")
+            .expect("HEAD resolves");
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Clean tree: status reports not-dirty.
+        let clean = engine.status(dir).await.expect("status ok");
+        assert!(!clean.is_dirty(), "freshly committed tree is clean");
+
+        // Dirty it with an untracked file.
+        std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+        let dirty = engine.status(dir).await.expect("status ok");
+        assert!(dirty.is_dirty(), "untracked file makes it dirty");
+        assert!(dirty.has_untracked);
+
+        // for-each-ref lists at least the current branch ref with its SHA.
+        let rows = engine.for_each_ref(dir).await.expect("for_each_ref ok");
+        assert!(
+            rows.iter().any(|r| r.refname.starts_with("refs/heads/")),
+            "for-each-ref should list the local branch: {rows:?}"
+        );
     }
 }

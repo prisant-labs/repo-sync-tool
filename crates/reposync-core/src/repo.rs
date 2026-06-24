@@ -124,12 +124,14 @@ pub async fn check_now(
     let repo_id = id.0;
 
     // 1. Look up the path and stored upstream.
-    let row = sqlx::query("SELECT r.local_path AS local_path, s.upstream_branch AS upstream_branch \
+    let row = sqlx::query(
+        "SELECT r.local_path AS local_path, s.upstream_branch AS upstream_branch \
          FROM repos r LEFT JOIN repo_local_state s ON s.repo_id = r.id \
-         WHERE r.id = ?")
-        .bind(repo_id)
-        .fetch_one(pool)
-        .await?;
+         WHERE r.id = ?",
+    )
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await?;
     let local_path: String = row.try_get("local_path")?;
     let stored_upstream: Option<String> = row.try_get("upstream_branch")?;
     let path = Path::new(&local_path);
@@ -142,10 +144,7 @@ pub async fn check_now(
     let fetch = git.fetch(path).await?;
 
     // 4. Resolve upstream: prefer the freshly inspected one, fall back to stored.
-    let upstream = inspect
-        .upstream_branch
-        .clone()
-        .or(stored_upstream);
+    let upstream = inspect.upstream_branch.clone().or(stored_upstream);
 
     // 5. Ahead/behind when an upstream exists.
     let ahead_behind = match &upstream {
@@ -162,12 +161,20 @@ pub async fn check_now(
     // (unknown) from Some(0) (known up to date). Collapsing None to 0 would
     // mislabel an un-compared repo as up to date, so unknown branches
     // explicitly to skip-with-reason rather than would-fast-forward.
+    //
+    // The fetch outcome is read through its classification (E-03 / BL-NI-05):
+    // a non-success class carries WHY the fetch failed (auth vs network vs
+    // unknown), which the reason text now reflects. The full pause-vs-retry
+    // policy that consumes this split is E-07's; here we only surface the class.
     let behind = ahead_behind.behind;
     let (decision, reason): (String, Option<String>) = if !fetch.success {
-        (
-            "skip-with-reason".to_string(),
-            Some("fetch failed".to_string()),
-        )
+        let why = match fetch.class {
+            crate::git::FetchClass::AuthFailure => "fetch failed: authentication",
+            crate::git::FetchClass::NetworkFailure => "fetch failed: network",
+            // Success / NoOp never reach this arm (fetch.success would be true).
+            _ => "fetch failed",
+        };
+        ("skip-with-reason".to_string(), Some(why.to_string()))
     } else if inspect.is_detached {
         (
             "skip-with-reason".to_string(),
@@ -302,15 +309,12 @@ mod tests {
         std::fs::write(dir.join("README.md"), "hello\n").expect("write file");
 
         let mut index = repo.index().expect("index");
-        index
-            .add_path(Path::new("README.md"))
-            .expect("add path");
+        index.add_path(Path::new("README.md")).expect("add path");
         index.write().expect("write index");
         let tree_id = index.write_tree().expect("write tree");
         let tree = repo.find_tree(tree_id).expect("find tree");
 
-        let sig = git2::Signature::now("Tracer Test", "tracer@example.com")
-            .expect("signature");
+        let sig = git2::Signature::now("Tracer Test", "tracer@example.com").expect("signature");
         repo.commit(Some("HEAD"), &sig, &sig, "initial commit", &tree, &[])
             .expect("commit");
     }
@@ -380,7 +384,10 @@ mod tests {
         let raw_command: Option<String> = act.try_get("raw_command").unwrap();
         let duration_ms: Option<i64> = act.try_get("duration_ms").unwrap();
         assert!(
-            raw_command.as_deref().map(|s| s.contains("fetch")).unwrap_or(false),
+            raw_command
+                .as_deref()
+                .map(|s| s.contains("fetch"))
+                .unwrap_or(false),
             "raw_command should record the fetch invocation"
         );
         assert!(duration_ms.is_some(), "duration_ms should be populated");
