@@ -21,6 +21,7 @@ pub mod paths;
 pub mod policy;
 pub mod repo;
 pub mod scheduler;
+pub mod store;
 pub mod summary;
 
 #[cfg(test)]

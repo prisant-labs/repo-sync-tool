@@ -76,55 +76,46 @@ fn not_implemented() -> AppError {
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_list(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     filter: RepoFilter,
 ) -> Result<Vec<RepoSummary>, AppError> {
-    // TODO(E-02): query repos + repo_local_state and apply `filter`.
-    let _ = filter;
-    Err(not_implemented())
+    reposync_core::store::repo_list(&state.pool, &filter).await
 }
 
 /// Get the full detail of a single tracked repo.
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_get(_state: tauri::State<'_, AppState>, id: i64) -> Result<RepoDetail, AppError> {
-    // TODO(E-02): join repos + repo_local_state + repo_remote_meta for `id`.
-    let _ = id;
-    Err(not_implemented())
+pub async fn repo_get(state: tauri::State<'_, AppState>, id: i64) -> Result<RepoDetail, AppError> {
+    reposync_core::store::repo_get(&state.pool, RepoId(id)).await
 }
 
 /// Scan a parent folder for candidate git repositories.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_scan_parent(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<ScanResult, AppError> {
-    // TODO(E-02/E-03): walk `path` and report discovered repos.
-    let _ = path;
-    Err(not_implemented())
+    let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
+    reposync_core::store::repo_scan_parent(&state.pool, git, std::path::Path::new(&path)).await
 }
 
 /// Remove a tracked repo (does not touch the working tree).
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_remove(_state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
-    // TODO(E-02): delete the repos row (cascades local_state / remote_meta).
-    let _ = id;
-    Err(not_implemented())
+pub async fn repo_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+    reposync_core::store::repo_remove(&state.pool, RepoId(id)).await
 }
 
 /// Enable or disable scheduled checks for a repo.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_set_enabled(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     id: i64,
     enabled: bool,
 ) -> Result<(), AppError> {
-    // TODO(E-02): flip the `enabled` flag for `id`.
-    let _ = (id, enabled);
-    Err(not_implemented())
+    reposync_core::store::repo_set_enabled(&state.pool, RepoId(id), enabled).await
 }
 
 /// Set the per-repo update policy.
@@ -236,19 +227,16 @@ pub async fn summary_week(_state: tauri::State<'_, AppState>) -> Result<WeeklySu
 /// Read the settings singleton.
 #[tauri::command]
 #[specta::specta]
-pub async fn settings_get(_state: tauri::State<'_, AppState>) -> Result<Settings, AppError> {
-    // TODO(E-02): read the settings row.
-    Err(not_implemented())
+pub async fn settings_get(state: tauri::State<'_, AppState>) -> Result<Settings, AppError> {
+    reposync_core::store::settings_get(&state.pool).await
 }
 
 /// Write the settings singleton.
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_set(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     settings: Settings,
 ) -> Result<(), AppError> {
-    // TODO(E-02): validate and persist `settings`.
-    let _ = settings;
-    Err(not_implemented())
+    reposync_core::store::settings_set(&state.pool, &settings).await
 }

@@ -133,12 +133,36 @@ pub fn run() {
             // the setup thread if startup latency matters.
             let handle = app.handle().clone();
             tauri::async_runtime::block_on(async move {
-                let pool = reposync_core::db::open_pool(&reposync_core::paths::db_path())
+                // Resolve the path seam once. The OneDrive backstop (E-02 AC6):
+                // %LOCALAPPDATA% is already outside the synced tree, but if the
+                // resolved data dir somehow lands under a OneDrive root, warn -
+                // a WAL db there can corrupt when the sync agent snapshots its
+                // sidecars mid-write. We do not relocate at runtime; the warning
+                // is the signal and the base-dir choice is the structural defense.
+                let paths = reposync_core::paths::AppPaths::from_env();
+                if paths.is_onedrive_rooted() {
+                    eprintln!(
+                        "warning: RepoSync data dir {} is under a OneDrive root; a \
+                         WAL database in a synced folder can corrupt. Consider moving \
+                         app data out of OneDrive.",
+                        paths.data_dir().display()
+                    );
+                }
+
+                // Open the pool and migrate, recovering from a corrupt/failed
+                // migration instead of crashing (E-02 AC7). `recovered` is a
+                // one-time notice the shell can surface later.
+                let init = reposync_core::db::init_pool_with_recovery(&paths)
                     .await
-                    .expect("failed to open database pool");
-                reposync_core::db::run_migrations(&pool)
-                    .await
-                    .expect("failed to run database migrations");
+                    .expect("failed to initialize database");
+                if init.recovered {
+                    eprintln!(
+                        "warning: the database could not be migrated and was reset; \
+                         the previous database was preserved at {:?}.",
+                        init.backup_path
+                    );
+                }
+                let pool = init.pool;
                 // Git absence must NOT block launch (E-03 degraded-state
                 // contract). Store None on GitNotFound and log a warning; the
                 // pool/migrations above stay fatal because the DB is essential.

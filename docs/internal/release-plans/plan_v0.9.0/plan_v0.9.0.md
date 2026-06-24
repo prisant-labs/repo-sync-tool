@@ -33,7 +33,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | Effort | Title | Tier | Spec | Plan | Build status |
 |--------|-------|------|------|------|--------------|
 | E-01 | Foundation, Workspace, and CI | MUST | ready | ready | Done |
-| E-02 | Persistence and Paths | MUST | ready | ready | Partial (tracer slice) |
+| E-02 | Persistence and Paths | MUST | ready | ready | Done |
 | E-03 | Git Engine | MUST | ready | ready | Done |
 | E-04 | Git Fixture Test Harness | MUST | ready | ready | Done |
 | E-05 | Error Taxonomy (AppError) | MUST | ready | ready | Done |
@@ -50,7 +50,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
-Summary: 15 efforts in scope. 6 done (E-01, E-03, E-04, E-05, E-06, E-12), 1 partial (E-02), 8 not started (E-07-E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
+Summary: 15 efforts in scope. 7 done (E-01, E-02, E-03, E-04, E-05, E-06, E-12), 8 not started (E-07-E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
 
 ---
 
