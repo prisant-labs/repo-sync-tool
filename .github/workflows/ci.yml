@@ -98,6 +98,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # --- Gates --------------------------------------------------------------------------
+      # Formatting is enforced here so drift cannot accumulate unnoticed (it did once,
+      # before this step existed). rustfmt is installed as a component above.
+      - name: cargo fmt (check)
+        run: cargo fmt --all -- --check
+
       - name: cargo check
         run: cargo check --workspace --all-targets
 

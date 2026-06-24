@@ -87,10 +87,7 @@ pub async fn repo_list(
 /// Get the full detail of a single tracked repo.
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_get(
-    _state: tauri::State<'_, AppState>,
-    id: i64,
-) -> Result<RepoDetail, AppError> {
+pub async fn repo_get(_state: tauri::State<'_, AppState>, id: i64) -> Result<RepoDetail, AppError> {
     // TODO(E-02): join repos + repo_local_state + repo_remote_meta for `id`.
     let _ = id;
     Err(not_implemented())
@@ -223,9 +220,7 @@ pub async fn activity_list(
 /// Get today's daily summary.
 #[tauri::command]
 #[specta::specta]
-pub async fn summary_today(
-    _state: tauri::State<'_, AppState>,
-) -> Result<DailySummary, AppError> {
+pub async fn summary_today(_state: tauri::State<'_, AppState>) -> Result<DailySummary, AppError> {
     // TODO(E-11): compute (or read the cached) daily summary.
     Err(not_implemented())
 }
@@ -233,9 +228,7 @@ pub async fn summary_today(
 /// Get the current week's summary (V1.1 stub).
 #[tauri::command]
 #[specta::specta]
-pub async fn summary_week(
-    _state: tauri::State<'_, AppState>,
-) -> Result<WeeklySummary, AppError> {
+pub async fn summary_week(_state: tauri::State<'_, AppState>) -> Result<WeeklySummary, AppError> {
     // TODO(E-11/V1.1): compute the weekly roll-up.
     Err(not_implemented())
 }

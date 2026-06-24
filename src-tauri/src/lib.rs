@@ -56,11 +56,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
     // recursive (Value -> Vec<Value> -> Value), so map it to the TS `unknown`
     // type, which is the correct frontend type for an opaque JSON blob. This
     // remap lives on the export side, leaving `reposync-core` untouched.
-    let semantic = specta_typescript::semantic::Configuration::default().define::<serde_json::Value>(
-        |_| specta_typescript::define("unknown").into(),
-        None,
-        None,
-    );
+    let semantic = specta_typescript::semantic::Configuration::default()
+        .define::<serde_json::Value>(|_| specta_typescript::define("unknown").into(), None, None);
 
     tauri_specta::Builder::<tauri::Wry>::new()
         .commands(collect_commands![

@@ -15,8 +15,8 @@ fn main() {
     // affects test binaries (`rustc-link-arg-tests`), never the real app.
     #[cfg(all(target_os = "windows", target_env = "msvc"))]
     {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tracer-test.manifest");
+        let manifest =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tracer-test.manifest");
         println!("cargo::rerun-if-changed=tracer-test.manifest");
         // Scope the manifest to integration `[[test]]` binaries only via
         // `rustc-link-arg-tests`. The real reposync.exe must NOT get this arg:

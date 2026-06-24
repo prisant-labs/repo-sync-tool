@@ -501,10 +501,9 @@ mod tests {
         // wire form the frontend actually receives: serialize the
         // Result<RepoId, AppError>, read it back as Result<RepoId,
         // AppErrorPayload>, and assert the re-serialization is identical.
-        let err: Result<RepoId, crate::error::AppError> =
-            Err(crate::error::AppError::NotFound {
-                entity: "repo".into(),
-            });
+        let err: Result<RepoId, crate::error::AppError> = Err(crate::error::AppError::NotFound {
+            entity: "repo".into(),
+        });
         let json = serde_json::to_string(&err).expect("serialize error result");
         let wire: Result<RepoId, crate::error::AppErrorPayload> =
             serde_json::from_str(&json).expect("deserialize error wire form");

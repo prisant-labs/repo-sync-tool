@@ -572,18 +572,11 @@ mod tests {
         assert!(!AppError::GitNotFound.retryable());
         assert!(!AppError::AuthFailed.retryable());
         assert!(!AppError::GithubNotFound.retryable());
-        assert!(
-            !AppError::Db {
-                cause: "x".into()
-            }
-            .retryable()
-        );
-        assert!(
-            !AppError::Unexpected {
-                context: "x".into()
-            }
-            .retryable()
-        );
+        assert!(!AppError::Db { cause: "x".into() }.retryable());
+        assert!(!AppError::Unexpected {
+            context: "x".into()
+        }
+        .retryable());
     }
 
     #[test]
@@ -628,7 +621,9 @@ mod tests {
 
     #[test]
     fn rate_limited_round_trip() {
-        let err = AppError::RateLimited { reset_at: 1_700_000_000 };
+        let err = AppError::RateLimited {
+            reset_at: 1_700_000_000,
+        };
         let value = serde_json::to_value(&err).expect("serialize");
         assert_eq!(value["code"], "github.rate_limited");
         assert!(value["message"].is_string());

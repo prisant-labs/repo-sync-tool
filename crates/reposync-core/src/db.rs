@@ -7,9 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
 
 use crate::error::AppError;
@@ -67,13 +65,12 @@ mod tests {
     async fn migrations_create_three_tables() {
         let (_dir, pool) = fresh_pool().await;
         for table in ["repos", "repo_local_state", "activity_records"] {
-            let row = sqlx::query(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-            )
-            .bind(table)
-            .fetch_optional(&pool)
-            .await
-            .expect("query sqlite_master");
+            let row =
+                sqlx::query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+                    .bind(table)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("query sqlite_master");
             assert!(row.is_some(), "expected table {table} to exist");
         }
     }
