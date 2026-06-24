@@ -40,9 +40,18 @@ use events::{
 /// NOT prevent launch (E-03 degraded-state contract): the app still opens and
 /// git-dependent commands return [`AppError::GitNotFound`]. The full re-probe
 /// state machine is E-03 scope; this is the minimal tolerant form.
+///
+/// `db_recovered` / `db_backup_path` carry the E-02 AC7 migration-recovery notice
+/// produced by `init_pool_with_recovery`: `db_recovered` is true exactly when the
+/// startup migration failed and the old database was moved aside, and
+/// `db_backup_path` is where it was preserved. The shell persists this one-time
+/// signal here so a later UI/command can surface it; without this it was logged
+/// and dropped, so the notice could never reach the UI.
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub git: Option<reposync_core::git::SystemGitEngine>,
+    pub db_recovered: bool,
+    pub db_backup_path: Option<std::path::PathBuf>,
 }
 
 /// Build the `tauri-specta` [`Builder`](tauri_specta::Builder) for the shell.
@@ -162,6 +171,11 @@ pub fn run() {
                         init.backup_path
                     );
                 }
+                // Carry the one-time recovery notice into AppState so a later
+                // UI/command can surface it (E-02 AC7); previously it was logged
+                // and dropped, so the notice never reached the UI.
+                let db_recovered = init.recovered;
+                let db_backup_path = init.backup_path;
                 let pool = init.pool;
                 // Git absence must NOT block launch (E-03 degraded-state
                 // contract). Store None on GitNotFound and log a warning; the
@@ -176,7 +190,12 @@ pub fn run() {
                         None
                     }
                 };
-                handle.manage(AppState { pool, git });
+                handle.manage(AppState {
+                    pool,
+                    git,
+                    db_recovered,
+                    db_backup_path,
+                });
             });
 
             Ok(())

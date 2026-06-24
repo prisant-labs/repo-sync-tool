@@ -166,7 +166,7 @@ fn move_db_aside(db_path: &Path, backup_dir: &Path) -> Option<PathBuf> {
         return None;
     }
     let stamp = timestamp();
-    let dest = backup_dir.join(format!("reposync-{stamp}.db"));
+    let dest = unique_backup_dest(backup_dir, &stamp);
 
     // Move the primary database first; if THIS fails, the whole move failed.
     if db_path.exists() {
@@ -195,6 +195,28 @@ fn move_db_aside(db_path: &Path, backup_dir: &Path) -> Option<PathBuf> {
     }
 
     Some(dest)
+}
+
+/// A non-colliding backup destination under `backup_dir` for stamp `stamp`.
+///
+/// The stamp is whole-seconds, so two recoveries in the same second would derive
+/// the same `reposync-<stamp>.db` name and the second would overwrite (or, with
+/// the locked-file fallback, be lost). The first candidate keeps the clean
+/// `reposync-<stamp>.db` shape; on a collision we append an incrementing `-N`
+/// suffix until a free path is found, so consecutive backups are always distinct.
+fn unique_backup_dest(backup_dir: &Path, stamp: &str) -> PathBuf {
+    let first = backup_dir.join(format!("reposync-{stamp}.db"));
+    if !first.exists() {
+        return first;
+    }
+    let mut n: u32 = 1;
+    loop {
+        let candidate = backup_dir.join(format!("reposync-{stamp}-{n}.db"));
+        if !candidate.exists() {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Append a SQLite sidecar suffix (`-wal` / `-shm`) to a db path's file name.
@@ -441,6 +463,36 @@ mod tests {
         assert!(
             row.is_some(),
             "the recovered db must be migrated and usable"
+        );
+    }
+
+    #[test]
+    fn move_db_aside_twice_produces_distinct_paths() {
+        // L-2: two recoveries in the same whole second must not collide. The stamp
+        // is whole-seconds, so without sub-second uniqueness the second move would
+        // reuse the first dest path. Assert two consecutive backups land on
+        // distinct, both-present files.
+        let tmp = TempDir::new().expect("tempdir");
+        let backup_dir = tmp.path().join("corrupt-backups");
+
+        let db1 = tmp.path().join("reposync.db");
+        std::fs::write(&db1, b"db one").unwrap();
+        let first = move_db_aside(&db1, &backup_dir).expect("first move should succeed");
+
+        // Recreate the db at the same source path and move it again immediately;
+        // these two calls almost certainly share a whole-second timestamp.
+        let db2 = tmp.path().join("reposync.db");
+        std::fs::write(&db2, b"db two").unwrap();
+        let second = move_db_aside(&db2, &backup_dir).expect("second move should succeed");
+
+        assert_ne!(
+            first, second,
+            "two consecutive backups must not collide on the same path"
+        );
+        assert!(first.exists(), "the first backup must still be present");
+        assert!(
+            second.exists(),
+            "the second backup must be present, not overwritten"
         );
     }
 

@@ -123,15 +123,20 @@ pub async fn check_now(
 ) -> Result<CheckResult, AppError> {
     let repo_id = id.0;
 
-    // 1. Look up the path and stored upstream.
+    // 1. Look up the path and stored upstream. A missing id is NotFound (mirrors
+    //    store::repo_get), not the generic db error fetch_one would yield via the
+    //    From<sqlx::Error> impl on the "no rows" case.
     let row = sqlx::query(
         "SELECT r.local_path AS local_path, s.upstream_branch AS upstream_branch \
          FROM repos r LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          WHERE r.id = ?",
     )
     .bind(repo_id)
-    .fetch_one(pool)
+    .fetch_optional(pool)
     .await?;
+    let row = row.ok_or_else(|| AppError::NotFound {
+        entity: format!("repo {repo_id}"),
+    })?;
     let local_path: String = row.try_get("local_path")?;
     let stored_upstream: Option<String> = row.try_get("upstream_branch")?;
     let path = Path::new(&local_path);
@@ -519,6 +524,28 @@ mod tests {
             result.reason.as_deref(),
             Some("no upstream"),
             "the decision reason should reflect the (now) absent upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_now_missing_repo_is_not_found() {
+        // M-3: check_now against a migrated DB with no such repo id must return
+        // AppError::NotFound, not a generic db error. The lookup is step 1, so this
+        // returns before any git inspection - a fresh pool with no rows suffices and
+        // git availability is irrelevant to the assertion.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping check_now_missing_repo_is_not_found: git not resolvable");
+            return;
+        };
+
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        // No repo was ever added, so id 9999 does not exist.
+        let result = check_now(&pool, &git, RepoId(9999)).await;
+        assert!(
+            matches!(result, Err(AppError::NotFound { .. })),
+            "check_now on a missing repo id must be NotFound, got {result:?}"
         );
     }
 
