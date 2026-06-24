@@ -316,9 +316,14 @@ fn resolve_and_probe(explicit: Option<&str>) -> (Option<PathBuf>, GitAvailabilit
         return (None, GitAvailability::Unavailable);
     };
 
-    // Probe the version. A spawn that produces unparseable output still counts
-    // as resolved; we just cannot assert the floor, so treat it as Available
-    // (conservative: do not block on a version we could not read).
+    // INVARIANT: `candidate_is_runnable` already spawn-verified `git --version`
+    // (spawned + exit 0) for the resolved candidate, so we KNOW a real git ran.
+    // Probe the version string. The only `None` here is a genuinely unparseable
+    // version line from a real git (odd output) - a spawn failure or non-zero
+    // exit can no longer reach this point, so the conservative `Available`
+    // fallback is sound (we do not block on a version we could not read), and a
+    // stale/broken git.exe at a well-known path can no longer masquerade as
+    // Available (it fails `candidate_is_runnable` and never resolves).
     let availability = match probe_version(&exe) {
         Some(version) if version.meets_floor() => GitAvailability::Available { version },
         Some(version) => GitAvailability::BelowFloor { version },
@@ -329,15 +334,15 @@ fn resolve_and_probe(explicit: Option<&str>) -> (Option<PathBuf>, GitAvailabilit
     (Some(exe), availability)
 }
 
-/// Whether a candidate path is a runnable git: either the bare name `git`
-/// (resolved against PATH by actually spawning `git --version`) or an existing
-/// file on disk. The bare-name probe is what lets PATH resolution work without
-/// a separate `where`/`which`.
+/// Whether a candidate path is a runnable git: it must successfully run
+/// `git --version` (spawn + exit 0). This holds for the bare name `git`
+/// (resolved against PATH at spawn time) AND for explicit / well-known file
+/// paths - a path that merely EXISTS is not enough, since a stale or broken
+/// `git.exe` would otherwise read as Available and bypass the degraded
+/// Unavailable state (H1). Spawn-verifying every candidate is what enforces the
+/// invariant that a resolved candidate has genuinely executed `git --version`.
 fn candidate_is_runnable(candidate: &Path) -> bool {
-    if candidate == Path::new("git") {
-        return spawn_version_ok(candidate);
-    }
-    candidate.is_file()
+    spawn_version_ok(candidate)
 }
 
 /// Whether `<exe> --version` spawns and exits zero (synchronous probe).
@@ -465,6 +470,44 @@ mod tests {
                 "git is on PATH, so re-probe must resolve it"
             );
         }
+    }
+
+    #[test]
+    fn non_git_file_is_not_runnable() {
+        // H1 (core invariant): a candidate that EXISTS on disk but is not a
+        // runnable git must be rejected. Before the fix, `candidate_is_runnable`
+        // accepted any existing file via `is_file()` without spawn-verifying it,
+        // so a stale/broken git.exe at an explicit/well-known path read as
+        // Available and bypassed the degraded Unavailable state.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let not_git = tmp.path().join("not-git.exe");
+        std::fs::write(&not_git, b"this is not an executable\n").unwrap();
+        assert!(not_git.is_file(), "the bogus candidate must exist on disk");
+
+        assert!(
+            !super::candidate_is_runnable(&not_git),
+            "an existing-but-non-runnable file must NOT be accepted as git"
+        );
+    }
+
+    #[test]
+    fn resolve_and_probe_is_unavailable_when_only_candidate_is_broken() {
+        // H1 (end-to-end): when the ONLY candidate cannot run `git --version`,
+        // resolution must yield (None, Unavailable) - never a fabricated
+        // Available. We exclude the bare-"git" PATH fallback by exercising
+        // `resolve_from_candidates` directly with the runnable predicate over a
+        // single broken-file candidate, mirroring what `resolve_and_probe` does.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let not_git = tmp.path().join("not-git.exe");
+        std::fs::write(&not_git, b"nope\n").unwrap();
+
+        let candidates = vec![not_git];
+        let resolved =
+            discover::resolve_from_candidates(&candidates, |c| super::candidate_is_runnable(c));
+        assert!(
+            resolved.is_none(),
+            "a single broken-file candidate must not resolve, got {resolved:?}"
+        );
     }
 
     #[test]

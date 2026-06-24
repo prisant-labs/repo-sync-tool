@@ -200,8 +200,15 @@ pub(crate) async fn rev_parse(
 
 /// Read working-tree dirtiness via `git status --porcelain=v2`, through the
 /// capture point. The CLI counterpart to the git2 dirty read.
+///
+/// On a non-zero exit this returns [`AppError::CommandFailed`] (mirroring
+/// [`rev_parse`]): a failed `git status` with empty stdout must NOT be read as a
+/// clean tree, which would let the policy pick a mutation over an unknown state.
 pub(crate) async fn status(git_exe: &Path, repo_path: &Path) -> Result<PorcelainStatus, AppError> {
     let captured = run_git(git_exe, repo_path, &["status", "--porcelain=v2"]).await?;
+    if captured.exit_code != Some(0) {
+        return Err(command_failed(&captured));
+    }
     Ok(parse_porcelain_v2(&captured.raw_stdout))
 }
 
@@ -221,7 +228,22 @@ pub(crate) async fn for_each_ref(
         ],
     )
     .await?;
+    if captured.exit_code != Some(0) {
+        return Err(command_failed(&captured));
+    }
     Ok(parse_for_each_ref(&captured.raw_stdout))
+}
+
+/// Build an [`AppError::CommandFailed`] from a non-zero git capture. Centralizes
+/// the exit-code + stderr mapping for the read ops that must surface a failed
+/// command rather than mis-parsing empty output as a benign result (M1/M2). The
+/// exit code is forced to a concrete `i32` (a signal-killed process with no code
+/// becomes `-1`) so the error always carries a non-zero discriminator.
+fn command_failed(captured: &Captured) -> AppError {
+    AppError::CommandFailed {
+        exit_code: captured.exit_code.unwrap_or(-1),
+        stderr: captured.raw_stderr.clone(),
+    }
 }
 
 /// Parse the two whitespace-separated integers from `git rev-list
@@ -338,6 +360,7 @@ pub(crate) fn parse_for_each_ref(stdout: &str) -> Vec<RefRow> {
 #[cfg(test)]
 mod tests {
     use super::{classify_fetch, parse_left_right_count};
+    use crate::error::AppError;
     use crate::git::FetchClass;
 
     // --- fetch classification (AC10 / BL-NI-05) -------------------------------
@@ -718,6 +741,65 @@ mod tests {
             Some(1),
             "clone should be 1 behind after remote commit"
         );
+    }
+
+    #[tokio::test]
+    async fn status_errs_on_nonzero_exit() {
+        // M1: `git status` in a NON-repo exits non-zero (128) with empty stdout.
+        // Before the fix, status() parsed stdout regardless of exit code, so this
+        // read as a clean tree. It must instead return an Err.
+        if !git_resolvable() {
+            eprintln!("skipping status_errs_on_nonzero_exit: git not resolvable");
+            return;
+        }
+        let engine = match SystemGitEngine::discover() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let tmp = TempDir::new().expect("tempdir");
+        // A plain empty directory is not a git repo.
+        let result = engine.status(tmp.path()).await;
+        assert!(
+            result.is_err(),
+            "status in a non-repo must error, not report a clean tree: {result:?}"
+        );
+        // It is the git command-failed variant, carrying the non-zero exit.
+        match result {
+            Err(AppError::CommandFailed { exit_code, .. }) => {
+                assert_ne!(exit_code, 0, "a failed status must carry a non-zero exit");
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn for_each_ref_errs_on_nonzero_exit() {
+        // M2: `git for-each-ref` in a NON-repo exits non-zero with empty stdout.
+        // Before the fix, for_each_ref() returned an empty Vec silently. It must
+        // instead return an Err.
+        if !git_resolvable() {
+            eprintln!("skipping for_each_ref_errs_on_nonzero_exit: git not resolvable");
+            return;
+        }
+        let engine = match SystemGitEngine::discover() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let tmp = TempDir::new().expect("tempdir");
+        let result = engine.for_each_ref(tmp.path()).await;
+        assert!(
+            result.is_err(),
+            "for-each-ref in a non-repo must error, not return an empty list: {result:?}"
+        );
+        match result {
+            Err(AppError::CommandFailed { exit_code, .. }) => {
+                assert_ne!(
+                    exit_code, 0,
+                    "a failed for-each-ref must carry a non-zero exit"
+                );
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
     }
 
     /// Smoke-test the CLI read ops (`rev-parse`, `status --porcelain=v2`,

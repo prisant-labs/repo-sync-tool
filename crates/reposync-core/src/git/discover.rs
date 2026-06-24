@@ -109,6 +109,8 @@ pub fn candidate_paths(
     explicit: Option<&str>,
     program_files: Option<&str>,
     local_app_data: Option<&str>,
+    user_profile: Option<&str>,
+    scoop: Option<&str>,
 ) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
 
@@ -134,7 +136,7 @@ pub fn candidate_paths(
         out.push(pf.join("Git").join("bin").join("git.exe"));
     }
     if let Some(lad) = local_app_data {
-        // Scoop shim and winget/Programs install layouts under LOCALAPPDATA.
+        // winget/Programs install layouts under LOCALAPPDATA.
         let lad = PathBuf::from(lad);
         out.push(
             lad.join("Microsoft")
@@ -144,16 +146,41 @@ pub fn candidate_paths(
         );
         out.push(lad.join("Programs").join("Git").join("cmd").join("git.exe"));
     }
+    // Scoop shims. The default Scoop root is %USERPROFILE%\scoop, and Scoop
+    // exposes app entry points via a `shims` directory, so the git shim lives at
+    // %USERPROFILE%\scoop\shims\git.exe. A relocated install sets %SCOOP% to the
+    // chosen root, so when present its shims dir is also a candidate. (This is
+    // the Scoop shim the LOCALAPPDATA comment used to claim but never added.)
+    if let Some(up) = user_profile {
+        out.push(
+            PathBuf::from(up)
+                .join("scoop")
+                .join("shims")
+                .join("git.exe"),
+        );
+    }
+    if let Some(scoop_root) = scoop {
+        out.push(PathBuf::from(scoop_root).join("shims").join("git.exe"));
+    }
 
     out
 }
 
-/// Host-reading wrapper over [`candidate_paths`]: pulls `ProgramFiles` and
-/// `LOCALAPPDATA` from the environment and assembles the ordered list.
+/// Host-reading wrapper over [`candidate_paths`]: pulls `ProgramFiles`,
+/// `LOCALAPPDATA`, `USERPROFILE`, and `SCOOP` from the environment and assembles
+/// the ordered list.
 pub fn candidate_paths_from_env(explicit: Option<&str>) -> Vec<PathBuf> {
     let pf = std::env::var("ProgramFiles").ok();
     let lad = std::env::var("LOCALAPPDATA").ok();
-    candidate_paths(explicit, pf.as_deref(), lad.as_deref())
+    let up = std::env::var("USERPROFILE").ok();
+    let scoop = std::env::var("SCOOP").ok();
+    candidate_paths(
+        explicit,
+        pf.as_deref(),
+        lad.as_deref(),
+        up.as_deref(),
+        scoop.as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -244,7 +271,13 @@ mod tests {
     #[test]
     fn resolver_honors_order_explicit_first() {
         // Explicit override exists -> chosen even though "git" also "exists".
-        let candidates = candidate_paths(Some("C:/custom/git.exe"), Some("C:/Program Files"), None);
+        let candidates = candidate_paths(
+            Some("C:/custom/git.exe"),
+            Some("C:/Program Files"),
+            None,
+            None,
+            None,
+        );
         // Pretend everything exists; first (explicit) must win.
         let chosen = resolve_from_candidates(&candidates, |_| true);
         assert_eq!(chosen, Some(PathBuf::from("C:/custom/git.exe")));
@@ -252,7 +285,7 @@ mod tests {
 
     #[test]
     fn resolver_falls_through_to_path_then_wellknown() {
-        let candidates = candidate_paths(None, Some("C:/Program Files"), None);
+        let candidates = candidate_paths(None, Some("C:/Program Files"), None, None, None);
         // "git" (PATH) does not exist; the well-known cmd path does.
         let wellknown = PathBuf::from("C:/Program Files")
             .join("Git")
@@ -265,7 +298,7 @@ mod tests {
 
     #[test]
     fn resolver_prefers_path_over_wellknown() {
-        let candidates = candidate_paths(None, Some("C:/Program Files"), None);
+        let candidates = candidate_paths(None, Some("C:/Program Files"), None, None, None);
         // Both "git" (PATH) and the well-known path "exist"; PATH wins (it is
         // earlier in the order).
         let chosen = resolve_from_candidates(&candidates, |_| true);
@@ -274,14 +307,14 @@ mod tests {
 
     #[test]
     fn resolver_none_when_nothing_exists() {
-        let candidates = candidate_paths(None, Some("C:/Program Files"), None);
+        let candidates = candidate_paths(None, Some("C:/Program Files"), None, None, None);
         let chosen = resolve_from_candidates(&candidates, |_| false);
         assert_eq!(chosen, None);
     }
 
     #[test]
     fn explicit_override_is_first_candidate() {
-        let candidates = candidate_paths(Some("D:/git/git.exe"), None, None);
+        let candidates = candidate_paths(Some("D:/git/git.exe"), None, None, None, None);
         assert_eq!(candidates[0], PathBuf::from("D:/git/git.exe"));
         // "git" (PATH) is always present as a fallback.
         assert!(candidates.iter().any(|c| c == &PathBuf::from("git")));
@@ -289,8 +322,66 @@ mod tests {
 
     #[test]
     fn blank_explicit_is_ignored() {
-        let candidates = candidate_paths(Some("   "), None, None);
+        let candidates = candidate_paths(Some("   "), None, None, None, None);
         // First candidate is the PATH "git", not a blank path.
         assert_eq!(candidates[0], PathBuf::from("git"));
+    }
+
+    #[test]
+    fn scoop_user_profile_shim_is_a_candidate() {
+        // L2: the Scoop shim under %USERPROFILE%\scoop\shims\git.exe must be in
+        // the ordered list. Before the fix the comment claimed a Scoop shim but
+        // no Scoop path was ever added.
+        let candidates = candidate_paths(None, None, None, Some("C:/Users/jp"), None);
+        let scoop_shim = PathBuf::from("C:/Users/jp")
+            .join("scoop")
+            .join("shims")
+            .join("git.exe");
+        assert!(
+            candidates.contains(&scoop_shim),
+            "the %USERPROFILE%\\scoop\\shims\\git.exe candidate must be present: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn scoop_env_shim_is_a_candidate_when_set() {
+        // L2: when %SCOOP% is set (a relocated Scoop root), its shims dir is also
+        // a candidate.
+        let candidates =
+            candidate_paths(None, None, None, Some("C:/Users/jp"), Some("D:/scoop-root"));
+        let scoop_env_shim = PathBuf::from("D:/scoop-root").join("shims").join("git.exe");
+        assert!(
+            candidates.contains(&scoop_env_shim),
+            "the %SCOOP%\\shims\\git.exe candidate must be present when SCOOP is set: {candidates:?}"
+        );
+    }
+
+    #[test]
+    fn scoop_candidates_preserve_existing_order() {
+        // L2: adding Scoop must not reorder the existing candidates: explicit is
+        // still first, then PATH "git", then the ProgramFiles entries.
+        let candidates = candidate_paths(
+            Some("C:/custom/git.exe"),
+            Some("C:/Program Files"),
+            Some("C:/Users/jp/AppData/Local"),
+            Some("C:/Users/jp"),
+            Some("D:/scoop-root"),
+        );
+        assert_eq!(candidates[0], PathBuf::from("C:/custom/git.exe"));
+        assert_eq!(candidates[1], PathBuf::from("git"));
+        assert_eq!(
+            candidates[2],
+            PathBuf::from("C:/Program Files")
+                .join("Git")
+                .join("cmd")
+                .join("git.exe")
+        );
+        assert_eq!(
+            candidates[3],
+            PathBuf::from("C:/Program Files")
+                .join("Git")
+                .join("bin")
+                .join("git.exe")
+        );
     }
 }

@@ -127,25 +127,33 @@ pub struct ExpectedFacts {
     pub behind: Option<u32>,
 }
 
-/// A ready bare + working repo pair in a tempdir, plus its declared facts (AC6).
+/// A ready working repo (and, for the paired states, a bare upstream) in a
+/// tempdir, plus its declared facts (AC6).
 ///
 /// Holds the owned [`TempDir`]; dropping the `Fixture` removes the repos. The
 /// `bare_path`/`working_path` borrow from that handle, so the consumer must
 /// keep the `Fixture` alive for the lifetime of the test.
+///
+/// `bare_path` is `Option`: the standalone no-upstream state has NO bare
+/// upstream, so it is `None` there and `Some(bare)` for every paired state. It
+/// does not fall back to the working path (which would lie about the "bare +
+/// working pair" the API otherwise describes).
 #[derive(Debug)]
 pub struct Fixture {
     /// The owned tempdir root. Both repos live under it; its `Drop` cleans up.
     tempdir: TempDir,
-    bare_path: PathBuf,
+    /// The bare upstream path, or `None` for the standalone no-upstream state.
+    bare_path: Option<PathBuf>,
     working_path: PathBuf,
     /// The state's declared facts.
     pub expected: ExpectedFacts,
 }
 
 impl Fixture {
-    /// Path to the bare (upstream) repository.
-    pub fn bare_path(&self) -> &Path {
-        &self.bare_path
+    /// Path to the bare (upstream) repository, or `None` for the standalone
+    /// no-upstream state, which has no bare upstream.
+    pub fn bare_path(&self) -> Option<&Path> {
+        self.bare_path.as_deref()
     }
 
     /// Path to the working clone - the repo the engine inspects.
@@ -490,9 +498,36 @@ impl RepoBuilder {
         run_git_in(&self.working, &["checkout", "--detach", "HEAD"]);
     }
 
-    /// Delete the remote-tracking ref the working clone's upstream points at,
-    /// simulating a pruned/deleted upstream while branch config still names it.
+    /// Model a genuinely DELETED remote upstream that survives a fetch (M3).
+    ///
+    /// Deleting only the working clone's `refs/remotes/origin/<branch>` is not
+    /// fetch-stable: the branch still exists on the bare, so a later
+    /// `git fetch [--prune]` recreates the tracking ref and the fixture silently
+    /// stops modelling deleted-upstream. So we delete the branch on the BARE side
+    /// FIRST (with a prune so any lingering tracking ref is removed), then delete
+    /// the working clone's tracking ref. The branch's `branch.<name>.merge` /
+    /// `.remote` config is left intact, so config still names an upstream that no
+    /// longer resolves - exactly the deleted-upstream state. A subsequent fetch
+    /// finds nothing on the bare to recreate, so the state holds.
+    ///
+    /// Bare-HEAD constraint: the bare repo's symbolic `HEAD` points at
+    /// `refs/heads/<branch>`. `git branch -d` would refuse to remove the
+    /// currently-checked-out branch, but `update-ref -d` deletes the ref directly
+    /// (leaving the bare's HEAD dangling, which is harmless for a fixture that is
+    /// only ever fetched from). Standalone (no-bare) builders never call this.
     fn delete_tracking_ref(&self) {
+        if let Some(bare) = self.bare.as_ref() {
+            // Remove the branch from the bare upstream so there is nothing for a
+            // fetch to re-fetch.
+            run_git_in(
+                bare,
+                &["update-ref", "-d", &format!("refs/heads/{FIXTURE_BRANCH}")],
+            );
+        }
+        // Prune + drop the working clone's now-stale tracking ref. Prune first so
+        // a stale `origin/<branch>` left by the clone is reconciled against the
+        // (now branchless) bare, then ensure the ref is gone outright.
+        run_git_in(&self.working, &["fetch", "origin", "--prune"]);
         run_git_in(
             &self.working,
             &[
@@ -518,12 +553,12 @@ impl RepoBuilder {
     }
 
     /// Consume the builder into a [`Fixture`], moving the owned tempdir so
-    /// cleanup is tied to the returned handle's `Drop`.
+    /// cleanup is tied to the returned handle's `Drop`. `bare_path` is `None` for
+    /// a standalone (no-upstream) builder - it is NOT aliased to the working path.
     fn into_fixture(self, expected: ExpectedFacts) -> Fixture {
-        let bare_path = self.bare.clone().unwrap_or_else(|| self.working.clone());
         Fixture {
             tempdir: self.tempdir,
-            bare_path,
+            bare_path: self.bare,
             working_path: self.working,
             expected,
         }
@@ -708,6 +743,55 @@ mod tests {
         assert_git2_agrees_with_declared(FixtureState::NoUpstream);
     }
 
+    /// M3: the deleted-upstream fixture must model a genuinely removed remote
+    /// upstream that SURVIVES a fetch. A `git fetch --all --prune` against it
+    /// must NOT resurrect `refs/remotes/origin/main`, so downstream fetch/check
+    /// tests keep exercising the deleted-upstream state instead of silently
+    /// healing it. Before the fix the recipe deleted only the working clone's
+    /// tracking ref (leaving the branch on the bare), so a fetch recreated it.
+    #[test]
+    fn deleted_upstream_survives_fetch() {
+        let fx = build_fixture(FixtureState::DeletedUpstream);
+        let working = fx.working_path();
+
+        // Pre-fetch: the upstream does not resolve (deleted-upstream state).
+        let before = inspect::inspect(working).expect("inspect before fetch");
+        assert_eq!(
+            before.upstream_branch, None,
+            "deleted-upstream must start with no resolvable upstream"
+        );
+
+        // Fetch from the bare (the real downstream check/fetch path).
+        run_git_in(working, &["fetch", "--all", "--prune"]);
+
+        // Post-fetch: the upstream tracking ref must STILL be gone.
+        let after = inspect::inspect(working).expect("inspect after fetch");
+        assert_eq!(
+            after.upstream_branch, None,
+            "a fetch must NOT resurrect the deleted upstream tracking ref"
+        );
+        // And the raw ref must not exist either.
+        let refs = git_stdout(
+            working,
+            &["for-each-ref", "--format=%(refname)", "refs/remotes/origin"],
+        );
+        assert!(
+            !refs.lines().any(|l| l.trim() == "refs/remotes/origin/main"),
+            "refs/remotes/origin/main must not be recreated by fetch, got:\n{refs}"
+        );
+
+        // The declared facts still hold: ahead/behind None (no comparison base).
+        let ab = inspect::ahead_behind(working).expect("ahead_behind after fetch");
+        assert_eq!(
+            ab.ahead, None,
+            "deleted-upstream ahead stays None after fetch"
+        );
+        assert_eq!(
+            ab.behind, None,
+            "deleted-upstream behind stays None after fetch"
+        );
+    }
+
     // --- AC3: the git2-vs-CLI cross-check -------------------------------------
     //
     // Runs in the crate's own `#[cfg(test)]` tree (no `test-support` feature
@@ -873,6 +957,47 @@ mod tests {
         }
     }
 
+    /// M4: a no-upstream fixture has no bare repo, so `bare_path()` must be
+    /// `None` (not a lie that points back at the working clone). Fixtures built
+    /// from a bare + working pair must report `Some(bare)` inside the tempdir.
+    #[test]
+    fn bare_path_is_none_only_for_no_upstream() {
+        // no-upstream is standalone: there is no bare upstream.
+        let no_up = build_fixture(FixtureState::NoUpstream);
+        assert_eq!(
+            no_up.bare_path(),
+            None,
+            "no-upstream has no bare repo, so bare_path() must be None"
+        );
+
+        // Every paired state reports a real bare path under the tempdir, distinct
+        // from the working path.
+        for state in [
+            FixtureState::Clean,
+            FixtureState::Dirty,
+            FixtureState::Ahead,
+            FixtureState::Behind,
+            FixtureState::DetachedHead,
+            FixtureState::DeletedUpstream,
+        ] {
+            let fx = build_fixture(state);
+            let bare = fx
+                .bare_path()
+                .unwrap_or_else(|| panic!("[{}] paired state must have a bare path", state.name()));
+            assert!(
+                bare.starts_with(fx.root_path()),
+                "[{}] bare path must live inside the tempdir",
+                state.name()
+            );
+            assert_ne!(
+                bare,
+                fx.working_path(),
+                "[{}] bare path must not alias the working path",
+                state.name()
+            );
+        }
+    }
+
     /// AC4: a fixture lives entirely inside its owned tempdir, and dropping it
     /// removes that directory. No path escapes the tempdir; nothing leaks.
     #[test]
@@ -883,7 +1008,9 @@ mod tests {
             root_path = fx.root_path().to_path_buf();
             assert!(root_path.exists(), "tempdir should exist while held");
             assert!(
-                fx.bare_path().starts_with(&root_path),
+                fx.bare_path()
+                    .expect("clean fixture has a bare upstream")
+                    .starts_with(&root_path),
                 "bare repo must live inside the tempdir"
             );
             assert!(
@@ -898,43 +1025,69 @@ mod tests {
         );
     }
 
-    /// AC2: building a state twice yields identical structure - same branch,
-    /// same detached flag, same dirty flag, same ahead/behind relationship.
-    /// Exact SHAs are a nice-to-have (spec open question) and not asserted here;
-    /// we diff STRUCTURE and RELATIONSHIPS, not SHAs.
-    #[test]
-    fn recipes_are_structurally_deterministic() {
+    /// The OBSERVED state of a fixture, read by running the real E-03 engine
+    /// against it (git2 `inspect` + `ahead_behind_read`, and the CLI
+    /// `for-each-ref` ref topology). Used by the determinism check to compare two
+    /// independent builds by what the engine actually sees, not by the
+    /// hand-declared `ExpectedFacts`.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Observed {
+        branch: Option<String>,
+        dirty: bool,
+        detached: bool,
+        ahead: Option<i64>,
+        behind: Option<i64>,
+        /// The `(refname, has_upstream)` topology, sorted, with volatile object
+        /// ids dropped (SHAs are a separate reproducibility check). Two builds of
+        /// the same state must agree on which refs exist and which carry an
+        /// upstream.
+        ref_topology: Vec<(String, bool)>,
+    }
+
+    /// Observe a fixture's state through the real engine.
+    async fn observe(engine: &SystemGitEngine, fx: &Fixture) -> Observed {
+        let working = fx.working_path();
+        let read = inspect::inspect(working).expect("inspect ok");
+        let ab = engine
+            .ahead_behind_read(working)
+            .expect("ahead_behind_read ok");
+        let mut refs: Vec<(String, bool)> = engine
+            .for_each_ref(working)
+            .await
+            .expect("for-each-ref ok")
+            .into_iter()
+            .map(|r| (r.refname, r.upstream.is_some()))
+            .collect();
+        refs.sort();
+        Observed {
+            branch: read.active_branch,
+            dirty: read.is_dirty,
+            detached: read.is_detached,
+            ahead: ab.ahead,
+            behind: ab.behind,
+            ref_topology: refs,
+        }
+    }
+
+    /// AC2: building a state twice yields the same OBSERVED structure. This runs
+    /// the E-03 engine against build A and build B and asserts the observed
+    /// branch / dirty / detached / ahead / behind AND the ref topology match -
+    /// genuine reproducibility, not a comparison of the hand-declared constants
+    /// to themselves (which proved nothing). Exact SHAs remain a separate
+    /// nice-to-have (`recipe_clean_sha_is_reproducible`); here we diff structure
+    /// and relationships, with object ids dropped from the topology.
+    #[tokio::test]
+    async fn recipes_are_structurally_deterministic() {
+        let engine = SystemGitEngine::discover().expect("git engine should discover on this host");
         for state in FixtureState::ALL {
             let a = build_fixture(state);
             let b = build_fixture(state);
+            let obs_a = observe(&engine, &a).await;
+            let obs_b = observe(&engine, &b).await;
             assert_eq!(
-                a.expected.branch,
-                b.expected.branch,
-                "[{}] branch not deterministic",
-                state.name()
-            );
-            assert_eq!(
-                a.expected.detached,
-                b.expected.detached,
-                "[{}] detached not deterministic",
-                state.name()
-            );
-            assert_eq!(
-                a.expected.dirty,
-                b.expected.dirty,
-                "[{}] dirty not deterministic",
-                state.name()
-            );
-            assert_eq!(
-                a.expected.ahead,
-                b.expected.ahead,
-                "[{}] ahead not deterministic",
-                state.name()
-            );
-            assert_eq!(
-                a.expected.behind,
-                b.expected.behind,
-                "[{}] behind not deterministic",
+                obs_a,
+                obs_b,
+                "[{}] observed engine state is not reproducible across two builds",
                 state.name()
             );
         }

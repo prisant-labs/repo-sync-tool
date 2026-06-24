@@ -143,8 +143,12 @@ pub async fn check_now(
     // 3. Fetch (record raw output regardless of outcome).
     let fetch = git.fetch(path).await?;
 
-    // 4. Resolve upstream: prefer the freshly inspected one, fall back to stored.
-    let upstream = inspect.upstream_branch.clone().or(stored_upstream);
+    // 4. Resolve upstream from the FRESH inspection. The DB's stored upstream is
+    //    intentionally NOT a fallback: a fresh inspect of `None` is authoritative
+    //    (the branch's upstream was removed, e.g. deleted-upstream), and falling
+    //    back to a stale stored ref would re-introduce a comparison base that no
+    //    longer exists.
+    let upstream = resolve_upstream(inspect.upstream_branch.clone(), stored_upstream);
 
     // 5. Ahead/behind when an upstream exists.
     let ahead_behind = match &upstream {
@@ -272,6 +276,21 @@ pub async fn check_now(
     })
 }
 
+/// Decide which upstream ref `check_now` compares against.
+///
+/// The freshly inspected upstream is AUTHORITATIVE: a fresh `None` means the
+/// branch currently has no resolvable upstream (e.g. it was removed after the
+/// repo was added, the deleted-upstream state), so ahead/behind must be unknown
+/// (`None`) rather than a comparison against a stale stored ref. The DB's
+/// `stored_upstream` is therefore intentionally ignored; it is accepted only so
+/// the call site and this decision stay self-documenting (and so the rule is
+/// unit-testable in isolation). It used to be a fallback - a tracer crutch from
+/// when inspect did not report upstream reliably - which masked a removed
+/// upstream by re-introducing the old ref.
+fn resolve_upstream(fresh: Option<String>, _stored: Option<String>) -> Option<String> {
+    fresh
+}
+
 /// Best-effort origin remote URL via git2. `None` if absent or unreadable.
 fn origin_url(path: &Path) -> Option<String> {
     let repo = git2::Repository::open(path).ok()?;
@@ -300,7 +319,39 @@ fn is_unique_violation(err: &sqlx::Error) -> bool {
 mod tests {
     use super::*;
     use crate::db;
+    use crate::git::fixtures::{build_fixture, FixtureState};
     use tempfile::TempDir;
+
+    // --- H2: fresh inspect upstream is authoritative over the stored ref -------
+
+    #[test]
+    fn resolve_upstream_fresh_none_overrides_stored() {
+        // The deleted-upstream case: fresh inspect reports None (the branch's
+        // upstream was removed after `add`), but the DB still has the old ref.
+        // Resolution MUST yield None - a comparison against the stale stored ref
+        // would mislabel a deleted upstream as a real ahead/behind base. Before
+        // the fix this was `fresh.or(stored)`, which re-introduced the stale ref.
+        let resolved = resolve_upstream(None, Some("refs/remotes/origin/main".to_string()));
+        assert_eq!(
+            resolved, None,
+            "a fresh None must NOT fall back to the stored upstream"
+        );
+    }
+
+    #[test]
+    fn resolve_upstream_prefers_fresh_when_present() {
+        // When fresh inspection has an upstream, it wins (and the stored value,
+        // even if different, is irrelevant).
+        let resolved = resolve_upstream(
+            Some("refs/remotes/origin/feature".to_string()),
+            Some("refs/remotes/origin/stale".to_string()),
+        );
+        assert_eq!(
+            resolved.as_deref(),
+            Some("refs/remotes/origin/feature"),
+            "the fresh upstream is authoritative"
+        );
+    }
 
     /// Build a git2 repo with one commit at `dir`. Returns nothing; panics on
     /// failure (test helper).
@@ -401,6 +452,74 @@ mod tests {
                 .try_get("last_checked_at")
                 .unwrap();
         assert!(last_checked.is_some(), "last_checked_at should be set");
+    }
+
+    /// Delete the working clone's remote-tracking ref so a fresh inspect reports
+    /// no upstream, modelling "the upstream was removed after the repo was added".
+    fn delete_tracking_ref(working: &Path, branch: &str) {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(working)
+            .args(["update-ref", "-d", &format!("refs/remotes/origin/{branch}")])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(ok, "deleting the tracking ref should succeed");
+    }
+
+    #[tokio::test]
+    async fn check_now_with_removed_upstream_yields_none_not_stale_comparison() {
+        // H2 (end-to-end): a repo whose upstream is removed AFTER `add` (so the
+        // DB has a stored upstream but a fresh inspect reports None) must yield
+        // ahead/behind = None, not a comparison against the stale stored ref.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping check_now_with_removed_upstream...: git not resolvable");
+            return;
+        };
+
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        // A clean fixture starts WITH an upstream (refs/remotes/origin/main), so
+        // `add` records a stored upstream in repo_local_state.
+        let fx = build_fixture(FixtureState::Clean);
+        let working = fx.working_path();
+
+        let id = add(&pool, &git, working).await.expect("add ok");
+
+        // Sanity: the stored upstream is present after add.
+        let stored: Option<String> =
+            sqlx::query("SELECT upstream_branch FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("upstream_branch")
+                .unwrap();
+        assert!(
+            stored.is_some(),
+            "the clean fixture should record a stored upstream at add time"
+        );
+
+        // Now remove the upstream tracking ref: a fresh inspect will report None.
+        delete_tracking_ref(working, "main");
+
+        // check_now: even though the DB still has the stored upstream, the fresh
+        // inspect of None must win, so ahead/behind are None (no stale compare).
+        let result = check_now(&pool, &git, id).await.expect("check_now ok");
+        assert_eq!(
+            result.ahead, None,
+            "removed upstream must report ahead = None, not a stale comparison"
+        );
+        assert_eq!(
+            result.behind, None,
+            "removed upstream must report behind = None, not a stale comparison"
+        );
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("no upstream"),
+            "the decision reason should reflect the (now) absent upstream"
+        );
     }
 
     #[tokio::test]
