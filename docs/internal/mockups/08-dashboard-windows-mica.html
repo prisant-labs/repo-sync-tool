@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-platform="windows">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RepoSync · Dashboard · Windows 11 Mica</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,200..900,0..100;1,9..144,200..900,0..100&family=Geist:wght@100..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+img, svg { display: block; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+ul { list-style: none; }
+a { color: inherit; text-decoration: none; }
+
+:root {
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-sans: 'Geist', 'Segoe UI Variable', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  --bg: #1c1a1d;
+  --bg-2: #232024;
+  --surface: #2a262c;
+  --surface-2: #322d34;
+  --surface-elev: #3a343d;
+  --border: #3a343c;
+  --border-strong: #4d4651;
+  --ink: #f1ecef;
+  --ink-2: #c5bec3;
+  --ink-3: #8c8590;
+  --ink-4: #5a545d;
+
+  --ok: #6fcc8a;
+  --ok-bg: rgba(111,204,138,0.14);
+  --behind: #e8b15c;
+  --behind-bg: rgba(232,177,92,0.14);
+  --fail: #ec7070;
+  --fail-bg: rgba(236,112,112,0.14);
+  --release: #c19ce4;
+  --release-bg: rgba(193,156,228,0.14);
+  --attention: #f08a5d;
+  --attention-bg: rgba(240,138,93,0.14);
+
+  --accent: #6fa1d8;
+  --accent-bg: rgba(111,161,216,0.14);
+
+  --radius-window: 8px;
+  --radius-card: 8px;
+
+  --shadow-window:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 24px 60px -16px rgba(0,0,0,0.7),
+    0 8px 16px -8px rgba(0,0,0,0.5);
+}
+
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(800px 600px at 80% 5%, rgba(80,110,160,0.3), transparent 60%),
+    radial-gradient(700px 600px at 5% 95%, rgba(120,80,130,0.25), transparent 60%),
+    #0d0c0e;
+  color: var(--ink);
+  line-height: 1.45;
+  font-feature-settings: "ss01", "cv11", "ss03";
+  letter-spacing: -0.005em;
+  min-height: 100vh;
+  display: grid; place-items: center;
+  padding: 40px;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay; opacity: 0.5;
+}
+
+.window {
+  width: min(1340px, 96vw);
+  height: min(860px, 92vh);
+  background: linear-gradient(160deg, rgba(80,110,160,0.06), transparent 40%), var(--bg);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow-window);
+  border: 1px solid rgba(255,255,255,0.06);
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 244px 1fr;
+  grid-template-rows: 36px 1fr;
+  position: relative; z-index: 1;
+}
+
+/* Windows 11 titlebar */
+.titlebar { grid-column: 1 / -1; display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; background: linear-gradient(to bottom, rgba(255,255,255,0.02), transparent); border-bottom: 1px solid var(--border); user-select: none; }
+.tl-icon { padding: 0 12px 0 14px; display: flex; align-items: center; gap: 8px; }
+.tl-icon-mark { width: 16px; height: 16px; color: var(--ink); }
+.tl-app-name { font-size: 12.5px; font-weight: 500; color: var(--ink-2); }
+.tl-search { margin-left: 12px; width: 320px; position: relative; }
+.tl-search input { width: 100%; padding: 5px 10px 5px 28px; font-family: var(--font-sans); font-size: 12px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 5px; color: var(--ink); outline: none; }
+.tl-search input::placeholder { color: var(--ink-3); }
+.tl-search input:focus { border-color: var(--accent); }
+.tl-search svg { position: absolute; left: 8px; top: 50%; transform: translateY(-50%); width: 13px; height: 13px; color: var(--ink-3); }
+.tl-caption { display: flex; height: 36px; }
+.cap-btn { width: 46px; height: 36px; display: grid; place-items: center; color: var(--ink-2); transition: background 0.1s; }
+.cap-btn:hover { background: rgba(255,255,255,0.06); color: var(--ink); }
+.cap-btn.close:hover { background: #c4262e; color: #fff; }
+.cap-btn svg { width: 11px; height: 11px; }
+
+/* Sidebar */
+.sidebar { background: linear-gradient(to bottom, rgba(255,255,255,0.025), transparent), rgba(0,0,0,0.2); border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.brand { padding: 8px 12px 18px; display: flex; align-items: center; gap: 10px; }
+.brand-mark { width: 28px; height: 28px; display: grid; place-items: center; background: linear-gradient(135deg, var(--accent), #8da6c9); color: var(--bg); border-radius: 6px; box-shadow: 0 4px 10px -2px rgba(111,161,216,0.3); }
+.brand-mark svg { width: 16px; height: 16px; }
+.brand-name { font-family: var(--font-display); font-weight: 500; font-size: 18px; font-variation-settings: "opsz" 36, "SOFT" 60; letter-spacing: -0.015em; }
+.nav-section-label { font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); padding: 14px 12px 6px; }
+.nav-item { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 5px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; cursor: pointer; transition: all 0.12s; position: relative; }
+.nav-item:hover { background: rgba(255,255,255,0.04); color: var(--ink); }
+.nav-item[aria-current="page"] { background: rgba(255,255,255,0.07); color: var(--ink); }
+.nav-item[aria-current="page"]::before { content: ''; position: absolute; left: 4px; top: 25%; bottom: 25%; width: 3px; background: var(--accent); border-radius: 2px; }
+.nav-item svg { width: 15px; height: 15px; opacity: 0.75; }
+.nav-item[aria-current="page"] svg { opacity: 1; color: var(--accent); }
+.nav-count { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); font-feature-settings: "tnum"; }
+.nav-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--attention); }
+.group-item { display: grid; grid-template-columns: 10px 1fr auto; align-items: center; gap: 10px; padding: 6px 12px; border-radius: 5px; color: var(--ink-2); font-size: 12.5px; cursor: pointer; }
+.group-item:hover { background: rgba(255,255,255,0.04); color: var(--ink); }
+.group-swatch { width: 8px; height: 8px; border-radius: 2px; }
+.group-count { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); }
+.sidebar-footer { margin-top: auto; padding: 8px 4px 0; border-top: 1px solid var(--border); }
+.sync-status { display: grid; grid-template-columns: 24px 1fr; gap: 10px; align-items: center; padding: 8px 10px; }
+.sync-pulse { width: 24px; height: 24px; display: grid; place-items: center; background: var(--ok-bg); border-radius: 50%; position: relative; }
+.sync-pulse::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: var(--ok); opacity: 0.3; animation: pulse 2.5s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { transform: scale(0.6); opacity: 0; } 50% { transform: scale(1); opacity: 0.25; } }
+.sync-pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); position: relative; z-index: 1; }
+.sync-text { display: flex; flex-direction: column; }
+.sync-line-1 { font-size: 12.5px; font-weight: 500; }
+.sync-line-2 { font-size: 11px; color: var(--ink-3); font-family: var(--font-mono); }
+
+/* Main */
+.main { background: var(--bg); overflow-y: auto; padding: 28px 36px 40px; position: relative; }
+.page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 32px; }
+.page-eyebrow { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.page-eyebrow::before { content: ''; width: 18px; height: 1px; background: currentColor; }
+.page-title { font-family: var(--font-display); font-weight: 380; font-size: 33px; line-height: 1.05; font-variation-settings: "opsz" 96, "SOFT" 50; letter-spacing: -0.02em; }
+.page-title em { font-style: italic; font-variation-settings: "opsz" 96, "SOFT" 100; font-weight: 350; color: var(--ink-2); }
+.page-actions { display: flex; gap: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 5px; font-size: 12.5px; font-weight: 500; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); cursor: pointer; transition: all 0.12s; }
+.btn:hover { background: var(--surface-2); }
+.btn svg { width: 13px; height: 13px; }
+.btn.primary { background: var(--accent); color: #0a1320; border-color: var(--accent); font-weight: 600; }
+.btn.primary:hover { background: #8db4dd; }
+
+/* Hero stats */
+.hero { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; padding: 30px 0 34px; border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); margin-bottom: 34px; }
+.stat { padding: 0 28px; border-right: 1px solid var(--border); }
+.stat:first-child { padding-left: 0; }
+.stat:last-child { border-right: 0; padding-right: 0; }
+.stat-label { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink-3); margin-bottom: 14px; }
+.stat-num { font-family: var(--font-display); font-weight: 350; font-size: 88px; line-height: 0.9; font-variation-settings: "opsz" 144, "SOFT" 80; letter-spacing: -0.04em; color: var(--ink); font-feature-settings: "ss01","tnum","lnum"; margin-bottom: 8px; }
+.stat:nth-child(1) .stat-num { font-size: 120px; }
+.stat-sub { font-family: var(--font-display); font-style: italic; font-weight: 380; font-size: 15px; font-variation-settings: "opsz" 14, "SOFT" 100; color: var(--ink-2); }
+.stat-sub.attention { color: var(--attention); } .stat-sub.ok { color: var(--ok); } .stat-sub.release { color: var(--release); }
+
+/* sections */
+.section { margin-bottom: 38px; }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
+.section-title { font-family: var(--font-display); font-size: 19px; font-weight: 450; font-variation-settings: "opsz" 36, "SOFT" 70; letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 12px; }
+.section-count { font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; color: var(--ink-3); }
+.section-link { font-size: 12.5px; color: var(--ink-2); display: flex; align-items: center; gap: 4px; }
+.section-link:hover { color: var(--ink); }
+.section-link svg { width: 11px; height: 11px; }
+
+/* attention cards */
+.attention-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.atn-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 18px 18px 14px; display: flex; flex-direction: column; gap: 10px; position: relative; overflow: hidden; transition: all 0.15s; }
+.atn-card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+.atn-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--accent2, var(--attention)); }
+.atn-card.fail { --accent2: var(--fail); } .atn-card.dirty { --accent2: var(--behind); } .atn-card.behind { --accent2: var(--attention); }
+.atn-head { display: flex; align-items: center; gap: 10px; }
+.atn-icon { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; }
+.atn-card.fail .atn-icon { background: var(--fail-bg); color: var(--fail); } .atn-card.dirty .atn-icon { background: var(--behind-bg); color: var(--behind); } .atn-card.behind .atn-icon { background: var(--attention-bg); color: var(--attention); }
+.atn-icon svg { width: 14px; height: 14px; }
+.atn-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--ink); }
+.atn-name span { color: var(--ink-3); font-weight: 500; }
+.atn-meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.atn-msg { font-size: 13px; color: var(--ink-2); line-height: 1.5; flex: 1; }
+.atn-msg em { font-family: var(--font-mono); font-style: normal; background: var(--bg-2); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; color: var(--ink); }
+.atn-actions { display: flex; gap: 6px; margin-top: 4px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.atn-btn { font-size: 12px; font-weight: 500; padding: 5px 10px; border-radius: 5px; background: var(--surface-2); color: var(--ink-2); transition: all 0.12s; }
+.atn-btn:hover { background: var(--accent); color: #0a1320; }
+.atn-btn.ghost { background: transparent; color: var(--ink-3); }
+.atn-btn.ghost:hover { background: var(--surface-2); color: var(--ink-2); }
+
+/* recently updated */
+.activity-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); overflow: hidden; }
+.activity-row { display: grid; grid-template-columns: 28px 1fr auto auto; gap: 14px; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border); transition: background 0.12s; }
+.activity-row:last-child { border-bottom: 0; }
+.activity-row:hover { background: var(--surface-2); }
+.act-avatar { width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2); display: grid; place-items: center; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--ink-2); border: 1px solid var(--border); }
+.act-body { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.act-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--ink); }
+.act-name span { color: var(--ink-3); font-weight: 500; }
+.act-detail { font-size: 13px; color: var(--ink-2); }
+.act-detail em { font-style: italic; font-family: var(--font-display); font-variation-settings: "opsz" 14, "SOFT" 100; font-size: 13.5px; color: var(--ink); }
+.act-tag { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; background: var(--release-bg); color: var(--release); }
+.act-tag.commits { background: var(--ok-bg); color: var(--ok); }
+.act-tag.fetch { background: var(--surface-2); color: var(--ink-3); }
+.act-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); }
+
+/* daily summary */
+.summary-card { background: linear-gradient(135deg, var(--bg-2) 0%, var(--surface) 100%); border: 1px solid var(--border-strong); border-radius: var(--radius-card); padding: 28px 32px; position: relative; overflow: hidden; }
+.summary-card::after { content: ''; position: absolute; right: -40px; top: -40px; width: 200px; height: 200px; background: radial-gradient(circle, rgba(111,161,216,0.12), transparent 70%); }
+.summary-eyebrow { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px; }
+.summary-prose { font-family: var(--font-display); font-size: 19px; font-weight: 380; line-height: 1.4; font-variation-settings: "opsz" 36, "SOFT" 70; letter-spacing: -0.01em; color: var(--ink); max-width: 60ch; }
+.summary-prose b { font-weight: 500; }
+.summary-prose em { font-style: italic; font-variation-settings: "opsz" 36, "SOFT" 100; color: var(--attention); }
+.summary-meta { display: flex; gap: 24px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2); }
+.summary-meta span { display: flex; align-items: center; gap: 6px; }
+.summary-meta b { color: var(--ink); font-weight: 600; }
+.summary-meta i.dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: currentColor; }
+
+/* ===== Windows 11 toast notification ===== */
+.toast {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  width: 360px;
+  background: linear-gradient(180deg, rgba(54,50,58,0.92), rgba(40,37,44,0.92));
+  backdrop-filter: blur(40px);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 8px;
+  box-shadow: 0 20px 50px -12px rgba(0,0,0,0.7), 0 0 0 1px rgba(0,0,0,0.3);
+  padding: 16px 16px 14px;
+  z-index: 30;
+  animation: toast-in 0.6s cubic-bezier(0.2,0.9,0.2,1) 0.6s backwards;
+}
+@keyframes toast-in { from { opacity: 0; transform: translateX(30px) translateY(8px); } to { opacity: 1; transform: none; } }
+.toast-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; }
+.toast-app-icon { width: 18px; height: 18px; border-radius: 4px; background: linear-gradient(135deg, var(--accent), #8da6c9); display: grid; place-items: center; }
+.toast-app-icon svg { width: 11px; height: 11px; color: var(--bg); }
+.toast-app { font-size: 11.5px; color: var(--ink-3); flex: 1; }
+.toast-close { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 4px; color: var(--ink-3); }
+.toast-close:hover { background: rgba(255,255,255,0.08); color: var(--ink); }
+.toast-close svg { width: 11px; height: 11px; }
+.toast-body { display: grid; grid-template-columns: 38px 1fr; gap: 13px; }
+.toast-thumb { width: 38px; height: 38px; border-radius: 8px; background: var(--release-bg); color: var(--release); display: grid; place-items: center; border: 1px solid rgba(193,156,228,0.3); }
+.toast-thumb svg { width: 20px; height: 20px; }
+.toast-title { font-size: 13.5px; font-weight: 600; color: var(--ink); margin-bottom: 2px; }
+.toast-text { font-size: 12.5px; color: var(--ink-2); line-height: 1.45; }
+.toast-text b { color: var(--ink); }
+.toast-actions { display: flex; gap: 8px; margin-top: 13px; }
+.toast-btn { flex: 1; text-align: center; font-size: 12px; font-weight: 500; padding: 7px 10px; border-radius: 5px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); color: var(--ink); transition: background 0.12s; }
+.toast-btn:hover { background: rgba(255,255,255,0.12); }
+.toast-btn.primary { background: var(--accent); color: #0a1320; border-color: var(--accent); font-weight: 600; }
+.toast-time { position: absolute; top: 16px; right: 42px; font-family: var(--font-mono); font-size: 10px; color: var(--ink-4); }
+
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.stat, .atn-card, .activity-row, .summary-card { animation: rise 0.6s cubic-bezier(0.2,0.8,0.2,1) backwards; }
+.stat:nth-child(1) { animation-delay: 0.05s; } .stat:nth-child(2) { animation-delay: 0.1s; } .stat:nth-child(3) { animation-delay: 0.15s; } .stat:nth-child(4) { animation-delay: 0.2s; }
+.atn-card:nth-child(1) { animation-delay: 0.3s; } .atn-card:nth-child(2) { animation-delay: 0.36s; } .atn-card:nth-child(3) { animation-delay: 0.42s; }
+.activity-row:nth-child(1) { animation-delay: 0.5s; } .activity-row:nth-child(2) { animation-delay: 0.54s; } .activity-row:nth-child(3) { animation-delay: 0.58s; } .activity-row:nth-child(4) { animation-delay: 0.62s; }
+.summary-card { animation-delay: 0.7s; }
+
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ink-4); border-radius: 5px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="window" role="application" aria-label="RepoSync Dashboard on Windows">
+
+  <!-- Windows 11 titlebar -->
+  <div class="titlebar">
+    <div class="tl-icon">
+      <svg class="tl-icon-mark" viewBox="0 0 24 24"><rect x="4" y="13" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.4"/><rect x="6" y="9" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.7"/><rect x="8" y="5" width="14" height="3" rx="1.5" fill="currentColor"/></svg>
+      <span class="tl-app-name">RepoSync</span>
+    </div>
+    <div class="tl-search" role="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3-3"/></svg>
+      <input type="search" placeholder="Search repos, paths, tags." />
+    </div>
+    <div></div>
+    <div class="tl-caption">
+      <button class="cap-btn" aria-label="Minimize"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1"><line x1="2" y1="6" x2="10" y2="6"/></svg></button>
+      <button class="cap-btn" aria-label="Maximize"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1"><rect x="2.5" y="2.5" width="7" height="7"/></svg></button>
+      <button class="cap-btn close" aria-label="Close"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5"/></svg></button>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <nav class="sidebar" aria-label="Primary">
+    <div class="brand"><div class="brand-mark"><svg viewBox="0 0 24 24"><rect x="4" y="13" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.4"/><rect x="6" y="9" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.7"/><rect x="8" y="5" width="14" height="3" rx="1.5" fill="currentColor"/></svg></div><div class="brand-name">RepoSync</div></div>
+    <div class="nav-section-label">Workspace</div>
+    <div class="nav-item" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Dashboard</span><span class="nav-dot"></span></div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 6h18M3 12h18M3 18h18"/></svg><span>Repos</span><span class="nav-count">47</span></div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg><span>Activity</span><span class="nav-count">218</span></div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg><span>Summaries</span></div>
+    <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9"/></svg><span>Settings</span></div>
+    <div class="nav-section-label">Groups</div>
+    <div class="group-item"><span class="group-swatch" style="background:#7a9b6e"></span><span>Self-hosted apps</span><span class="group-count">14</span></div>
+    <div class="group-item"><span class="group-swatch" style="background:#c47a47"></span><span>Reference</span><span class="group-count">21</span></div>
+    <div class="group-item"><span class="group-swatch" style="background:#6b4ea3"></span><span>Templates</span><span class="group-count">8</span></div>
+    <div class="group-item"><span class="group-swatch" style="background:#999486"></span><span>Forks</span><span class="group-count">4</span></div>
+    <div class="sidebar-footer"><div class="sync-status"><div class="sync-pulse"><div class="sync-pulse-dot"></div></div><div class="sync-text"><span class="sync-line-1">Watching 47 repos</span><span class="sync-line-2">next sweep in 4h 12m</span></div></div></div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    <header class="page-header">
+      <div>
+        <div class="page-eyebrow">Thursday, May 8</div>
+        <h1 class="page-title">Good evening, Jonathan. <em>Three repos want a look.</em></h1>
+      </div>
+      <div class="page-actions">
+        <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> Add repo</button>
+        <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg> Check all now</button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="stat"><div class="stat-label">Repos under watch</div><div class="stat-num">47</div><div class="stat-sub">across 4 groups, on six-hour cadence</div></div>
+      <div class="stat"><div class="stat-label">Need attention</div><div class="stat-num">3</div><div class="stat-sub attention">surfaced in the cards below</div></div>
+      <div class="stat"><div class="stat-label">Updated today</div><div class="stat-num">12</div><div class="stat-sub ok">all fast-forwards, zero conflicts</div></div>
+      <div class="stat"><div class="stat-label">New releases</div><div class="stat-num">2</div><div class="stat-sub release">tauri v2.0.5, zed v0.158</div></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-title">Needs attention <span class="section-count">3 items</span></div>
+        <a href="#" class="section-link">View all <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></a>
+      </div>
+      <div class="attention-grid">
+        <article class="atn-card fail">
+          <div class="atn-head">
+            <div class="atn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg></div>
+            <div><div class="atn-name"><span>nextcloud/</span>server</div><div class="atn-meta">FAILED &middot; YESTERDAY 14:32</div></div>
+          </div>
+          <p class="atn-msg">Authentication failed during fetch. The token in <em>Credential Manager</em> may have expired or been rotated.</p>
+          <div class="atn-actions"><button class="atn-btn">Reconnect</button><button class="atn-btn ghost">View log</button></div>
+        </article>
+        <article class="atn-card dirty">
+          <div class="atn-head">
+            <div class="atn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></div>
+            <div><div class="atn-name"><span>immich-app/</span>immich</div><div class="atn-meta">DIRTY &middot; SKIPPED 4H AGO</div></div>
+          </div>
+          <p class="atn-msg"><em>23 uncommitted</em> changes in working tree. Auto-update skipped per dirty policy.</p>
+          <div class="atn-actions"><button class="atn-btn">View changes</button><button class="atn-btn ghost">Skip once</button></div>
+        </article>
+        <article class="atn-card behind">
+          <div class="atn-head">
+            <div class="atn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></div>
+            <div><div class="atn-name"><span>denoland/</span>deno</div><div class="atn-meta">47 BEHIND &middot; STALE 18 DAYS</div></div>
+          </div>
+          <p class="atn-msg">Behind upstream <em>main</em> by <em>47</em> commits. Last successful pull 18 days ago.</p>
+          <div class="atn-actions"><button class="atn-btn">Update now</button><button class="atn-btn ghost">View commits</button></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-title">Recently updated <span class="section-count">last 24 hours</span></div>
+        <a href="#" class="section-link">Open activity <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></a>
+      </div>
+      <div class="activity-list">
+        <div class="activity-row">
+          <div class="act-avatar">OL</div>
+          <div class="act-body"><span class="act-name"><span>ollama/</span>ollama</span><span class="act-detail">pulled <em>12 commits</em> on <em>main</em>: support for new model architectures</span></div>
+          <span class="act-tag commits">+12 commits</span><span class="act-time">4h ago</span>
+        </div>
+        <div class="activity-row">
+          <div class="act-avatar" style="background:rgba(193,156,228,0.18);color:#c19ce4">TR</div>
+          <div class="act-body"><span class="act-name"><span>tauri-apps/</span>tauri</span><span class="act-detail">new release <em>v2.0.5</em>: capability config refinements, plugin-store fix</span></div>
+          <span class="act-tag">release</span><span class="act-time">3h ago</span>
+        </div>
+        <div class="activity-row">
+          <div class="act-avatar" style="background:rgba(193,156,228,0.18);color:#c19ce4">ZE</div>
+          <div class="act-body"><span class="act-name"><span>zed-industries/</span>zed</span><span class="act-detail">new release <em>v0.158.0</em>: assistant panel revisions</span></div>
+          <span class="act-tag">release</span><span class="act-time">6h ago</span>
+        </div>
+        <div class="activity-row">
+          <div class="act-avatar">SU</div>
+          <div class="act-body"><span class="act-name"><span>supabase/</span>supabase</span><span class="act-detail">fetched, no incoming changes on <em>master</em></span></div>
+          <span class="act-tag fetch">fetch only</span><span class="act-time">2h ago</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div class="section-title">Today's read <span class="section-count">auto-generated 6:00 PM</span></div>
+        <a href="#" class="section-link">Export markdown <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></a>
+      </div>
+      <div class="summary-card">
+        <div class="summary-eyebrow">Daily summary &middot; May 8, 2026</div>
+        <p class="summary-prose">Across <b>47 repositories</b>, twelve updated cleanly and two cut new releases. The most active was <b>ollama/ollama</b>, with twelve commits adding support for new model architectures. <em>Three repos still want a look</em>: an auth refresh for nextcloud, a dirty working tree on immich, and a long-stale clone of deno.</p>
+        <div class="summary-meta">
+          <span><i class="dot" style="color:var(--ok)"></i> <b>12</b> updated</span>
+          <span><i class="dot" style="color:var(--release)"></i> <b>2</b> releases</span>
+          <span><i class="dot" style="color:var(--attention)"></i> <b>3</b> attention</span>
+          <span><i class="dot" style="color:var(--ink-3)"></i> <b>30</b> no change</span>
+          <span style="margin-left:auto;color:var(--ink-3)">Generated locally &middot; no telemetry</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Windows 11 toast notification -->
+    <aside class="toast" role="alert" aria-label="Notification">
+      <span class="toast-time">now</span>
+      <div class="toast-head">
+        <div class="toast-app-icon"><svg viewBox="0 0 24 24"><rect x="4" y="13" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.4"/><rect x="6" y="9" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.7"/><rect x="8" y="5" width="14" height="3" rx="1.5" fill="currentColor"/></svg></div>
+        <span class="toast-app">RepoSync</span>
+        <button class="toast-close" aria-label="Dismiss"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1.4"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5"/></svg></button>
+      </div>
+      <div class="toast-body">
+        <div class="toast-thumb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10z"/><circle cx="7" cy="7" r="1.5" fill="currentColor"/></svg></div>
+        <div>
+          <div class="toast-title">New release: tauri-apps/tauri</div>
+          <div class="toast-text"><b>v2.0.5</b> was just tagged. Capability config refinements, plugin-store crash fix on disk full.</div>
+        </div>
+      </div>
+      <div class="toast-actions">
+        <button class="toast-btn primary">View release</button>
+        <button class="toast-btn">Open repo</button>
+      </div>
+    </aside>
+
+  </main>
+
+</div>
+</body>
+</html>

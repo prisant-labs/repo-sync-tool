@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-platform="windows">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RepoSync · First run · Windows 11 Light</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,200..900,0..100;1,9..144,200..900,0..100&family=Geist:wght@100..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+img, svg { display: block; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+ul { list-style: none; }
+a { color: inherit; text-decoration: none; }
+
+:root {
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-sans: 'Geist', 'Segoe UI Variable', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  /* Warm-tinted Windows 11 light "mica" - not the sterile cool grey */
+  --bg: #f4f2ee;
+  --bg-2: #ebe8e1;
+  --surface: #ffffff;
+  --surface-tint: #fbfaf6;
+  --border: #e3ded3;
+  --border-strong: #cec8b9;
+  --ink: #1d1b18;
+  --ink-2: #4c483f;
+  --ink-3: #8a857a;
+  --ink-4: #b6b1a6;
+
+  --ok: #2d6a3f;
+  --ok-bg: #e6efe7;
+  --behind: #b8770a;
+  --behind-bg: #f4ebd8;
+  --fail: #b93838;
+  --fail-bg: #f4e1df;
+  --release: #6b4ea3;
+  --release-bg: #ebe5f2;
+  --attention: #d94a14;
+  --attention-bg: #fbe2d4;
+
+  /* Windows accent (deepened so it reads on light) */
+  --accent: #355d99;
+  --accent-2: #4a72b0;
+  --accent-bg: rgba(53, 93, 153, 0.10);
+
+  --radius-window: 8px;
+  --radius-card: 9px;
+
+  --shadow-window:
+    0 1px 0 rgba(255,255,255,0.7) inset,
+    0 30px 80px -18px rgba(28, 30, 42, 0.30),
+    0 10px 24px -12px rgba(28, 30, 42, 0.18);
+}
+
+body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(900px 700px at 12% 8%, rgba(120, 150, 200, 0.22), transparent 60%),
+    radial-gradient(1000px 800px at 95% 100%, rgba(190, 160, 110, 0.28), transparent 60%),
+    #cdd2da;
+  color: var(--ink);
+  line-height: 1.45;
+  font-feature-settings: "ss01", "cv11", "ss03";
+  letter-spacing: -0.005em;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 40px;
+  -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: '';
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.045 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: multiply;
+  opacity: 0.55;
+}
+
+/* Windows 11 window chrome */
+.window {
+  width: min(1080px, 96vw);
+  height: min(760px, 92vh);
+  background:
+    linear-gradient(160deg, rgba(120, 150, 200, 0.05), transparent 38%),
+    var(--bg);
+  border-radius: var(--radius-window);
+  box-shadow: var(--shadow-window);
+  border: 1px solid rgba(255,255,255,0.6);
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: 36px 1fr;
+  position: relative;
+  z-index: 1;
+}
+
+.titlebar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  background: linear-gradient(to bottom, rgba(255,255,255,0.5), transparent);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.tl-icon { padding: 0 12px 0 14px; display: flex; align-items: center; gap: 8px; }
+.tl-icon-mark { width: 16px; height: 16px; color: var(--ink); }
+.tl-app-name { font-size: 12.5px; font-weight: 500; color: var(--ink-2); letter-spacing: 0.01em; }
+.tl-caption { display: flex; height: 36px; }
+.cap-btn { width: 46px; height: 36px; display: grid; place-items: center; color: var(--ink-2); transition: background 0.1s; }
+.cap-btn:hover { background: rgba(0,0,0,0.05); color: var(--ink); }
+.cap-btn.close:hover { background: #c4262e; color: #fff; }
+.cap-btn svg { width: 11px; height: 11px; }
+
+/* Two-pane setup layout */
+.setup {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  overflow: hidden;
+}
+
+/* ---- Left rail: the journey ---- */
+.rail {
+  background:
+    linear-gradient(180deg, var(--accent) 0%, #2b4d80 100%);
+  color: #eaf0f8;
+  padding: 36px 30px 28px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+.rail::after {
+  content: '';
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(500px 360px at 110% -10%, rgba(255,255,255,0.18), transparent 60%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  opacity: 0.9;
+}
+.rail > * { position: relative; z-index: 1; }
+.rail-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 40px; }
+.rail-mark {
+  width: 34px; height: 34px; display: grid; place-items: center;
+  background: rgba(255,255,255,0.16);
+  border: 1px solid rgba(255,255,255,0.28);
+  border-radius: 9px;
+}
+.rail-mark svg { width: 19px; height: 19px; color: #fff; }
+.rail-brand-name {
+  font-family: var(--font-display); font-weight: 500; font-size: 21px;
+  font-variation-settings: "opsz" 36, "SOFT" 60; letter-spacing: -0.015em; color: #fff;
+}
+.rail-eyebrow {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.18em; text-transform: uppercase; color: rgba(234,240,248,0.7);
+  margin-bottom: 14px;
+}
+.rail-title {
+  font-family: var(--font-display); font-weight: 360; font-size: 33px; line-height: 1.08;
+  font-variation-settings: "opsz" 96, "SOFT" 60; letter-spacing: -0.02em; color: #fff;
+  margin-bottom: 14px;
+}
+.rail-title em {
+  font-style: italic; font-variation-settings: "opsz" 96, "SOFT" 100; color: #d8e3f2;
+}
+.rail-lede {
+  font-size: 13.5px; line-height: 1.55; color: rgba(234,240,248,0.86); max-width: 30ch;
+}
+.steps { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
+.step {
+  display: grid; grid-template-columns: 26px 1fr; gap: 13px; align-items: center;
+  padding: 11px 10px; border-radius: 8px; transition: background 0.15s;
+}
+.step.active { background: rgba(255,255,255,0.12); }
+.step-num {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
+  font-family: var(--font-mono); font-size: 11.5px; font-weight: 600;
+  border: 1px solid rgba(255,255,255,0.3); color: rgba(234,240,248,0.8);
+}
+.step.done .step-num { background: rgba(255,255,255,0.92); color: var(--accent); border-color: transparent; }
+.step.active .step-num { background: #fff; color: var(--accent); border-color: transparent; box-shadow: 0 0 0 4px rgba(255,255,255,0.18); }
+.step-num svg { width: 13px; height: 13px; }
+.step-label { display: flex; flex-direction: column; }
+.step-label b { font-size: 13.5px; font-weight: 500; color: rgba(234,240,248,0.95); }
+.step.done .step-label b, .step:not(.active):not(.done) .step-label b { color: rgba(234,240,248,0.62); font-weight: 450; }
+.step-label span { font-size: 11px; color: rgba(234,240,248,0.55); font-family: var(--font-mono); }
+
+/* ---- Right pane: scan result ---- */
+.pane {
+  background: var(--bg);
+  padding: 34px 40px 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  overflow: hidden;
+}
+.pane-head { margin-bottom: 18px; }
+.pane-eyebrow {
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3);
+  margin-bottom: 9px; display: flex; align-items: center; gap: 8px;
+}
+.pane-eyebrow::before { content: ''; width: 18px; height: 1px; background: currentColor; }
+.pane-title {
+  font-family: var(--font-display); font-weight: 370; font-size: 30px; line-height: 1.08;
+  font-variation-settings: "opsz" 96, "SOFT" 55; letter-spacing: -0.02em;
+}
+.pane-title em { font-style: italic; font-variation-settings: "opsz" 96, "SOFT" 100; color: var(--ink-2); }
+
+/* folder path bar */
+.scan-bar {
+  display: grid; grid-template-columns: auto 1fr auto auto; gap: 12px; align-items: center;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 10px 9px 14px; margin-bottom: 18px;
+}
+.scan-folder { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.scan-folder svg { width: 16px; height: 16px; color: var(--accent); flex-shrink: 0; }
+.scan-path {
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.scan-path .dim { color: var(--ink-3); }
+.scan-meta {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-3);
+  letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap;
+}
+.scan-rescan {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 6px;
+  font-size: 12px; font-weight: 500; color: var(--ink-2); border: 1px solid var(--border-strong);
+  background: var(--surface-tint); transition: all 0.12s;
+}
+.scan-rescan:hover { border-color: var(--accent); color: var(--accent); }
+.scan-rescan svg { width: 12px; height: 12px; }
+
+/* candidate list (scrollable) */
+.candidates { overflow-y: auto; margin: 0 -6px; padding: 0 6px 4px; }
+.cand-group-label {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-3); padding: 12px 4px 8px; display: flex;
+  align-items: center; gap: 8px;
+}
+.cand-group-label .count { color: var(--ink-4); }
+.cand {
+  display: grid; grid-template-columns: 22px 30px 1fr auto; gap: 13px; align-items: center;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 11px 14px; margin-bottom: 8px; cursor: pointer; transition: all 0.12s;
+}
+.cand:hover { border-color: var(--border-strong); }
+.cand.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 4px 12px -8px rgba(53,93,153,0.4); }
+.cand.tracked { opacity: 0.7; cursor: default; }
+.cand.tracked:hover { border-color: var(--border); }
+
+.ck {
+  width: 20px; height: 20px; border-radius: 6px; border: 1.5px solid var(--border-strong);
+  display: grid; place-items: center; transition: all 0.12s; background: var(--surface-tint);
+}
+.cand.selected .ck { background: var(--accent); border-color: var(--accent); }
+.ck svg { width: 12px; height: 12px; color: #fff; opacity: 0; transition: opacity 0.1s; }
+.cand.selected .ck svg { opacity: 1; }
+.cand.tracked .ck { background: var(--ok-bg); border-color: transparent; }
+.cand.tracked .ck svg { color: var(--ok); opacity: 1; }
+
+.cand-host {
+  width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center;
+  background: var(--bg-2); color: var(--ink-2); border: 1px solid var(--border);
+}
+.cand-host svg { width: 16px; height: 16px; }
+.cand-host.gitlab { color: #c0561f; background: #f7e9e0; }
+
+.cand-body { min-width: 0; }
+.cand-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; color: var(--ink); }
+.cand-name span { color: var(--ink-3); font-weight: 500; }
+.cand-url {
+  font-family: var(--font-mono); font-size: 11px; color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+}
+.cand-side { display: flex; align-items: center; gap: 10px; }
+.cand-badge {
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 3px 8px; border-radius: 999px;
+}
+.cand-badge.tracked { background: var(--ok-bg); color: var(--ok); }
+.cand-badge.local { background: var(--behind-bg); color: var(--behind); }
+.cand-branch { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+.cand-branch b { color: var(--ink-2); font-weight: 600; }
+
+/* footer action bar */
+.pane-foot {
+  display: grid; grid-template-columns: auto 1fr auto; gap: 18px; align-items: center;
+  padding: 16px 0 22px; margin-top: 8px; border-top: 1px solid var(--border);
+}
+.foot-summary { display: flex; align-items: baseline; gap: 8px; }
+.foot-count {
+  font-family: var(--font-display); font-weight: 360; font-size: 30px; line-height: 1;
+  font-variation-settings: "opsz" 96, "SOFT" 80; color: var(--accent);
+}
+.foot-summary-text { font-size: 13px; color: var(--ink-2); }
+.foot-summary-text b { color: var(--ink); font-weight: 600; }
+.foot-actions { display: flex; gap: 10px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: 7px;
+  font-size: 13px; font-weight: 500; border: 1px solid var(--border-strong);
+  background: var(--surface); color: var(--ink); cursor: pointer; transition: all 0.12s;
+}
+.btn:hover { background: var(--surface-tint); border-color: var(--ink-3); }
+.btn svg { width: 14px; height: 14px; }
+.btn.primary {
+  background: var(--accent); color: #fff; border-color: var(--accent);
+  box-shadow: 0 6px 16px -8px rgba(53,93,153,0.6);
+}
+.btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
+.btn.ghost { background: transparent; border-color: transparent; color: var(--ink-3); }
+.btn.ghost:hover { background: var(--bg-2); color: var(--ink-2); }
+
+/* entry animation */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.cand { animation: rise 0.5s cubic-bezier(0.2,0.8,0.2,1) backwards; }
+.cand:nth-child(2) { animation-delay: 0.05s; }
+.cand:nth-child(3) { animation-delay: 0.10s; }
+.cand:nth-child(4) { animation-delay: 0.15s; }
+.cand:nth-child(5) { animation-delay: 0.20s; }
+.cand:nth-child(6) { animation-delay: 0.25s; }
+.step { animation: rise 0.5s cubic-bezier(0.2,0.8,0.2,1) backwards; }
+.step:nth-child(1) { animation-delay: 0.1s; }
+.step:nth-child(2) { animation-delay: 0.18s; }
+.step:nth-child(3) { animation-delay: 0.26s; }
+
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ink-4); border-radius: 5px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="window" role="application" aria-label="RepoSync first run">
+
+  <!-- Windows 11 titlebar -->
+  <div class="titlebar">
+    <div class="tl-icon">
+      <svg class="tl-icon-mark" viewBox="0 0 24 24">
+        <rect x="4" y="13" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.4"/>
+        <rect x="6" y="9" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.7"/>
+        <rect x="8" y="5" width="14" height="3" rx="1.5" fill="currentColor"/>
+      </svg>
+      <span class="tl-app-name">RepoSync &middot; Setup</span>
+    </div>
+    <div></div>
+    <div class="tl-caption">
+      <button class="cap-btn" aria-label="Minimize"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1"><line x1="2" y1="6" x2="10" y2="6"/></svg></button>
+      <button class="cap-btn" aria-label="Maximize"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1"><rect x="2.5" y="2.5" width="7" height="7"/></svg></button>
+      <button class="cap-btn close" aria-label="Close"><svg viewBox="0 0 12 12" stroke="currentColor" fill="none" stroke-width="1"><line x1="2.5" y1="2.5" x2="9.5" y2="9.5"/><line x1="9.5" y1="2.5" x2="2.5" y2="9.5"/></svg></button>
+    </div>
+  </div>
+
+  <div class="setup">
+
+    <!-- Left rail -->
+    <aside class="rail">
+      <div class="rail-brand">
+        <div class="rail-mark">
+          <svg viewBox="0 0 24 24">
+            <rect x="4" y="13" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.45"/>
+            <rect x="6" y="9" width="14" height="3" rx="1.5" fill="currentColor" opacity="0.75"/>
+            <rect x="8" y="5" width="14" height="3" rx="1.5" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="rail-brand-name">RepoSync</div>
+      </div>
+
+      <div class="rail-eyebrow">Welcome &middot; Step 2 of 3</div>
+      <h1 class="rail-title">Point us at a folder.<br /><em>We find the rest.</em></h1>
+      <p class="rail-lede">
+        RepoSync walks a parent directory, finds every git repository inside, and reads its
+        remote so you never lose track of what is drifting. Nothing leaves your machine.
+      </p>
+
+      <div class="steps">
+        <div class="step done">
+          <div class="step-num"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="step-label"><b>Welcome</b><span>what this does</span></div>
+        </div>
+        <div class="step active">
+          <div class="step-num">2</div>
+          <div class="step-label"><b>Scan folders</b><span>pick what to watch</span></div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-label"><b>Cadence &amp; policy</b><span>how often, how safe</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Right pane -->
+    <section class="pane">
+      <div class="pane-head">
+        <div class="pane-eyebrow">Folder scan complete</div>
+        <h2 class="pane-title">Found <em>6 repositories</em> in this folder.</h2>
+      </div>
+
+      <div class="scan-bar">
+        <div class="scan-folder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <div class="scan-path"><span class="dim">C:\Users\jonathan\</span>code</div>
+        </div>
+        <div></div>
+        <div class="scan-meta">8 git repos &middot; 0.9s</div>
+        <button class="scan-rescan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>
+          Choose another
+        </button>
+      </div>
+
+      <div class="candidates">
+        <div class="cand-group-label">New to RepoSync <span class="count">6 found</span></div>
+
+        <div class="cand selected">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>ollama/</span>ollama</div>
+            <div class="cand-url">git@github.com:ollama/ollama.git</div>
+          </div>
+          <div class="cand-side">
+            <span class="cand-branch">on <b>main</b></span>
+          </div>
+        </div>
+
+        <div class="cand selected">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>immich-app/</span>immich</div>
+            <div class="cand-url">https://github.com/immich-app/immich.git</div>
+          </div>
+          <div class="cand-side">
+            <span class="cand-badge local">local edits</span>
+            <span class="cand-branch">on <b>main</b></span>
+          </div>
+        </div>
+
+        <div class="cand selected">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>zed-industries/</span>zed</div>
+            <div class="cand-url">git@github.com:zed-industries/zed.git</div>
+          </div>
+          <div class="cand-side"><span class="cand-branch">on <b>main</b></span></div>
+        </div>
+
+        <div class="cand selected">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host gitlab"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.42 8.69 11.2H15.3L12 21.42zM3.6 11.2 2.27 7.06a.6.6 0 0 1 .22-.67l9.51 14.93L3.6 11.2zm5.09 0H3.6L5.7 4.5a.3.3 0 0 1 .57 0L8.69 11.2zm12.71 0-1.33 4.14L12 21.42l9.51-14.93a.6.6 0 0 1 .22.67L21.4 11.2zm-5.09 0L18.3 4.5a.3.3 0 0 1 .57 0l2.1 6.7H15.3z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>gnome/</span>nautilus</div>
+            <div class="cand-url">https://gitlab.gnome.org/GNOME/nautilus.git</div>
+          </div>
+          <div class="cand-side"><span class="cand-branch">on <b>main</b></span></div>
+        </div>
+
+        <div class="cand">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>old-experiments/</span>scratch-pad</div>
+            <div class="cand-url">no remote configured &middot; local only</div>
+          </div>
+          <div class="cand-side"><span class="cand-branch">detached HEAD</span></div>
+        </div>
+
+        <div class="cand">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>shadcn-ui/</span>ui</div>
+            <div class="cand-url">https://github.com/shadcn-ui/ui.git</div>
+          </div>
+          <div class="cand-side"><span class="cand-branch">on <b>main</b></span></div>
+        </div>
+
+        <div class="cand-group-label">Already watched <span class="count">2 found</span></div>
+
+        <div class="cand tracked">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>supabase/</span>supabase</div>
+            <div class="cand-url">https://github.com/supabase/supabase.git</div>
+          </div>
+          <div class="cand-side"><span class="cand-badge tracked">tracked</span></div>
+        </div>
+
+        <div class="cand tracked">
+          <div class="ck"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></div>
+          <div class="cand-host"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.9c-2.78.62-3.37-1.2-3.37-1.2-.46-1.18-1.11-1.5-1.11-1.5-.9-.63.07-.62.07-.62 1 .07 1.53 1.05 1.53 1.05.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05a9.4 9.4 0 0 1 5 0c1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.81c0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg></div>
+          <div class="cand-body">
+            <div class="cand-name"><span>tauri-apps/</span>tauri</div>
+            <div class="cand-url">https://github.com/tauri-apps/tauri.git</div>
+          </div>
+          <div class="cand-side"><span class="cand-badge tracked">tracked</span></div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div class="pane-foot">
+        <div class="foot-summary">
+          <span class="foot-count">4</span>
+          <span class="foot-summary-text">repos selected to add.<br /><b>2</b> already watched, skipped.</span>
+        </div>
+        <div></div>
+        <div class="foot-actions">
+          <button class="btn ghost">Back</button>
+          <button class="btn">Select all</button>
+          <button class="btn primary">
+            Add 4 repos
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 5l7 7-7 7"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>
