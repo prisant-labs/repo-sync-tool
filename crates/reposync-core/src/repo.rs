@@ -12,7 +12,9 @@ use sqlx::{Row, SqlitePool};
 use crate::error::AppError;
 use crate::git::{AheadBehind, InspectResult, SystemGitEngine};
 use crate::ipc::{CheckResult, RepoId, UpdateMode, UpdateResult};
-use crate::policy::{decide, Action, PolicyDecision, RepoState, SkipReason, UpstreamState};
+use crate::policy::{
+    decide, Action, PolicyDecision, RepoState, RunOutcome, SkipReason, UpstreamState,
+};
 
 /// Current unix time in whole seconds.
 fn now_secs() -> i64 {
@@ -287,12 +289,12 @@ pub async fn check_now(
 /// `updated`, `up_to_date`, `skipped`, or `failed`; `mode` echoes the requested
 /// mode; `commit_range` carries `before..after` when a fast-forward advanced the
 /// tree.
-pub async fn update_now(
+async fn run_update_inner(
     pool: &SqlitePool,
     git: &SystemGitEngine,
     id: RepoId,
     mode: UpdateMode,
-) -> Result<UpdateResult, AppError> {
+) -> Result<(UpdateResult, RunOutcome), AppError> {
     let repo_id = id.0;
     let mode_label = update_mode_str(&mode).to_string();
 
@@ -412,15 +414,96 @@ pub async fn update_now(
     .execute(pool)
     .await?;
 
-    Ok(UpdateResult {
-        repo_id,
-        mode: mode_label,
-        outcome: outcome.to_string(),
-        commit_range,
-        ahead: post_ab.ahead,
-        behind: post_ab.behind,
-        updated_at: now,
+    let run_outcome = classify_run_outcome(status, reason_code.as_deref());
+    Ok((
+        UpdateResult {
+            repo_id,
+            mode: mode_label,
+            outcome: outcome.to_string(),
+            commit_range,
+            ahead: post_ab.ahead,
+            behind: post_ab.behind,
+            updated_at: now,
+        },
+        run_outcome,
+    ))
+}
+
+/// Run an "update now" for a tracked repo in the requested mode (E-07) - the
+/// public manual-command entry point.
+///
+/// A thin wrapper over the shared [`run_update_inner`] path (the same path the
+/// E-08 scheduler drives via [`update_now_scheduled`]), so a manual update and a
+/// scheduled one execute identically. The Tauri handler wraps this with the
+/// `update-started` / `update-completed` event emission; this core function does
+/// no event I/O.
+pub async fn update_now(
+    pool: &SqlitePool,
+    git: &SystemGitEngine,
+    id: RepoId,
+    mode: UpdateMode,
+) -> Result<UpdateResult, AppError> {
+    run_update_inner(pool, git, id, mode).await.map(|(r, _)| r)
+}
+
+/// The classified result of a scheduled update: the IPC [`UpdateResult`] plus the
+/// [`RunOutcome`] the E-08 failure state machine needs (the coarse `outcome`
+/// string cannot tell an auth failure from a network failure, but the scheduler
+/// must, to choose immediate-pause vs retry).
+pub struct ScheduledUpdate {
+    pub result: UpdateResult,
+    pub run_outcome: RunOutcome,
+}
+
+/// The scheduler-facing variant of [`update_now`]: it runs the SAME shared
+/// decide -> execute -> record path for the repo's CONFIGURED update mode (read
+/// from `repos.update_mode`, not a caller-supplied mode) and additionally returns
+/// the classified [`RunOutcome`]. The E-08 scheduler calls this so the safety
+/// rules and the git execution live in exactly one place.
+///
+/// [`AppError::NotFound`] when no such repo id exists.
+pub async fn update_now_scheduled(
+    pool: &SqlitePool,
+    git: &SystemGitEngine,
+    id: RepoId,
+) -> Result<ScheduledUpdate, AppError> {
+    let row = sqlx::query("SELECT update_mode FROM repos WHERE id = ?")
+        .bind(id.0)
+        .fetch_optional(pool)
+        .await?;
+    let row = row.ok_or_else(|| AppError::NotFound {
+        entity: format!("repo {}", id.0),
+    })?;
+    let mode_str: String = row.try_get("update_mode")?;
+    let mode = parse_update_mode(&mode_str);
+
+    let (result, run_outcome) = run_update_inner(pool, git, id, mode).await?;
+    Ok(ScheduledUpdate {
+        result,
+        run_outcome,
     })
+}
+
+/// Classify a [`run_update_inner`] execution into the [`RunOutcome`] the E-07
+/// failure state machine consumes.
+///
+/// A `success` status - which includes a normal SKIP (dirty, no-upstream,
+/// deleted-upstream, diverged, detached) - is [`RunOutcome::Success`] and never
+/// counts toward auto-pause: a skip is an expected non-action, not an operational
+/// failure. Only a `failed` status (an executed fetch/pull that genuinely failed)
+/// maps to a failure class by its reason code. An unrecognized failure reason is
+/// treated as a transient network failure (the retry path), never an
+/// auth-pause - the conservative default.
+fn classify_run_outcome(status: &str, reason_code: Option<&str>) -> RunOutcome {
+    if status == "success" {
+        return RunOutcome::Success;
+    }
+    match reason_code {
+        Some("git.auth_failed") => RunOutcome::AuthFailure,
+        Some("net.offline") => RunOutcome::NetworkFailure,
+        Some("git.ff_not_possible") => RunOutcome::FfNotPossible,
+        _ => RunOutcome::NetworkFailure,
+    }
 }
 
 /// Whether the requested mode and the repo's LOCAL state require a network fetch
