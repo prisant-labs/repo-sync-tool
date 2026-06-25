@@ -177,6 +177,10 @@ pub fn run() {
                 let db_recovered = init.recovered;
                 let db_backup_path = init.backup_path;
                 let pool = init.pool;
+                // E-09: prune the activity log once on startup (best-effort -
+                // logged, never gates launch). The daily cadence attaches to the
+                // scheduler's launch wiring when that lands.
+                reposync_core::activity::sweep_at_startup(&pool).await;
                 // Git absence must NOT block launch (E-03 degraded-state
                 // contract). Store None on GitNotFound and log a warning; the
                 // pool/migrations above stay fatal because the DB is essential.

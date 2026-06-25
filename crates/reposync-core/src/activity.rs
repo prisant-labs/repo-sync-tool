@@ -129,7 +129,11 @@ pub async fn sweep_at_startup(pool: &SqlitePool) {
 pub fn sweep_due(last_sweep_unix: Option<i64>, now_unix: i64) -> bool {
     match last_sweep_unix {
         None => true,
-        Some(last) => now_unix - last >= SECONDS_PER_DAY,
+        // A future/regressed last-sweep time (the clock went backward, or a
+        // corrupted row is dated ahead of now) must not suppress sweeps forever:
+        // treat `now < last` as due so pruning recovers. `now == last` is "just
+        // swept", so it stays not-due.
+        Some(last) => now_unix < last || now_unix - last >= SECONDS_PER_DAY,
     }
 }
 
@@ -139,11 +143,20 @@ async fn read_retention_days(pool: &SqlitePool) -> i64 {
     let row = sqlx::query("SELECT activity_retention_d FROM settings WHERE id = 1")
         .fetch_optional(pool)
         .await;
-    match row {
+    let stored = match row {
         Ok(Some(r)) => r
             .try_get::<i64, _>("activity_retention_d")
             .unwrap_or(DEFAULT_RETENTION_DAYS),
         _ => DEFAULT_RETENTION_DAYS,
+    };
+    // Defense-in-depth for a DESTRUCTIVE delete: a 0 or negative retention sets the
+    // cutoff at or after `now` and would wipe the whole log. settings_set validates
+    // >= 1 on the normal write path, but a direct DB edit, a future migration, or a
+    // corrupted row must never be trusted here - fall back to the default.
+    if stored < 1 {
+        DEFAULT_RETENTION_DAYS
+    } else {
+        stored
     }
 }
 
@@ -402,6 +415,63 @@ mod tests {
         assert!(
             plan_time.iter().any(|d| d.contains("idx_activity_time")),
             "time read must use idx_activity_time; plan was {plan_time:?}"
+        );
+    }
+
+    // --- Codex E-09 review fixes -------------------------------------------------
+
+    #[tokio::test]
+    async fn sweep_clamps_nonpositive_retention_to_default_not_wipe() {
+        // HIGH (Codex E-09): a 0 or negative activity_retention_d must NOT wipe the
+        // log. settings_set validates >= 1 on the write path, but the destructive
+        // sweep must not trust the read value (a direct DB edit / future migration /
+        // corruption could set it). read_retention_days falls back to the default
+        // for any non-positive value, so a recent row always survives.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let repo = seed_repo(&pool, "r").await;
+        let now = 100 * SECONDS_PER_DAY;
+        record(&pool, &success_input(repo, now - SECONDS_PER_DAY)).await; // 1 day old
+        record(&pool, &success_input(repo, now - 200 * SECONDS_PER_DAY)).await; // ancient
+
+        for bad in [0_i64, -1, -90] {
+            sqlx::query(
+                "INSERT INTO settings (id, activity_retention_d) VALUES (1, ?) \
+                 ON CONFLICT(id) DO UPDATE SET activity_retention_d = excluded.activity_retention_d",
+            )
+            .bind(bad)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let pruned = sweep(&pool, now).await.unwrap();
+            assert!(
+                pruned <= 1,
+                "a non-positive retention ({bad}) must not mass-delete, pruned {pruned}"
+            );
+        }
+        assert_eq!(
+            count(&pool).await,
+            1,
+            "the recent (1-day-old) row must survive any 0/negative retention"
+        );
+    }
+
+    #[test]
+    fn sweep_due_recovers_from_a_future_or_regressed_last_sweep() {
+        // MEDIUM (Codex E-09): a last-sweep time AFTER now (clock regression or a
+        // corrupted future-dated row) must not suppress sweeps forever; treat it as
+        // due so pruning recovers. now == last is still "just swept" -> not due.
+        assert!(
+            sweep_due(Some(2_000_000), 1_000_000),
+            "a far-future last-sweep must read as due (recovery), not suppressed"
+        );
+        assert!(
+            sweep_due(Some(1_000_001), 1_000_000),
+            "even 1s in the future reads as due"
+        );
+        assert!(
+            !sweep_due(Some(1_000_000), 1_000_000),
+            "swept this exact instant is not due"
         );
     }
 }
