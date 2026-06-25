@@ -15,9 +15,10 @@ source: docs/internal/v1-architecture-and-decisions.md (Sections 6, 4.4, 4.2, 4.
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started.
-- **Next:** stand up the `octocrab`/`reqwest-rustls` client behind a `TokenProvider` seam whose V1 impl always returns `None`, and wire the unauthenticated metadata fetch.
-- **Blockers:** none beyond E-02 (the `repo_remote_meta` table and the `SqlitePool` must exist first).
+- **State:** done - built test-first on build/e-01-foundation: a direct `reqwest`+rustls client (NOT octocrab; see the AC1 resolution), gate green, OpenSSL-free verified, 230 core tests.
+- **Resolution (HTTP library, jp-ratified 2026-06-25):** the spec's "octocrab on reqwest" was impossible - octocrab is built on hyper, not reqwest (verified against octocrab's docs). Resolved to a direct `reqwest`+rustls client, honoring the brief's Section 4.2 no-OpenSSL HTTP-stack decision (the authoritative choice); octocrab in brief Section 6 was a convenience pick that conflicts with it. The `Transport` seam keeps octocrab a localized swap if the GitHub surface ever outgrows V1's ~6 fields.
+- **Next:** the thin `repo_refresh_metadata` command shell (E-06 / src-tauri) and the proactive rate-limit backoff-across-a-pass wiring ride with the scheduler/command integration. `last_remote_sha` is left None in V1 (a precise default-branch HEAD sha needs a separate /commits call; the seam already persists it).
+- **Blockers:** none.
 
 ## Context
 
@@ -58,7 +59,7 @@ This effort owns the metadata fetch, the ETag conditional-request caching agains
 
 ## Acceptance criteria
 
-- [ ] AC1: The client fetches description, default branch, latest release (tag/date/URL), topics, and the archived flag via `octocrab`. The GitHub-API-to-DB-column mapping is explicit: `published_at` -> `latest_release_at`, `html_url` -> `latest_release_url`, `topics` -> `topics_json`. Source: brief Section 6 (GitHub metadata client row) and Section 4.4 (`repo_refresh_metadata`).
+- [ ] AC1: The client fetches description, default branch, latest release (tag/date/URL), topics, and the archived flag via a direct **`reqwest`+rustls** client. (RESOLUTION, jp-ratified 2026-06-25: the spec originally said `octocrab`, which is impossible - octocrab is built on hyper, not reqwest. Resolved to reqwest+rustls-direct per the Task Summary; the `Transport` seam keeps octocrab swappable.) The GitHub-API-to-DB-column mapping is explicit: `published_at` -> `latest_release_at`, `html_url` -> `latest_release_url`, `topics` -> `topics_json`. Source: brief Section 6 (GitHub metadata client row) and Section 4.4 (`repo_refresh_metadata`).
 - [ ] AC2: The HTTP stack is `reqwest` with **rustls** (no OpenSSL), so there is no platform TLS divergence. Source: brief Section 4.2 (what is shared: "`reqwest` with rustls (not OpenSSL)").
 - [ ] AC3: Conditional requests use ETag / `If-None-Match` with the HTTP ETag cached in `repo_remote_meta.etag` (E-02 AC9); `last_fetched_at` drives the ~24h refresh clock and `last_remote_sha` records the observed commit SHA. Source: brief Section 6 (GitHub metadata client row) and Section 4.5 (`repo_remote_meta` fields).
 - [ ] AC4: The client reads `X-RateLimit-Remaining` and backs off when remaining is at or below 10% of the limit. Source: brief Section 6 (GitHub metadata client row).

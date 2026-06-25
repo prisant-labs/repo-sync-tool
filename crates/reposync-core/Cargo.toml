@@ -26,6 +26,14 @@ git2 = { workspace = true, default-features = false, features = ["vendored-libgi
 # `macros` is required for the sqlx::migrate! macro (it lives in sqlx-macros);
 # the runtime query API itself does not need it, but migrate! does.
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+# E-10: the GitHub metadata HTTP client, pinned to RUSTLS with bundled webpki roots
+# (NO OpenSSL, NO native-tls, no OS cert-store dependency) - matching git2's
+# vendored-libgit2 choice so the core carries no platform TLS. The HTTP boundary is
+# behind a transport seam, so tests never touch the network; this dep is exercised
+# only by the thin production impl. (Chose reqwest+rustls over octocrab: octocrab is
+# built on hyper, not reqwest, so the spec's "octocrab on reqwest" is contradictory;
+# reqwest+rustls satisfies AC2 + the no-OpenSSL hard rule with full control.)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
 # `tempfile` is an OPTIONAL dependency, enabled only by the `test-support`
 # feature (and always present as a dev-dependency below). Keeping it optional
 # means a default `cargo build` of the library does not compile the E-04 fixture
