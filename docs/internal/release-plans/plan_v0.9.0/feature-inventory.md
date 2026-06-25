@@ -7,7 +7,7 @@
 
 ## The honest shape
 
-The 12 original efforts deliberately build the **backend behind the IPC seam** (the roadmap is titled "non-GUI functional efforts"). Three **integration efforts** (E-13 tray, E-14 notifications, E-15 autostart) were added 2026-06-23 to close the native-chrome gap. As of 2026-06-25, **9 of 15 efforts are done** and 11 of the 18 V1 commands are real. The one piece still unowned by any effort is the **webview GUI** - the screens that render everything.
+The 12 original efforts deliberately build the **backend behind the IPC seam** (the roadmap is titled "non-GUI functional efforts"). Three **integration efforts** (E-13 tray, E-14 notifications, E-15 autostart) were added 2026-06-23 to close the native-chrome gap. As of 2026-06-25, **10 of 15 efforts are done** and 11 of the 18 V1 commands are real. The one piece still unowned by any effort is the **webview GUI** - the screens that render everything.
 
 ## Simplified feature list
 
@@ -24,7 +24,7 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | Update now (ff-only pull) | `repo_update_now` | MUST | E-07 | **Done** |
 | Update policy (modes, auto-pause) | `repo_set_policy` | MUST | E-07 | **Done** |
 | Quick actions (folder/terminal/editor/remote) | `repo_open_*` | MUST | E-03* | **Stub (unbuilt)** |
-| Activity log + retention | `activity_list` | MUST | E-09 | Specced |
+| Activity log + retention | `activity_list` | MUST | E-09 | **Done** (writer + retention; `activity_list` read is E-06/UI) |
 | Daily summary | `summary_today` | SHOULD | E-11 | Specced |
 | GitHub enrichment (unauthenticated) | `repo_refresh_metadata` | SHOULD | E-10 | Specced |
 | Settings | `settings_get/set` | MUST | E-02 | **Done** |
@@ -38,9 +38,9 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 
 ## Readiness categories
 
-**A. Done (built + reviewed)** - **9 efforts:** E-01 (foundation + CI), E-02 (persistence + the list/get/scan/remove/enable/settings commands), E-03 (git engine), E-04 (fixture harness), E-05 (error taxonomy), E-06 (frozen IPC contract), E-07 (policy engine + update-now/set-policy + check-now promotion), E-08 (scheduler: tokio interval, bounded concurrency, per-repo mutex, injected clock, auto-pause persistence), E-12 (tracer + Windows MSI spike). All built test-first, adversarially reviewed, findings fixed.
+**A. Done (built + reviewed)** - **10 efforts:** E-01 (foundation + CI), E-02 (persistence + the list/get/scan/remove/enable/settings commands), E-03 (git engine), E-04 (fixture harness), E-05 (error taxonomy), E-06 (frozen IPC contract), E-07 (policy engine + update-now/set-policy + check-now promotion), E-08 (scheduler: tokio interval, bounded concurrency, per-repo mutex, injected clock, auto-pause persistence), E-09 (activity writer + retention sweep), E-12 (tracer + Windows MSI spike). All built test-first, adversarially reviewed, findings fixed.
 
-**B. Specced, not built** - E-09 (activity writer + retention), E-10 (GitHub client, unauthenticated), E-11 (daily summary), E-13 (tray menu), E-14 (notifications), E-15 (autostart). Plus the `repo_open_*` quick-action stubs (no live owner).
+**B. Specced, not built** - E-10 (GitHub client, unauthenticated), E-11 (daily summary), E-13 (tray menu), E-14 (notifications), E-15 (autostart). Plus the `repo_open_*` quick-action stubs (no live owner).
 
 **C. Identified but no effort owns it** - the **webview GUI**: dashboard, repo list + detail, activity timeline, settings screen, add/scan flow. Mockups exist (Draft 2: dashboard, onboarding, settings, repo-detail, Windows parity); no effort, no spec.
 
@@ -55,5 +55,5 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 
 ## The two tracks to v0.9.0
 
-1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-08, E-12) is done. Remaining: **E-09 activity writer** (recommended next), then E-10/E-11, plus E-13/E-14/E-15 and the small `repo_open_*` follow-up. None needs a UI decision; all headlessly testable.
+1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-09, E-12) is done. Remaining: **E-10 GitHub client** (recommended next), then E-11, plus E-13/E-14/E-15 and the small `repo_open_*` follow-up. None needs a UI decision; all headlessly testable.
 2. **The GUI (needs design):** the webview screens. Category C. The Draft 2 mockups exist; needs a spec/effort before building; renders against the frozen `bindings.ts` and the now-real commands.
