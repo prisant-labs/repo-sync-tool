@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::{Row, SqlitePool};
 
+use crate::activity::{self, ActivityInput};
 use crate::error::AppError;
 use crate::git::{AheadBehind, InspectResult, SystemGitEngine};
 use crate::ipc::{CheckResult, RepoId, UpdateMode, UpdateResult};
@@ -243,24 +244,24 @@ pub async fn check_now(
         "check: decision={decision}, ahead={:?}, behind={:?}",
         ahead_behind.ahead, ahead_behind.behind
     );
-    sqlx::query(
-        "INSERT INTO activity_records \
-         (repo_id, timestamp, action_type, status, reason_code, summary, \
-          raw_command, raw_stdout, raw_stderr, exit_code, duration_ms) \
-         VALUES (?, ?, 'check', ?, ?, ?, ?, ?, ?, ?, ?)",
+    activity::record(
+        pool,
+        &ActivityInput {
+            repo_id,
+            timestamp: Some(now),
+            action_type: "check".into(),
+            status: status.into(),
+            reason_code: reason.clone(),
+            summary: Some(summary),
+            commit_range: None,
+            raw_command: fetch.as_ref().map(|f| f.raw_command.clone()),
+            raw_stdout: fetch.as_ref().map(|f| f.raw_stdout.clone()),
+            raw_stderr: fetch.as_ref().map(|f| f.raw_stderr.clone()),
+            exit_code: fetch.as_ref().and_then(|f| f.exit_code),
+            duration_ms: fetch.as_ref().map(|f| f.duration_ms),
+        },
     )
-    .bind(repo_id)
-    .bind(now)
-    .bind(status)
-    .bind(&reason)
-    .bind(&summary)
-    .bind(fetch.as_ref().map(|f| f.raw_command.clone()))
-    .bind(fetch.as_ref().map(|f| f.raw_stdout.clone()))
-    .bind(fetch.as_ref().map(|f| f.raw_stderr.clone()))
-    .bind(fetch.as_ref().and_then(|f| f.exit_code))
-    .bind(fetch.as_ref().map(|f| f.duration_ms))
-    .execute(pool)
-    .await?;
+    .await;
 
     // 9. A failed fetch records the activity row above, then surfaces the error.
     if let Some(f) = fetch.as_ref().filter(|f| !f.success) {
@@ -415,27 +416,27 @@ async fn run_update_inner(
     .execute(pool)
     .await?;
 
-    // 8. Record a minimal activity row (the full writer + retention is E-09).
+    // 8. Record the activity row through the single E-09 sink (best-effort: a
+    //    logging failure must not abort the update that already happened).
     let summary = format!("update: mode={mode_label}, outcome={outcome}");
-    sqlx::query(
-        "INSERT INTO activity_records \
-         (repo_id, timestamp, action_type, status, reason_code, summary, commit_range, \
-          raw_command, raw_stdout, raw_stderr, exit_code, duration_ms) \
-         VALUES (?, ?, 'update', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    activity::record(
+        pool,
+        &ActivityInput {
+            repo_id,
+            timestamp: Some(now),
+            action_type: "update".into(),
+            status: status.into(),
+            reason_code: reason_code.clone(),
+            summary: Some(summary),
+            commit_range: commit_range.clone(),
+            raw_command: Some(exec.act_command.clone()),
+            raw_stdout: Some(exec.act_stdout.clone()),
+            raw_stderr: Some(exec.act_stderr.clone()),
+            exit_code: exec.act_exit,
+            duration_ms: Some(exec.act_duration),
+        },
     )
-    .bind(repo_id)
-    .bind(now)
-    .bind(status)
-    .bind(&reason_code)
-    .bind(&summary)
-    .bind(&commit_range)
-    .bind(&exec.act_command)
-    .bind(&exec.act_stdout)
-    .bind(&exec.act_stderr)
-    .bind(exec.act_exit)
-    .bind(exec.act_duration)
-    .execute(pool)
-    .await?;
+    .await;
 
     // E-08 review fix (HIGH): a successful manual update clears the failure streak
     // and auto-pause, re-admitting a user-recovered repo to the scheduler's
