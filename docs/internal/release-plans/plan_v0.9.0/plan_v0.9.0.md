@@ -41,7 +41,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-07 | Update-Policy Engine | MUST | ready | ready | Done |
 | E-08 | Scheduler | MUST | ready | ready | Done |
 | E-09 | Activity Log Writer and Retention | MUST | ready | ready | Done |
-| E-10 | GitHub Metadata Client | SHOULD | ready | ready | Not started |
+| E-10 | GitHub Metadata Client | SHOULD | ready | ready | Done (core; BL-NI-15 before wiring) |
 | E-11 | Summary Engine (Daily) | SHOULD | ready | ready | Not started |
 | E-12 | Tracer Bullet and Packaging Spike | MUST | ready | ready | Done |
 | E-13 | Tray Native Menu | MUST | ready | ready | Not started |
@@ -50,7 +50,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
-Summary: 15 efforts in scope. 10 done (E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-12), 5 not started (E-10, E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
+Summary: 15 efforts in scope. 11 done (E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-10, E-12; E-10 core only - its release/cache/rate-limit hardening BL-NI-15 must land before it is wired), 4 not started (E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
 
 ---
 
