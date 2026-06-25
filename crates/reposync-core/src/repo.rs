@@ -24,6 +24,24 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Clear the consecutive-failure counter and the auto-pause flag for a repo after
+/// a SUCCESSFUL manual check/update (the manual-recovery path).
+///
+/// The E-08 scheduler excludes `auto_paused = 1` repos from its due-query and
+/// never runs an excluded repo, so a successful manual run is the only thing that
+/// re-admits a repo the user has fixed. Without this, auto-pause would be a
+/// permanent one-way trip (E-08 spec: "auto_paused resets to 0 on a successful
+/// manual check or an explicit user resume").
+async fn clear_failure_state(pool: &SqlitePool, repo_id: i64) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE repo_local_state SET consecutive_failures = 0, auto_paused = 0 WHERE repo_id = ?",
+    )
+    .bind(repo_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Add a repository to the registry.
 ///
 /// Validates the path, inspects it via git2, derives registry fields, and writes
@@ -252,6 +270,11 @@ pub async fn check_now(
         });
     }
 
+    // 10. E-08 review fix (HIGH): reaching here means the check succeeded; clear the
+    //     failure streak + auto-pause so a user-recovered repo is re-admitted to the
+    //     scheduler's due-query (which excludes auto_paused = 1).
+    clear_failure_state(pool, repo_id).await?;
+
     Ok(CheckResult {
         repo_id,
         decision,
@@ -413,6 +436,14 @@ async fn run_update_inner(
     .bind(exec.act_duration)
     .execute(pool)
     .await?;
+
+    // E-08 review fix (HIGH): a successful manual update clears the failure streak
+    // and auto-pause, re-admitting a user-recovered repo to the scheduler's
+    // due-query. A failed update leaves the counters for the scheduler's failure
+    // state machine to manage.
+    if status == "success" {
+        clear_failure_state(pool, repo_id).await?;
+    }
 
     let run_outcome = classify_run_outcome(status, reason_code.as_deref());
     Ok((
@@ -1457,5 +1488,90 @@ mod tests {
             head_before, head_after,
             "the H-1 guard must leave HEAD untouched (no fast-forward)"
         );
+    }
+
+    // --- E-08 review fix (HIGH): a successful manual run clears auto-pause -----
+    // The E-08 scheduler's due-query excludes auto_paused = 1, and the scheduler
+    // never runs an excluded repo, so the ONLY way to re-admit a user-recovered
+    // repo is a successful manual check/update. Without clearing the flag here,
+    // auto-pause is a permanent one-way trip. (E-08 spec: "auto_paused resets to 0
+    // on a successful manual check".)
+
+    /// Force a repo into the 3-strikes auto-paused state.
+    async fn force_auto_paused(pool: &SqlitePool, id: RepoId) {
+        sqlx::query(
+            "UPDATE repo_local_state SET consecutive_failures = 3, auto_paused = 1 \
+             WHERE repo_id = ?",
+        )
+        .bind(id.0)
+        .execute(pool)
+        .await
+        .expect("force auto-pause");
+    }
+
+    /// Read `(consecutive_failures, auto_paused)` for a repo.
+    async fn read_failure_state(pool: &SqlitePool, id: RepoId) -> (i64, i64) {
+        let row = sqlx::query(
+            "SELECT consecutive_failures, auto_paused FROM repo_local_state WHERE repo_id = ?",
+        )
+        .bind(id.0)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (
+            row.try_get("consecutive_failures").unwrap(),
+            row.try_get("auto_paused").unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn successful_manual_update_clears_auto_pause() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping successful_manual_update_clears_auto_pause: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add");
+        set_mode(&pool, id, "pull_ff_only").await;
+        force_auto_paused(&pool, id).await;
+
+        let result = update_now(&pool, &git, id, UpdateMode::PullFfOnly)
+            .await
+            .expect("update ok");
+        assert_eq!(
+            result.outcome, "updated",
+            "a clean behind repo fast-forwards"
+        );
+
+        let (cf, ap) = read_failure_state(&pool, id).await;
+        assert_eq!(
+            cf, 0,
+            "a successful manual update resets consecutive_failures"
+        );
+        assert_eq!(ap, 0, "a successful manual update clears auto_paused");
+    }
+
+    #[tokio::test]
+    async fn successful_manual_check_clears_auto_pause() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping successful_manual_check_clears_auto_pause: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        let fx = build_fixture(FixtureState::Clean);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add");
+        force_auto_paused(&pool, id).await;
+
+        let _ = check_now(&pool, &git, id).await.expect("check ok");
+
+        let (cf, ap) = read_failure_state(&pool, id).await;
+        assert_eq!(
+            cf, 0,
+            "a successful manual check resets consecutive_failures"
+        );
+        assert_eq!(ap, 0, "a successful manual check clears auto_paused");
     }
 }

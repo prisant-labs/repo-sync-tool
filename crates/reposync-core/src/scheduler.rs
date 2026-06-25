@@ -437,11 +437,11 @@ where
         }
         let due = selection.candidates;
         let count = due.len();
-        self.spawn_and_join(due, now, startup).await;
+        self.spawn_and_join(due, startup).await;
         Ok(count)
     }
 
-    async fn spawn_and_join(&self, due: Vec<DueRepo>, now: i64, startup: bool) {
+    async fn spawn_and_join(&self, due: Vec<DueRepo>, startup: bool) {
         let mut set = JoinSet::new();
         for repo in due {
             let offset = if startup {
@@ -456,13 +456,17 @@ where
             let sem = self.semaphore.clone();
             let jr = self.job_runner.clone();
             let ow = self.outcome_writer.clone();
+            // Each job reads its OWN completion time from the clock (AC6: next_check_at
+            // "after each job"), so a slow/queued job does not inherit the stale
+            // tick-start time.
+            let clock = self.clock.clone();
             set.spawn(async move {
                 // Startup stagger (production only; tests pin jitter to 0 so no
                 // real sleep runs).
                 if offset > 0 {
                     tokio::time::sleep(Duration::from_secs(offset as u64)).await;
                 }
-                run_job(repo, now, locks, sem, jr, ow).await;
+                run_job(repo, clock, locks, sem, jr, ow).await;
             });
         }
         while set.join_next().await.is_some() {}
@@ -496,7 +500,7 @@ where
 /// mutex) is what keeps a repo blocked on its mutex from holding a global permit.
 async fn run_job<J, W>(
     repo: DueRepo,
-    now_unix: i64,
+    clock: Arc<dyn Clock>,
     locks: RepoLocks,
     semaphore: Arc<Semaphore>,
     job_runner: Arc<J>,
@@ -523,10 +527,14 @@ async fn run_job<J, W>(
     // below needs no git slot. Releasing the permit before the mutex is the
     // reverse of the acquisition order.
     drop(permit);
+    // next_check_at is computed from the job's COMPLETION time (AC6: "after each
+    // job"), read here from the injected clock - NOT from the tick-start time,
+    // which would schedule a slow repo's next check in the past and busy-loop it.
+    let completed = clock.now_unix();
     // 4. Classify via the E-07 failure state machine (using the prior count read
     //    with the due repo) and persist the outcome (a short txn).
     let status = classify_failure(repo.consecutive_failures, outcome);
-    if let Err(e) = outcome_writer.record(&repo, now_unix, status).await {
+    if let Err(e) = outcome_writer.record(&repo, completed, status).await {
         eprintln!(
             "scheduler: failed to record outcome for repo {}: {e}",
             repo.id.0
@@ -817,6 +825,34 @@ mod tests {
         }
         fn local_minutes_of_day(&self) -> i64 {
             self.minutes.load(Ordering::SeqCst)
+        }
+    }
+
+    /// A [`Clock`] whose `now_unix` ADVANCES by `step` on each call, so a test can
+    /// tell tick-start time (the first read) from job-completion time (a later
+    /// read). `local_minutes_of_day` is fixed and does not advance.
+    struct AdvancingClock {
+        now: AtomicI64,
+        step: i64,
+        minutes: i64,
+    }
+    impl AdvancingClock {
+        fn new(start: i64, step: i64, minutes: i64) -> Arc<AdvancingClock> {
+            Arc::new(AdvancingClock {
+                now: AtomicI64::new(start),
+                step,
+                minutes,
+            })
+        }
+    }
+    impl Clock for AdvancingClock {
+        fn now_unix(&self) -> i64 {
+            // fetch_add returns the PRE-increment value, so the first call yields
+            // `start`, the next `start + step`, and so on.
+            self.now.fetch_add(self.step, Ordering::SeqCst)
+        }
+        fn local_minutes_of_day(&self) -> i64 {
+            self.minutes
         }
     }
 
@@ -1146,7 +1182,7 @@ mod tests {
                         check_frequency_min: 360,
                         consecutive_failures: 0,
                     },
-                    1000,
+                    FakeClock::new(1000, 600),
                     locks,
                     sem,
                     runner,
@@ -1398,6 +1434,36 @@ mod tests {
             writer_handle.recorded()[0].2,
             RepoStatus::Active,
             "a success resets to Active even after prior failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_check_at_uses_job_completion_time() {
+        // AC6: next_check_at is recomputed "after each job" from the injected
+        // clock. The recorded timestamp must be the COMPLETION time (a later clock
+        // read), not tick-start, so a slow repo on a short cadence does not
+        // schedule its next check in the past and busy-loop. The advancing clock
+        // returns 1000 at tick start and 1100 at job completion.
+        let clock = AdvancingClock::new(1000, 100, 600);
+        let writer = FakeOutcomeWriter::new();
+        let writer_handle = writer.clone();
+        let dq = FakeDueQuery {
+            selection: selection(vec![due(1)]),
+        };
+        let sched = Scheduler::new(
+            clock,
+            FakeJitter::new(0),
+            dq,
+            FakeJobRunner::new(Instrument::default()),
+            writer,
+            4,
+        );
+        sched.tick_once().await.expect("tick");
+        let rec = writer_handle.recorded();
+        assert_eq!(rec.len(), 1);
+        assert_eq!(
+            rec[0].1, 1100,
+            "next_check_at must derive from job-completion time (1100), not tick-start (1000)"
         );
     }
 
