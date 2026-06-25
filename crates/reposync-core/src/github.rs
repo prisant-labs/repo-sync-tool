@@ -166,26 +166,73 @@ pub fn parse_github_coords(remote_origin_url: &str, host_type: &str) -> Option<R
         return None;
     }
     let url = remote_origin_url.trim();
-    let stripped = url.strip_suffix(".git").unwrap_or(url);
-    // Locate "github.com" and take the path after it. The char immediately after
-    // must be '/' (URL forms) or ':' (the scp-like `git@github.com:owner/name`),
-    // which rejects look-alike hosts like `github.company.com`.
-    let idx = stripped.find("github.com")?;
-    let rest = &stripped[idx + "github.com".len()..];
-    let after_host = rest.strip_prefix('/').or_else(|| rest.strip_prefix(':'))?;
-    let mut parts = after_host.trim_matches('/').split('/');
-    let owner = parts.next()?.to_string();
-    let name = parts.next()?.to_string();
-    if owner.is_empty() || name.is_empty() {
+    // Extract (host, path) from the supported URL shapes, then require the host to
+    // be EXACTLY github.com - never a substring of a look-alike host (notgithub.com,
+    // evilgithub.com, github.com.evil.com) nor a path segment of some other host
+    // (example.com/github.com/...), all of which the old substring match accepted.
+    let (host, path) = if let Some((_scheme, rest)) = url.split_once("://") {
+        // scheme://[user@]host[:port]/owner/name  (https, http, ssh, git)
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        let host = host_port.split_once(':').map_or(host_port, |(h, _)| h);
+        (host, path)
+    } else if let Some((user_host, path)) = url.split_once(':') {
+        // scp-like: [user@]host:owner/name  (no scheme)
+        let host = user_host.rsplit_once('@').map_or(user_host, |(_, h)| h);
+        (host, path)
+    } else {
+        return None;
+    };
+    if host != "github.com" {
         return None;
     }
-    Some(RepoCoords { owner, name })
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let path = path.trim_end_matches('/');
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let name = parts.next()?;
+    if !is_valid_path_segment(owner) || !is_valid_path_segment(name) {
+        return None;
+    }
+    Some(RepoCoords {
+        owner: owner.to_string(),
+        name: name.to_string(),
+    })
+}
+
+/// Whether a GitHub owner/repo path segment is well-formed: non-empty, not a
+/// dot-only traversal segment, and only ASCII alphanumerics plus `-`, `_`, `.`.
+fn is_valid_path_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Whether `year` is a Gregorian leap year.
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// The number of days in `(year, month)`; `0` for an out-of-range month.
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
 }
 
 /// Days since 1970-01-01 for a civil `(year, month, day)`, via Howard Hinnant's
-/// `days_from_civil` algorithm (no chrono). `None` for an out-of-range month/day.
+/// `days_from_civil` algorithm (no chrono). `None` for an out-of-range month or a
+/// day beyond the month's real length, so impossible dates (Feb 31, or Feb 29 in a
+/// non-leap year) are rejected rather than silently normalized.
 fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
         return None;
     }
     let y = if m <= 2 { y - 1 } else { y };
@@ -223,8 +270,29 @@ fn iso8601_to_unix(s: &str) -> Option<i64> {
     if hour > 23 || min > 59 || sec > 60 {
         return None;
     }
+    // The timezone must be UTC: a trailing "Z" (optionally preceded by a
+    // fractional-seconds part ".<digits>"). A numeric offset (+HH:MM) is rejected
+    // rather than silently read as UTC, and trailing junk or a missing zone is
+    // rejected too - GitHub emits the Z form.
+    if !is_utc_zone(s.get(19..)?) {
+        return None;
+    }
     let days = days_from_civil(year, month, day)?;
     Some(days * 86_400 + hour * 3_600 + min * 60 + sec)
+}
+
+/// Whether `tz` is an accepted UTC zone suffix: `Z`/`z`, optionally preceded by a
+/// fractional-seconds part (`.<digits>`). Rejects numeric offsets and any junk.
+fn is_utc_zone(tz: &str) -> bool {
+    if matches!(tz, "Z" | "z") {
+        return true;
+    }
+    if let Some(frac) = tz.strip_prefix('.') {
+        if let Some(digits) = frac.strip_suffix(['Z', 'z']) {
+            return !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+        }
+    }
+    false
 }
 
 /// Map a GitHub repo JSON (and optional latest-release JSON) into the
@@ -619,6 +687,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_coords_rejects_look_alike_hosts() {
+        // Codex E-10 review: the host must be EXACTLY github.com, never a substring
+        // of a look-alike host nor a path segment of some other host - otherwise a
+        // non-GitHub remote gets enriched with unrelated GitHub metadata.
+        for url in [
+            "git@notgithub.com:owner/name.git",
+            "https://example.com/github.com/owner/name",
+            "https://github.com.evil.com/owner/name",
+            "https://evilgithub.com/owner/name",
+            "git@github.com.evil.com:owner/name",
+        ] {
+            assert_eq!(
+                parse_github_coords(url, "github"),
+                None,
+                "a look-alike host must be rejected: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_coords_ssh_url_with_port() {
+        assert_eq!(
+            parse_github_coords("ssh://git@github.com:22/owner/name", "github"),
+            Some(RepoCoords {
+                owner: "owner".into(),
+                name: "name".into()
+            }),
+            "an ssh url with an explicit port resolves (the port is stripped)"
+        );
+    }
+
+    #[test]
+    fn parse_coords_rejects_invalid_segments() {
+        // A query/fragment or a path-traversal segment must not resolve.
+        assert_eq!(
+            parse_github_coords("https://github.com/owner/name?x=1", "github"),
+            None,
+            "a query suffix on the name is rejected"
+        );
+        assert_eq!(
+            parse_github_coords("https://github.com/../etc/passwd", "github"),
+            None,
+            "a path-traversal segment is rejected"
+        );
+    }
+
     // --- iso8601_to_unix + days_from_civil ----------------------------------
 
     #[test]
@@ -637,6 +752,61 @@ mod tests {
         assert_eq!(iso8601_to_unix("not-a-date"), None);
         assert_eq!(iso8601_to_unix(""), None);
         assert_eq!(iso8601_to_unix("2024-13-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn iso8601_rejects_invalid_calendar_dates() {
+        // Codex E-10 review: impossible dates must be rejected, not normalized.
+        assert_eq!(
+            iso8601_to_unix("2023-02-29T00:00:00Z"),
+            None,
+            "Feb 29 in a non-leap year does not exist"
+        );
+        assert_eq!(
+            iso8601_to_unix("2024-02-31T00:00:00Z"),
+            None,
+            "Feb 31 never exists"
+        );
+        assert_eq!(
+            iso8601_to_unix("2024-04-31T00:00:00Z"),
+            None,
+            "April has 30 days"
+        );
+        assert_eq!(iso8601_to_unix("2024-00-10T00:00:00Z"), None, "month 0");
+        assert_eq!(iso8601_to_unix("2024-01-00T00:00:00Z"), None, "day 0");
+    }
+
+    #[test]
+    fn iso8601_accepts_valid_leap_day() {
+        // Feb 29 2024 (a leap year) is valid: 2024-02-29T00:00:00Z = 1709164800.
+        assert_eq!(iso8601_to_unix("2024-02-29T00:00:00Z"), Some(1_709_164_800));
+    }
+
+    #[test]
+    fn iso8601_requires_utc_z_and_rejects_offsets_and_junk() {
+        // Codex E-10 review: a numeric offset must NOT be silently read as UTC, and
+        // trailing junk / a missing timezone must be rejected.
+        assert_eq!(
+            iso8601_to_unix("2024-01-15T10:30:00+02:00"),
+            None,
+            "a +02:00 offset is rejected, not silently treated as UTC"
+        );
+        assert_eq!(
+            iso8601_to_unix("2024-01-15T10:30:00Zgarbage"),
+            None,
+            "trailing junk after Z is rejected"
+        );
+        assert_eq!(
+            iso8601_to_unix("2024-01-15T10:30:00"),
+            None,
+            "a missing timezone is rejected"
+        );
+        // A fractional-seconds UTC form is accepted (the fraction is truncated).
+        assert_eq!(
+            iso8601_to_unix("2024-01-15T10:30:00.000Z"),
+            Some(1_705_314_600),
+            "fractional seconds before Z are accepted"
+        );
     }
 
     // --- map_metadata (AC1) -------------------------------------------------
