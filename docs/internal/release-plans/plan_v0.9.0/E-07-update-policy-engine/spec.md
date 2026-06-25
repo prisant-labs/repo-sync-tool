@@ -15,7 +15,8 @@ source: docs/internal/v1-architecture-and-decisions.md (Sections 4.6, 6)
 
 > Agents keep this block current as work proceeds.
 
-- **State:** PRIMARY deliverable (the pure engine, all 7 ACs) complete and fully tested; SECONDARY deliverable (manual command wiring) complete.
+- **State:** complete, Codex-reviewed, and the 5 execution-path findings fixed (2026-06-24). PRIMARY (the pure engine, all 7 ACs) and SECONDARY (manual command wiring) both complete and fully tested.
+- **Review fixes (2026-06-24):** the pure engine passed review clean; all findings were in `repo.rs`'s execution path, fixed test-first (+4 tests -> 173). H-1: re-inspect dirtiness immediately before `pull --ff-only` (git's --ff-only only refuses a CONFLICTING dirty tree, so the "never fast-forward a dirty tree" guarantee is enforced in our code, not git's). M-1/M-2: decide-before-fetch via a `needs_remote_fetch` gate so `check_only` and the skip cells never hit the network. M-3: re-inspect after a successful fetch so a pruned upstream reads as deleted-upstream. OPEN UX QUESTION for jp: a manual `check_now` on a `check_only` repo now does NOT fetch (reports local state) - decide whether a manual check should override and fetch.
 - **What landed:**
   - `policy.rs`: a pure `decide(state, mode) -> PolicyDecision` (`Action` or `Skip(SkipReason)`) with NO I/O, implementing the spec's explicit 7-state x 3-mode grid verbatim, including the diverged (ahead-and-behind) -> `ff-not-possible` cell. New internal types `RepoState`/`UpstreamState`/`Action`/`SkipReason`/`PolicyDecision`/`V1Mode`.
   - The failure-handling state machine `classify_failure(prior_failures, outcome) -> RepoStatus` (success resets; auth -> pause; network/ff-not-possible -> retry; 3-strikes -> auto-pause signal). The engine READS the count and SIGNALS auto-pause; E-08 persists.

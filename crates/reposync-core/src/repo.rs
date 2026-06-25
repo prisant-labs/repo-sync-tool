@@ -128,77 +128,61 @@ pub async fn check_now(
     //    id is NotFound (mirrors store::repo_get), not the generic db error
     //    fetch_one would yield via the From<sqlx::Error> impl on the "no rows"
     //    case.
-    let row = sqlx::query(
-        "SELECT r.local_path AS local_path, r.update_mode AS update_mode, \
-         s.upstream_branch AS upstream_branch \
-         FROM repos r LEFT JOIN repo_local_state s ON s.repo_id = r.id \
-         WHERE r.id = ?",
-    )
-    .bind(repo_id)
-    .fetch_optional(pool)
-    .await?;
+    let row = sqlx::query("SELECT local_path, update_mode FROM repos WHERE id = ?")
+        .bind(repo_id)
+        .fetch_optional(pool)
+        .await?;
     let row = row.ok_or_else(|| AppError::NotFound {
         entity: format!("repo {repo_id}"),
     })?;
     let local_path: String = row.try_get("local_path")?;
-    let stored_upstream: Option<String> = row.try_get("upstream_branch")?;
     let mode_str: String = row.try_get("update_mode")?;
     let mode = parse_update_mode(&mode_str);
     let path = Path::new(&local_path);
 
-    // 2. Re-inspect local state.
-    let inspect = git.inspect(path)?;
+    // 2. Inspect local state.
+    let local = git.inspect(path)?;
+    let has_origin = has_origin_remote(path);
     let now = now_secs();
 
-    // 3. Fetch (record raw output regardless of outcome).
-    let fetch = git.fetch(path).await?;
-
-    // 4. Resolve upstream from the FRESH inspection. The DB's stored upstream is
-    //    intentionally NOT a fallback: a fresh inspect of `None` is authoritative
-    //    (the branch's upstream was removed, e.g. deleted-upstream), and falling
-    //    back to a stale stored ref would re-introduce a comparison base that no
-    //    longer exists.
-    let upstream = resolve_upstream(inspect.upstream_branch.clone(), stored_upstream);
-
-    // 5. Ahead/behind when an upstream exists.
-    let ahead_behind = match &upstream {
-        Some(u) => git.ahead_behind(path, u).await?,
-        None => crate::git::AheadBehind {
-            ahead: None,
-            behind: None,
-        },
+    // 3. Fetch ONLY when the mode needs remote data (M-2: check_only reports the
+    //    local view and never touches the network; no/deleted-upstream skip up
+    //    front). check_now never mutates either way - it reports, it does not pull.
+    let fetch: Option<crate::git::FetchOutcome> = if needs_remote_fetch(&mode, &local, has_origin) {
+        Some(git.fetch(path).await?)
+    } else {
+        None
     };
+    let fetch_failed = matches!(&fetch, Some(f) if !f.success);
 
-    // 6. The decision now runs through the E-07 policy engine (the same `decide`
-    //    that drives the scheduler and update_now), so check_now and scheduled
-    //    checks share one set of safety rules.
-    //
-    //    The fetch outcome is handled FIRST and separately: a failed fetch is an
-    //    operational failure (auth/network), not a policy skip, so it surfaces
-    //    its class as the reason and the activity row records "failed". A
-    //    successful fetch refreshes the comparison base, then `decide` over the
-    //    repo's configured mode produces the reported decision/reason.
-    let (decision, reason): (String, Option<String>) = if !fetch.success {
-        let why = match fetch.class {
+    // 4. State to report: re-inspect after a SUCCESSFUL fetch (M-3, so an upstream
+    //    pruned by the fetch reads as deleted-upstream), else the local inspect.
+    //    upstream is the fresh inspect's, never the stale stored ref.
+    let inspect = match &fetch {
+        Some(f) if f.success => git.inspect(path).unwrap_or_else(|_| local.clone()),
+        _ => local.clone(),
+    };
+    let ahead_behind = compute_ahead_behind(git, path, &inspect).await;
+    let upstream = resolve_upstream(inspect.upstream_branch.clone(), None);
+
+    // 5. Report the decision via the E-07 engine (the same `decide` that drives
+    //    update_now and the scheduler). A failed fetch is an operational failure
+    //    (auth/network), surfaced as the reason; otherwise `decide` over the
+    //    configured mode produces the reported decision/reason. check_now reports
+    //    a would-be fast-forward; it never executes one.
+    let (decision, reason): (String, Option<String>) = if fetch_failed {
+        let why = match fetch.as_ref().expect("fetch_failed implies Some").class {
             crate::git::FetchClass::AuthFailure => "git.auth_failed",
             crate::git::FetchClass::NetworkFailure => "net.offline",
-            // Success / NoOp never reach this arm (fetch.success would be true).
             _ => "git.fetch_failed",
         };
         ("skip-with-reason".to_string(), Some(why.to_string()))
     } else {
-        // Build the policy engine's view from the fresh reads and decide.
-        let has_origin = has_origin_remote(path);
         let state = repo_state_from_reads(&inspect, &ahead_behind, has_origin);
         match decide(&state, &mode) {
             PolicyDecision::Act(Action::PullFastForward) => {
                 ("would-fast-forward".to_string(), None)
             }
-            // Fetch and ReportStatus are both "no mutation pending": from a
-            // check's perspective there is nothing to update, so it reports
-            // status with no reason. (A `fetch_only` repo never fast-forwards, so
-            // its clean/behind cells report status here, which is correct: the
-            // check itself already fetched.)
             PolicyDecision::Act(Action::Fetch) | PolicyDecision::Act(Action::ReportStatus) => {
                 ("report-status".to_string(), None)
             }
@@ -232,8 +216,9 @@ pub async fn check_now(
     .execute(pool)
     .await?;
 
-    // 8. Append the activity record.
-    let status = if fetch.success { "success" } else { "failed" };
+    // 8. Append the activity record. A locally-decided check (no fetch) records no
+    //    git command; a fetched check records the fetch capture.
+    let status = if fetch_failed { "failed" } else { "success" };
     let summary = format!(
         "check: decision={decision}, ahead={:?}, behind={:?}",
         ahead_behind.ahead, ahead_behind.behind
@@ -249,19 +234,19 @@ pub async fn check_now(
     .bind(status)
     .bind(&reason)
     .bind(&summary)
-    .bind(&fetch.raw_command)
-    .bind(&fetch.raw_stdout)
-    .bind(&fetch.raw_stderr)
-    .bind(fetch.exit_code)
-    .bind(fetch.duration_ms)
+    .bind(fetch.as_ref().map(|f| f.raw_command.clone()))
+    .bind(fetch.as_ref().map(|f| f.raw_stdout.clone()))
+    .bind(fetch.as_ref().map(|f| f.raw_stderr.clone()))
+    .bind(fetch.as_ref().and_then(|f| f.exit_code))
+    .bind(fetch.as_ref().map(|f| f.duration_ms))
     .execute(pool)
     .await?;
 
     // 9. A failed fetch records the activity row above, then surfaces the error.
-    if !fetch.success {
+    if let Some(f) = fetch.as_ref().filter(|f| !f.success) {
         return Err(AppError::FetchFailed {
-            exit_code: fetch.exit_code,
-            stderr: fetch.raw_stderr,
+            exit_code: f.exit_code,
+            stderr: f.raw_stderr.clone(),
         });
     }
 
@@ -331,46 +316,54 @@ pub async fn update_now(
     let head_before = before.head_sha.clone();
     let now = now_secs();
 
-    // 3. Fetch to refresh the comparison base (records raw output regardless).
-    let fetch = git.fetch(path).await?;
-
-    // 4. Resolve upstream + ahead/behind from the fresh reads.
-    let upstream = resolve_upstream(before.upstream_branch.clone(), None);
-    let ahead_behind = match &upstream {
-        Some(u) => git.ahead_behind(path, u).await?,
-        None => AheadBehind {
-            ahead: None,
-            behind: None,
-        },
+    // 3. Fetch ONLY when the grid cell needs remote data (M-1). check_only never
+    //    fetches; a dirty/detached/no-upstream/deleted-upstream pull_ff_only repo
+    //    and a no/deleted-upstream fetch_only repo all decide from local state and
+    //    never touch the network.
+    let has_origin = has_origin_remote(path);
+    let fetch: Option<crate::git::FetchOutcome> = if needs_remote_fetch(&mode, &before, has_origin)
+    {
+        Some(git.fetch(path).await?)
+    } else {
+        None
     };
 
-    // 5. Decide via the policy engine (the same `decide` everywhere).
-    let has_origin = has_origin_remote(path);
-    let state = repo_state_from_reads(&before, &ahead_behind, has_origin);
-    let decision = decide(&state, &mode);
-
-    // 6. Execute the decided action. Only PullFastForward mutates; the fetch for
-    //    the Fetch action already ran in step 3. A fetch failure short-circuits
-    //    to a failed outcome regardless of the decided action (it broke the
-    //    comparison base the decision rested on).
-    let exec = execute_decision(git, path, &fetch, decision, head_before.as_deref()).await?;
+    // 4. Decide over the right state and execute. A failed refreshing fetch
+    //    short-circuits to `failed` (the comparison base is gone). Otherwise build
+    //    the state from a fresh re-inspect when a fetch ran (M-3, so an upstream
+    //    pruned by the fetch reads as deleted-upstream), else from the local
+    //    inspect; then decide -> execute. PullFastForward re-checks dirtiness right
+    //    before the pull (H-1).
+    let exec = match &fetch {
+        Some(f) if !f.success => exec_failed_fetch(f),
+        maybe_fetch => {
+            let state_inspect = if maybe_fetch.is_some() {
+                git.inspect(path).unwrap_or_else(|_| before.clone())
+            } else {
+                before.clone()
+            };
+            let ahead_behind = compute_ahead_behind(git, path, &state_inspect).await;
+            let state = repo_state_from_reads(&state_inspect, &ahead_behind, has_origin);
+            let decision = decide(&state, &mode);
+            execute_action(
+                git,
+                path,
+                maybe_fetch.as_ref(),
+                decision,
+                head_before.as_deref(),
+            )
+            .await?
+        }
+    };
     let outcome = exec.outcome;
     let status = exec.status;
-    let reason_code = exec.reason_code;
-    let commit_range = exec.commit_range;
+    let reason_code = exec.reason_code.clone();
+    let commit_range = exec.commit_range.clone();
 
     // 7. Refresh the cached local state from the post-action reads.
-    let post = git.inspect(path).unwrap_or(before.clone());
-    let post_ab = match &upstream {
-        Some(u) => git.ahead_behind(path, u).await.unwrap_or(AheadBehind {
-            ahead: ahead_behind.ahead,
-            behind: ahead_behind.behind,
-        }),
-        None => AheadBehind {
-            ahead: None,
-            behind: None,
-        },
-    };
+    let post = git.inspect(path).unwrap_or_else(|_| before.clone());
+    let post_ab = compute_ahead_behind(git, path, &post).await;
+    let upstream = resolve_upstream(post.upstream_branch.clone(), None);
     let updated_at_col = if status == "success" && outcome == "updated" {
         Some(now)
     } else {
@@ -430,6 +423,71 @@ pub async fn update_now(
     })
 }
 
+/// Whether the requested mode and the repo's LOCAL state require a network fetch
+/// to reach the correct decision (M-1/M-2: never fetch for grid cells the engine
+/// resolves from local state alone).
+///
+/// - `check_only` / non-V1: never fetch (report local, or reject).
+/// - `fetch_only`: fetch when there is something to refresh - a live tracking
+///   upstream, or a detached HEAD (the grid fetches refs even when detached);
+///   no-upstream and deleted-upstream skip up front.
+/// - `pull_ff_only`: fetch only for a clean, non-detached, live-tracking repo -
+///   the clean/ahead/behind/diverged cells whose decision depends on FRESH
+///   ahead/behind. dirty, detached, no-upstream, and deleted-upstream are local
+///   skips that need no network.
+fn needs_remote_fetch(mode: &UpdateMode, inspect: &InspectResult, has_origin: bool) -> bool {
+    let upstream = classify_upstream(inspect, has_origin);
+    match mode {
+        UpdateMode::CheckOnly | UpdateMode::PullStandard | UpdateMode::PullRebase => false,
+        UpdateMode::FetchOnly => inspect.is_detached || upstream == UpstreamState::Tracking,
+        UpdateMode::PullFfOnly => {
+            !inspect.is_dirty && !inspect.is_detached && upstream == UpstreamState::Tracking
+        }
+    }
+}
+
+/// Ahead/behind for `inspect`'s upstream via a LOCAL rev-list (no network).
+/// `None`/`None` when there is no resolvable upstream or the read fails
+/// (conservative: an unknown comparison base is `None`, never a fabricated 0).
+async fn compute_ahead_behind(
+    git: &SystemGitEngine,
+    path: &Path,
+    inspect: &InspectResult,
+) -> AheadBehind {
+    match resolve_upstream(inspect.upstream_branch.clone(), None) {
+        Some(u) => git.ahead_behind(path, &u).await.unwrap_or(AheadBehind {
+            ahead: None,
+            behind: None,
+        }),
+        None => AheadBehind {
+            ahead: None,
+            behind: None,
+        },
+    }
+}
+
+/// Build the [`ExecOutcome`] for a refreshing fetch that FAILED: the update cannot
+/// proceed because the comparison base the decision rested on is gone. Carries the
+/// fetch's failure class as the reason code and records the fetch capture.
+fn exec_failed_fetch(fetch: &crate::git::FetchOutcome) -> ExecOutcome {
+    let reason = match fetch.class {
+        crate::git::FetchClass::AuthFailure => "git.auth_failed",
+        crate::git::FetchClass::NetworkFailure => "net.offline",
+        _ => "git.fetch_failed",
+    };
+    ExecOutcome {
+        outcome: "failed",
+        status: "failed",
+        reason_code: Some(reason.to_string()),
+        commit_range: None,
+        act_command: fetch.raw_command.clone(),
+        act_stdout: fetch.raw_stdout.clone(),
+        act_stderr: fetch.raw_stderr.clone(),
+        act_exit: fetch.exit_code,
+        act_duration: fetch.duration_ms,
+    }
+}
+
 /// The result of executing a [`PolicyDecision`] in [`update_now`]: the stable
 /// outcome/status strings, the optional reason code and commit range, and the
 /// raw capture of the git op that should be recorded in the activity row.
@@ -454,21 +512,24 @@ struct ExecOutcome {
 
 /// Execute the decided [`PolicyDecision`] through the git engine, returning the
 /// [`ExecOutcome`] the caller records. Split out of [`update_now`] so the
-/// outcome accumulation is a single expression per branch (no dead-initialized
-/// mutable state) and the decide -> execute mapping reads as a table.
+/// outcome accumulation is a single expression per branch and the decide ->
+/// execute mapping reads as a table.
 ///
-/// `fetch` is the refreshing fetch already run by the caller; its capture is the
-/// default activity record (a fast-forward pull replaces it with its own). A
-/// failed fetch short-circuits to `failed` because the comparison the decision
-/// rested on is gone.
-async fn execute_decision(
+/// `fetch` is `Some` when the grid cell needed a remote refresh (and is then a
+/// SUCCESSFUL fetch, since the caller short-circuits a failed one via
+/// [`exec_failed_fetch`]); it is `None` for a locally-decided cell that issued no
+/// git command. The fetch capture is the default activity record (a fast-forward
+/// pull replaces it with its own). The `PullFastForward` arm re-inspects dirtiness
+/// immediately before the pull (H-1).
+async fn execute_action(
     git: &SystemGitEngine,
     path: &Path,
-    fetch: &crate::git::FetchOutcome,
+    fetch: Option<&crate::git::FetchOutcome>,
     decision: PolicyDecision,
     head_before: Option<&str>,
 ) -> Result<ExecOutcome, AppError> {
-    // Default activity capture = the fetch that always ran.
+    // Default activity capture = the refreshing fetch when one ran, else empty (a
+    // locally-decided cell issues no git command, per M-1).
     let from_fetch = |outcome: &'static str,
                       status: &'static str,
                       reason_code: Option<String>,
@@ -477,30 +538,29 @@ async fn execute_decision(
         status,
         reason_code,
         commit_range,
-        act_command: fetch.raw_command.clone(),
-        act_stdout: fetch.raw_stdout.clone(),
-        act_stderr: fetch.raw_stderr.clone(),
-        act_exit: fetch.exit_code,
-        act_duration: fetch.duration_ms,
+        act_command: fetch.map(|f| f.raw_command.clone()).unwrap_or_default(),
+        act_stdout: fetch.map(|f| f.raw_stdout.clone()).unwrap_or_default(),
+        act_stderr: fetch.map(|f| f.raw_stderr.clone()).unwrap_or_default(),
+        act_exit: fetch.and_then(|f| f.exit_code),
+        act_duration: fetch.map(|f| f.duration_ms).unwrap_or(0),
     };
 
-    // A failed refreshing fetch short-circuits: the update cannot proceed.
-    if !fetch.success {
-        let reason = match fetch.class {
-            crate::git::FetchClass::AuthFailure => "git.auth_failed",
-            crate::git::FetchClass::NetworkFailure => "net.offline",
-            _ => "git.fetch_failed",
-        };
-        return Ok(from_fetch(
-            "failed",
-            "failed",
-            Some(reason.to_string()),
-            None,
-        ));
-    }
-
+    // A failed fetch is handled by the caller (exec_failed_fetch); here `fetch` is
+    // either None (locally decided, no fetch) or a SUCCESSFUL fetch.
     match decision {
         PolicyDecision::Act(Action::PullFastForward) => {
+            // H-1: re-inspect dirtiness immediately before the one mutating action.
+            // `git pull --ff-only` only refuses a CONFLICTING dirty tree, so the
+            // "never fast-forward a dirty tree" guarantee is enforced HERE, in our
+            // code, not git's internals. A tree dirtied since the decide skips.
+            if git.inspect(path).map(|i| i.is_dirty).unwrap_or(false) {
+                return Ok(from_fetch(
+                    "skipped",
+                    "success",
+                    Some(SkipReason::Dirty.code().to_string()),
+                    None,
+                ));
+            }
             let pull = git.pull_ff_only(path).await?;
             let mut exec = ExecOutcome {
                 outcome: "failed",
@@ -542,11 +602,10 @@ async fn execute_decision(
             Ok(exec)
         }
         PolicyDecision::Act(Action::Fetch) => {
-            // The refreshing fetch already ran and succeeded; report it.
-            let outcome = if fetch.class == crate::git::FetchClass::Success {
-                "updated"
-            } else {
-                "up_to_date"
+            // fetch_only's action: the refreshing fetch ran (fetch is Some here).
+            let outcome = match fetch {
+                Some(f) if f.class == crate::git::FetchClass::Success => "updated",
+                _ => "up_to_date",
             };
             Ok(from_fetch(outcome, "success", None, None))
         }
@@ -845,13 +904,13 @@ mod tests {
             "expected DuplicateRepo, got {dup:?}"
         );
 
-        // check_now writes an activity row with raw_command/exit_code/duration_ms
-        // and updates last_checked_at. (No remote: fetch may fail, but the row
-        // is still written.)
+        // check_now on this repo (no remote -> no upstream) reports local status
+        // and does NOT fetch (M-2: no-upstream skips up front), yet it still writes
+        // a 'check' activity row and updates last_checked_at.
         let _ = check_now(&pool, &git, id).await;
 
         let act = sqlx::query(
-            "SELECT raw_command, exit_code, duration_ms FROM activity_records \
+            "SELECT raw_command, reason_code FROM activity_records \
              WHERE repo_id = ? AND action_type = 'check'",
         )
         .bind(id.0)
@@ -859,15 +918,17 @@ mod tests {
         .await
         .expect("activity row present");
         let raw_command: Option<String> = act.try_get("raw_command").unwrap();
-        let duration_ms: Option<i64> = act.try_get("duration_ms").unwrap();
+        let reason_code: Option<String> = act.try_get("reason_code").unwrap();
         assert!(
-            raw_command
-                .as_deref()
-                .map(|s| s.contains("fetch"))
-                .unwrap_or(false),
-            "raw_command should record the fetch invocation"
+            raw_command.is_none(),
+            "a no-upstream check reports local status without fetching, so no git \
+             command is recorded, got {raw_command:?}"
         );
-        assert!(duration_ms.is_some(), "duration_ms should be populated");
+        assert_eq!(
+            reason_code.as_deref(),
+            Some("git.no_upstream"),
+            "a repo with no remote is a no-upstream skip"
+        );
 
         let last_checked: Option<i64> =
             sqlx::query("SELECT last_checked_at FROM repo_local_state WHERE repo_id = ?")
@@ -1169,6 +1230,149 @@ mod tests {
         assert!(
             matches!(result, Err(AppError::NotFound { .. })),
             "update_now on a missing repo id must be NotFound, got {result:?}"
+        );
+    }
+
+    // --- E-07 review fixes: execution-path ordering (M-1/M-2/M-3) + H-1 dirty re-check ---
+
+    /// Read the `raw_command` of the single 'update' activity row for a repo.
+    async fn update_raw_command(pool: &SqlitePool, id: RepoId) -> Option<String> {
+        sqlx::query(
+            "SELECT raw_command FROM activity_records \
+             WHERE repo_id = ? AND action_type = 'update'",
+        )
+        .bind(id.0)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+        .try_get("raw_command")
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn update_now_check_only_issues_no_fetch() {
+        // M-1/M-2: check_only must never touch the network, even for a behind repo
+        // (the grid's check_only column is report-no-action for every state). The
+        // recorded update row must carry no fetch command.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping update_now_check_only_issues_no_fetch: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add");
+
+        let _ = update_now(&pool, &git, id, UpdateMode::CheckOnly)
+            .await
+            .expect("update_now ok");
+        let raw = update_raw_command(&pool, id).await;
+        assert!(
+            raw.as_deref().map(|s| !s.contains("fetch")).unwrap_or(true),
+            "check_only must not fetch, got raw_command={raw:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_now_dirty_pull_ff_issues_no_fetch() {
+        // pull_ff_only on a dirty repo is a LOCAL skip (the grid says Skip(dirty)):
+        // it must not fetch.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping update_now_dirty_pull_ff_issues_no_fetch: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        let fx = build_fixture(FixtureState::Dirty);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add");
+        set_mode(&pool, id, "pull_ff_only").await;
+
+        let result = update_now(&pool, &git, id, UpdateMode::PullFfOnly)
+            .await
+            .expect("update_now ok");
+        assert_eq!(result.outcome, "skipped");
+        let raw = update_raw_command(&pool, id).await;
+        assert!(
+            raw.as_deref().map(|s| !s.contains("fetch")).unwrap_or(true),
+            "dirty pull_ff_only skips locally without fetching, got {raw:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_now_no_upstream_fetch_only_issues_no_fetch() {
+        // fetch_only on a no-upstream repo skips up front (nothing to fetch from):
+        // it must not fetch.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping update_now_no_upstream_fetch_only_issues_no_fetch: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        let fx = build_fixture(FixtureState::NoUpstream);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add");
+        set_mode(&pool, id, "fetch_only").await;
+
+        let result = update_now(&pool, &git, id, UpdateMode::FetchOnly)
+            .await
+            .expect("update_now ok");
+        assert_eq!(result.outcome, "skipped");
+        let raw = update_raw_command(&pool, id).await;
+        assert!(
+            raw.as_deref().map(|s| !s.contains("fetch")).unwrap_or(true),
+            "no-upstream fetch_only skips without fetching, got {raw:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_action_rechecks_dirty_before_pull() {
+        // H-1: even given a PullFastForward decision, execute_action re-inspects
+        // the working tree immediately before the pull and SKIPS if dirty - our own
+        // guard, since `git pull --ff-only` would fast-forward a NON-CONFLICTING
+        // dirty tree. Simulate the race: a behind repo whose tree is dirtied after
+        // the decide but before execution.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping execute_action_rechecks_dirty_before_pull: git missing");
+            return;
+        };
+        let fx = build_fixture(FixtureState::Behind);
+        let working = fx.working_path();
+
+        // A real refreshing fetch (the fixture's bare upstream is local).
+        let fetch = git.fetch(working).await.expect("fetch ok");
+        let head_before = git.inspect(working).unwrap().head_sha;
+
+        // Dirty the tree AFTER the fetch/decide (an untracked file: non-conflicting,
+        // so git --ff-only itself would NOT refuse it - only our guard does).
+        std::fs::write(working.join("uncommitted-local-edit.txt"), "dirty\n")
+            .expect("dirty the tree");
+        assert!(
+            git.inspect(working).unwrap().is_dirty,
+            "the tree must read dirty for this test to exercise the H-1 guard"
+        );
+
+        let exec = execute_action(
+            &git,
+            working,
+            Some(&fetch),
+            PolicyDecision::Act(Action::PullFastForward),
+            head_before.as_deref(),
+        )
+        .await
+        .expect("execute_action ok");
+
+        assert_eq!(
+            exec.outcome, "skipped",
+            "a dirty tree must NOT be fast-forwarded even with a PullFastForward decision"
+        );
+        assert_eq!(
+            exec.reason_code.as_deref(),
+            Some("git.dirty_tree"),
+            "the H-1 re-check records the dirty reason code"
+        );
+        let head_after = git.inspect(working).unwrap().head_sha;
+        assert_eq!(
+            head_before, head_after,
+            "the H-1 guard must leave HEAD untouched (no fast-forward)"
         );
     }
 }
