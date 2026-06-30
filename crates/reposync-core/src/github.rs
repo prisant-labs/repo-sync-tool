@@ -68,6 +68,11 @@ pub struct GhMetadata {
 pub struct RateLimit {
     pub remaining: i64,
     pub limit: i64,
+    /// `X-RateLimit-Reset`: the unix second at which the window resets. `0` when the
+    /// header is absent. Carried so a rate-limited outcome can surface an honest
+    /// `AppError::RateLimited { reset_at }` (and the future refresh-pass orchestrator
+    /// can time its resume) rather than guessing the reset.
+    pub reset_at: i64,
 }
 
 /// A latest-release object from `/releases/latest`. Its fields are nullable in the API,
@@ -116,7 +121,9 @@ pub enum FetchOutcome {
     /// 404: the repo is not found on GitHub.
     NotFound,
     /// Rate-limited: a 403 with remaining 0, or the budget hit the backoff floor.
-    RateLimited,
+    /// Carries the budget so the reset time reaches the caller (an honest
+    /// `AppError::RateLimited { reset_at }`), not just the bare outcome.
+    RateLimited { rate_limit: RateLimit },
 }
 
 /// The result of [`refresh_one`] for one repo. The network failures are
@@ -590,9 +597,12 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             rate_limit: None,
             release_stale: false,
         }),
-        FetchOutcome::RateLimited => Ok(RefreshReport {
+        FetchOutcome::RateLimited { rate_limit } => Ok(RefreshReport {
             outcome: RefreshOutcome::RateLimited,
-            rate_limit: None,
+            // Carry the budget (incl. reset_at) so the edge can raise an honest
+            // AppError::RateLimited { reset_at } and the future refresh-pass
+            // orchestrator can time its resume.
+            rate_limit: Some(rate_limit),
             release_stale: false,
         }),
     }
@@ -637,6 +647,8 @@ impl ReqwestTransport {
             // Default remaining high so a missing header never trips backoff.
             remaining: read("x-ratelimit-remaining", i64::MAX),
             limit: read("x-ratelimit-limit", 60),
+            // `0` when the header is absent (the unauthenticated path still sends it).
+            reset_at: read("x-ratelimit-reset", 0),
         }
     }
 }
@@ -674,7 +686,7 @@ impl Transport for ReqwestTransport {
             return FetchOutcome::NotFound;
         }
         if status == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining <= 0 {
-            return FetchOutcome::RateLimited;
+            return FetchOutcome::RateLimited { rate_limit };
         }
         if !status.is_success() {
             return FetchOutcome::NetworkLost;
@@ -1013,30 +1025,79 @@ mod tests {
         assert!(
             !should_backoff(&RateLimit {
                 remaining: 7,
-                limit: 60
+                limit: 60,
+                reset_at: 0
             }),
             "above 10% -> no backoff"
         );
         assert!(
             should_backoff(&RateLimit {
                 remaining: 6,
-                limit: 60
+                limit: 60,
+                reset_at: 0
             }),
             "at 10% -> backoff"
         );
         assert!(
             should_backoff(&RateLimit {
                 remaining: 0,
-                limit: 60
+                limit: 60,
+                reset_at: 0
             }),
             "exhausted -> backoff"
         );
         assert!(
             !should_backoff(&RateLimit {
                 remaining: 0,
-                limit: 0
+                limit: 0,
+                reset_at: 0
             }),
             "no limit info -> no backoff"
+        );
+    }
+
+    #[test]
+    fn rate_limit_from_parses_remaining_limit_and_reset() {
+        // The transport parses X-RateLimit-Reset into reset_at (alongside
+        // remaining/limit) so a rate-limited outcome carries an honest reset time.
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        h.insert("x-ratelimit-limit", "60".parse().unwrap());
+        h.insert("x-ratelimit-reset", "1700000000".parse().unwrap());
+        let rl = ReqwestTransport::rate_limit_from(&h);
+        assert_eq!(rl.remaining, 0);
+        assert_eq!(rl.limit, 60);
+        assert_eq!(
+            rl.reset_at, 1_700_000_000,
+            "reset is parsed from the header"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_rate_limited_surfaces_the_budget_and_reset() {
+        // A rate-limited fetch must carry the budget (incl. reset_at) back to the
+        // caller so the edge can raise an honest AppError::RateLimited { reset_at },
+        // not just the bare outcome.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        let t = FakeTransport::new(FetchOutcome::RateLimited {
+            rate_limit: RateLimit {
+                remaining: 0,
+                limit: 60,
+                reset_at: 1_700_000_000,
+            },
+        });
+        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::RateLimited);
+        assert_eq!(
+            out.rate_limit,
+            Some(RateLimit {
+                remaining: 0,
+                limit: 60,
+                reset_at: 1_700_000_000
+            }),
+            "the rate-limited outcome carries the budget + reset back to the caller"
         );
     }
 
@@ -1151,6 +1212,7 @@ mod tests {
             rate_limit: RateLimit {
                 remaining: 59,
                 limit: 60,
+                reset_at: 0,
             },
             release: ReleaseState::Found(GhRelease {
                 tag: Some("v1".into()),
@@ -1253,6 +1315,7 @@ mod tests {
             rate_limit: RateLimit {
                 remaining: 50,
                 limit: 60,
+                reset_at: 0,
             },
         });
         let now = 1 + REFRESH_WINDOW_SECS + 10;
@@ -1344,6 +1407,7 @@ mod tests {
             rate_limit: RateLimit {
                 remaining: 59,
                 limit: 60,
+                reset_at: 0,
             },
             release: ReleaseState::Unknown,
         });
@@ -1412,6 +1476,7 @@ mod tests {
             rate_limit: RateLimit {
                 remaining: 59,
                 limit: 60,
+                reset_at: 0,
             },
             release: ReleaseState::NoRelease,
         });
@@ -1451,6 +1516,7 @@ mod tests {
             rate_limit: RateLimit {
                 remaining: 3,
                 limit: 60,
+                reset_at: 0,
             },
             release: ReleaseState::NoRelease,
         });
