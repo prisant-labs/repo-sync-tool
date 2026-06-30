@@ -19,16 +19,42 @@ pub enum AutostartAction {
     NoChange,
 }
 
+/// The observed OS launch-on-login registration state, as the edge's plugin query reports
+/// it. `Unknown` models a query that failed, timed out, or is unsupported: the core must
+/// NOT actuate (register/unregister) from an untrusted observation, so it maps to
+/// `NoChange` (Codex review finding 2). Only a CONFIRMED `Registered` / `Unregistered` can
+/// drive an OS mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsAutostartState {
+    /// The OS query confirmed a launch-on-login registration exists.
+    Registered,
+    /// The OS query confirmed no launch-on-login registration exists.
+    Unregistered,
+    /// The OS state could not be determined (query failed / timed out / unsupported).
+    Unknown,
+}
+
 /// Decide how to reconcile the OS autostart registration with the persisted setting on
-/// startup (AC2). The persisted setting is the source of truth: if the two disagree, move
-/// the OS to match it; if they agree, do nothing. This is the whole drift-correction
-/// policy - it covers a user who toggled launch-on-login via the OS directly, and a prior
-/// run that failed to (un)register.
-pub fn reconcile(os_registered: bool, setting_on: bool) -> AutostartAction {
-    match (os_registered, setting_on) {
-        (false, true) => AutostartAction::Register,
-        (true, false) => AutostartAction::Unregister,
-        (true, true) | (false, false) => AutostartAction::NoChange,
+/// startup (AC2).
+///
+/// V1 policy: the persisted `autostart` setting is authoritative. When a CONFIRMED OS
+/// state disagrees with it, move the OS to match (Register / Unregister); when they agree,
+/// do nothing. A failed/unknown OS query (`OsAutostartState::Unknown`) is non-actuating -
+/// the core never mutates OS state from an untrusted read (finding 2); the edge can
+/// log/retry it.
+///
+/// The reviewer flagged (finding 1) that "setting wins" also re-forces a user's direct
+/// OS-level change on every launch. Treating an OS-originated change as an intent to ADOPT
+/// (update the setting) or surfacing a conflict needs a persisted last-observed-OS state
+/// and a settings write - both edge-owned - so it is deferred to the edge-wiring effort
+/// and tracked as BL-NI-18. V1 keeps the simple authoritative-setting policy.
+pub fn reconcile(os: OsAutostartState, setting_on: bool) -> AutostartAction {
+    match (os, setting_on) {
+        (OsAutostartState::Unregistered, true) => AutostartAction::Register,
+        (OsAutostartState::Registered, false) => AutostartAction::Unregister,
+        // Aligned (Registered+on, Unregistered+off), or an Unknown read that must never
+        // actuate from an untrusted observation (finding 2): do nothing.
+        _ => AutostartAction::NoChange,
     }
 }
 
@@ -48,23 +74,50 @@ mod tests {
 
     #[test]
     fn reconcile_registers_when_setting_on_but_os_unregistered() {
-        // AC2: the setting is the source of truth. Setting on + OS not registered (first
-        // run, or a prior registration that failed / was removed via the OS) -> register.
-        assert_eq!(reconcile(false, true), AutostartAction::Register);
+        // AC2: the setting is the source of truth. Setting on + OS confirmed not
+        // registered (first run, or a registration that failed / was removed) -> register.
+        assert_eq!(
+            reconcile(OsAutostartState::Unregistered, true),
+            AutostartAction::Register
+        );
     }
 
     #[test]
     fn reconcile_unregisters_when_setting_off_but_os_registered() {
-        // AC2: setting off + OS still registered (the user disabled it in-app while a
+        // AC2: setting off + OS confirmed registered (the user disabled it in-app while a
         // stale registration lingered, or enabled it via the OS) -> remove it.
-        assert_eq!(reconcile(true, false), AutostartAction::Unregister);
+        assert_eq!(
+            reconcile(OsAutostartState::Registered, false),
+            AutostartAction::Unregister
+        );
     }
 
     #[test]
     fn reconcile_no_change_when_already_aligned() {
         // AC2: the OS already matches the setting either way -> do nothing (idempotent).
-        assert_eq!(reconcile(true, true), AutostartAction::NoChange);
-        assert_eq!(reconcile(false, false), AutostartAction::NoChange);
+        assert_eq!(
+            reconcile(OsAutostartState::Registered, true),
+            AutostartAction::NoChange
+        );
+        assert_eq!(
+            reconcile(OsAutostartState::Unregistered, false),
+            AutostartAction::NoChange
+        );
+    }
+
+    #[test]
+    fn reconcile_does_not_actuate_on_unknown_os_state() {
+        // Codex review finding 2: a failed/unknown OS query must NOT drive a register or
+        // unregister - the core never mutates OS state from an untrusted observation. The
+        // edge logs/retries the failed query instead.
+        assert_eq!(
+            reconcile(OsAutostartState::Unknown, true),
+            AutostartAction::NoChange
+        );
+        assert_eq!(
+            reconcile(OsAutostartState::Unknown, false),
+            AutostartAction::NoChange
+        );
     }
 
     #[test]
