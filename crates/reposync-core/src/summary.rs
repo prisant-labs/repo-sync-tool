@@ -14,7 +14,7 @@
 //! boundary is injected as a [`DayWindow`] so the local-midnight decision lives at
 //! the edge and the aggregation stays deterministic in tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use sqlx::{Row, SqlitePool};
 
@@ -37,6 +37,41 @@ pub struct DayWindow {
     pub end_unix: i64,
 }
 
+impl DayWindow {
+    /// Construct a validated window (Codex review finding 4): a non-empty label and a
+    /// non-empty, non-inverted range (`end > start`). The edge should build windows
+    /// through this so a timezone / DST miscalculation cannot pass a malformed window.
+    pub fn new(date: impl Into<String>, start_unix: i64, end_unix: i64) -> Result<Self, AppError> {
+        let date = date.into();
+        validate_window(&date, start_unix, end_unix)?;
+        Ok(Self {
+            date,
+            start_unix,
+            end_unix,
+        })
+    }
+}
+
+/// Validate a day window: a non-empty label and a non-empty, non-inverted range.
+/// A malformed window is a caller bug (a timezone / DST miscalculation at the edge),
+/// surfaced as an internal error rather than silently producing a mislabelled summary
+/// (Codex review finding 4).
+fn validate_window(date: &str, start_unix: i64, end_unix: i64) -> Result<(), AppError> {
+    if date.is_empty() {
+        return Err(AppError::Unexpected {
+            context: "summary day window has an empty date label".into(),
+        });
+    }
+    if end_unix <= start_unix {
+        return Err(AppError::Unexpected {
+            context: format!(
+                "summary day window is empty or inverted: start={start_unix}, end={end_unix}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// The daily bucket an activity row contributes to. Failures / warnings and admin
 /// events (enable / disable / open / manual_retry) map to neither: a failure
 /// surfaces via the attention STATE definition (AC5), and an admin event is not a
@@ -51,14 +86,15 @@ enum DayBucket {
 /// the spec's idealized enum (`pull_ff` / `pull` / `rebase` / `fetch`), so the tally
 /// stays correct if either evolves.
 ///
-/// `has_range` is whether the row carries a `commit_range`: the implemented update
-/// path sets one only when a fast-forward actually advanced HEAD, so a successful
-/// `update` with no range is an up-to-date no-op, not a change.
+/// `has_range` is whether the row carries a `commit_range`. The range - not the
+/// action label - is the "tree advanced" signal: the update path sets one only when a
+/// fast-forward moved HEAD, and a successful `pull` / `rebase` can equally be a no-op.
+/// So an update-like action counts as `Updated` ONLY with a range; without one it is
+/// an up-to-date no-op (Codex review finding 1a).
 fn classify_row(status: &str, action_type: &str, has_range: bool) -> Option<DayBucket> {
     match status {
         "success" => match action_type {
-            "pull_ff" | "pull" | "rebase" => Some(DayBucket::Updated),
-            "update" => Some(if has_range {
+            "update" | "pull_ff" | "pull" | "rebase" => Some(if has_range {
                 DayBucket::Updated
             } else {
                 DayBucket::NoChange
@@ -81,8 +117,12 @@ pub async fn summary_today(
     pool: &SqlitePool,
     window: &DayWindow,
 ) -> Result<DailySummary, AppError> {
-    // 1. Updated / no-change, from today's activity rows, collapsed to distinct
-    //    repos. `updated` wins over `no-change` for a repo with both today.
+    // Reject a malformed window up front rather than silently mislabelling the result
+    // (Codex review finding 4).
+    validate_window(&window.date, window.start_unix, window.end_unix)?;
+
+    // 1. Per-repo activity aggregate from today's rows, collapsed to distinct repos.
+    //    `updated` wins over `no-change` for a repo with both today.
     struct Agg {
         local_name: String,
         updated: bool,
@@ -132,6 +172,51 @@ pub async fn summary_today(
         }
     }
 
+    // 2. Attention: the E-07-free current-STATE definition (AC5) - repos with
+    //    `last_error_code` set OR `is_dirty` set, read straight from the state table.
+    //
+    //    By DESIGN this reads CURRENT state, not today's activity (Codex review finding
+    //    3): the brief's "what STILL wants attention" is present-tense, so a repo that
+    //    has been dirty / errored since before today is correctly still attention. The
+    //    richer threshold- / window-based semantics E-07 owns are deferred (BL-TQ-03).
+    //    The id set lets the no-change tally exclude a repo that needs attention, so a
+    //    dirty repo with a clean check today is reported as attention, not as a calm
+    //    "no change" (finding 1b: the buckets are disjoint, attention wins).
+    let attention_rows = sqlx::query(
+        "SELECT rls.repo_id AS repo_id, rls.last_error_code AS last_error_code, \
+                rls.is_dirty AS is_dirty, r.local_name AS local_name \
+         FROM repo_local_state rls \
+         JOIN repos r ON r.id = rls.repo_id \
+         WHERE rls.last_error_code IS NOT NULL OR rls.is_dirty = 1 \
+         ORDER BY rls.repo_id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut attention: Vec<SummaryItem> = Vec::new();
+    let mut attention_ids: HashSet<i64> = HashSet::new();
+    for row in &attention_rows {
+        let repo_id: i64 = row.try_get("repo_id")?;
+        let last_error_code: Option<String> = row.try_get("last_error_code")?;
+        let is_dirty: i64 = row.try_get("is_dirty")?;
+        // Prefer the error code as the human-facing hint; otherwise note the dirty
+        // working tree.
+        let detail = match last_error_code {
+            Some(code) => Some(code),
+            None if is_dirty != 0 => Some("uncommitted changes".to_string()),
+            None => None,
+        };
+        attention_ids.insert(repo_id);
+        attention.push(SummaryItem {
+            repo_id,
+            local_name: row.try_get("local_name")?,
+            detail,
+        });
+    }
+
+    // 3. Updated / no-change tally over the per-repo activity aggregate. `updated`
+    //    wins over `no-change`; a repo currently needing attention is excluded from
+    //    no-change (it is reported as attention instead, finding 1b).
     let mut updated: Vec<SummaryItem> = Vec::new();
     let mut no_change_count: i64 = 0;
     for (repo_id, agg) in &by_repo {
@@ -141,13 +226,19 @@ pub async fn summary_today(
                 local_name: agg.local_name.clone(),
                 detail: agg.detail.clone(),
             });
-        } else if agg.no_change {
+        } else if agg.no_change && !attention_ids.contains(repo_id) {
             no_change_count += 1;
         }
     }
 
-    // 2. New releases: keyed on the release's OWN date (`latest_release_at`) in the
-    //    window, so a cached release is not re-counted on later days.
+    // 4. New releases for today. NOTE (Codex review finding 2): the only V1 source is
+    //    the MUTABLE `repo_remote_meta` latest-release snapshot (one row per repo; the
+    //    V1 schema has no release-event history). Keying on `latest_release_at` in the
+    //    window is correct for the V1 contract (computed on demand, for today, with no
+    //    persisted archive), but it cannot reconstruct a PAST day after a newer release
+    //    overwrote the snapshot, and it collapses multiple same-day releases to one.
+    //    The faithful fix needs an immutable release-event table and is coupled to the
+    //    E-10 wiring effort; tracked as BL-NI-16.
     let release_rows = sqlx::query(
         "SELECT rrm.repo_id AS repo_id, rrm.latest_release_tag AS tag, r.local_name AS local_name \
          FROM repo_remote_meta rrm \
@@ -167,37 +258,6 @@ pub async fn summary_today(
             repo_id: row.try_get("repo_id")?,
             local_name: row.try_get("local_name")?,
             detail: row.try_get("tag")?,
-        });
-    }
-
-    // 3. Attention: the E-07-free current-state definition (AC5) - repos with
-    //    `last_error_code` set OR `is_dirty` set, read straight from the state table.
-    let attention_rows = sqlx::query(
-        "SELECT rls.repo_id AS repo_id, rls.last_error_code AS last_error_code, \
-                rls.is_dirty AS is_dirty, r.local_name AS local_name \
-         FROM repo_local_state rls \
-         JOIN repos r ON r.id = rls.repo_id \
-         WHERE rls.last_error_code IS NOT NULL OR rls.is_dirty = 1 \
-         ORDER BY rls.repo_id ASC",
-    )
-    .fetch_all(pool)
-    .await?;
-
-    let mut attention: Vec<SummaryItem> = Vec::new();
-    for row in &attention_rows {
-        let last_error_code: Option<String> = row.try_get("last_error_code")?;
-        let is_dirty: i64 = row.try_get("is_dirty")?;
-        // Prefer the error code as the human-facing hint; otherwise note the dirty
-        // working tree.
-        let detail = match last_error_code {
-            Some(code) => Some(code),
-            None if is_dirty != 0 => Some("uncommitted changes".to_string()),
-            None => None,
-        };
-        attention.push(SummaryItem {
-            repo_id: row.try_get("repo_id")?,
-            local_name: row.try_get("local_name")?,
-            detail,
         });
     }
 
@@ -497,6 +557,107 @@ mod tests {
             count_rows(&pool, "repo_remote_meta").await,
         );
         assert_eq!(before, after, "summary_today must not write any rows");
+    }
+
+    #[tokio::test]
+    async fn spec_vocab_update_without_range_is_no_change_not_updated() {
+        // Codex review finding 1a: a success pull_ff / pull / rebase can be a no-op
+        // (already up to date). Without a commit_range - the universal "tree advanced"
+        // signal - it must count as no-change, consistent with the `update` path, not
+        // be inflated as an update.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+        let noon = w.start_unix + DAY / 2;
+
+        let p = seed_repo(&pool, "p").await; // pull_ff success, NO range -> no-op
+        let q = seed_repo(&pool, "q").await; // rebase success WITH range -> updated
+        for (repo, action, range) in [(p, "pull_ff", None), (q, "rebase", Some("a..b"))] {
+            activity::record(
+                &pool,
+                &ActivityInput {
+                    repo_id: repo,
+                    timestamp: Some(noon),
+                    action_type: action.into(),
+                    status: "success".into(),
+                    summary: Some(action.into()),
+                    commit_range: range.map(|s: &str| s.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await;
+        }
+
+        let s = summary_today(&pool, &w).await.unwrap();
+        assert_eq!(
+            s.updated_count, 1,
+            "only the rebase with a range is an update"
+        );
+        assert_eq!(s.updated[0].repo_id, q);
+        assert_eq!(s.no_change_count, 1, "the no-op pull_ff is a no-change");
+    }
+
+    #[tokio::test]
+    async fn a_repo_needing_attention_is_excluded_from_no_change() {
+        // Codex review finding 1b: a repo checked today with no change but CURRENTLY
+        // dirty (or errored) must surface in attention, not be reported as a calm
+        // "no change". The buckets are disjoint - attention wins over no-change.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+        let noon = w.start_unix + DAY / 2;
+
+        let p = seed_repo(&pool, "p").await; // clean check today, but currently dirty
+        record_check(&pool, p, noon, "success").await;
+        seed_state(&pool, p, None, 1).await;
+        let q = seed_repo(&pool, "q").await; // clean check today, calm state
+        record_check(&pool, q, noon, "success").await;
+
+        let s = summary_today(&pool, &w).await.unwrap();
+        assert_eq!(s.attention_count, 1);
+        assert_eq!(s.attention[0].repo_id, p);
+        assert_eq!(
+            s.no_change_count, 1,
+            "only q is a calm no-change; p is reported as attention, not double-counted"
+        );
+    }
+
+    #[tokio::test]
+    async fn inverted_day_window_is_rejected() {
+        // Codex review finding 4: an inverted window (end <= start) is a caller bug (a
+        // timezone / DST miscalculation at the edge); reject it rather than silently
+        // labelling a summary for one day while counting another (or none).
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let bad = DayWindow {
+            date: "2026-06-29".into(),
+            start_unix: 1001 * DAY,
+            end_unix: 1000 * DAY,
+        };
+        assert!(
+            summary_today(&pool, &bad).await.is_err(),
+            "an inverted window must be rejected, not silently mislabelled"
+        );
+    }
+
+    #[test]
+    fn day_window_new_validates_bounds() {
+        // Codex review finding 4: the validated constructor rejects an inverted /
+        // empty window and an empty date label, so the edge cannot pass a malformed
+        // window unnoticed.
+        assert!(DayWindow::new("2026-06-29", 0, 10).is_ok());
+        assert!(
+            DayWindow::new("2026-06-29", 10, 10).is_err(),
+            "end == start is empty/invalid"
+        );
+        assert!(
+            DayWindow::new("2026-06-29", 10, 0).is_err(),
+            "end < start is inverted"
+        );
+        assert!(
+            DayWindow::new("", 0, 10).is_err(),
+            "an empty date label is invalid"
+        );
     }
 
     #[test]
