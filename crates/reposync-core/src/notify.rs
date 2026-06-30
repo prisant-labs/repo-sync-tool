@@ -10,9 +10,9 @@
 //!   * [`decide`] - the per-EVENT decision (one completed check that detects a release
 //!     or a failure raises one toast, AC1/AC2), suppressed by the toggles and during
 //!     quiet hours (AC3).
-//!   * [`coalesce`] - the per-CYCLE reducer: a scheduler cycle touching many repos
-//!     raises a BOUNDED number of toasts (a summary plus a capped set of individual
-//!     failure toasts), never one per repo (AC4).
+//!   * [`coalesce`] - the per-CYCLE reducer: a scheduler cycle touching many repos raises
+//!     a BOUNDED number of toasts (each kind shown individually up to a cap, then one
+//!     summary for the overflow), never one per repo (AC4).
 //!
 //! Quiet-hours evaluation reuses the scheduler's tested [`in_quiet_hours`] predicate,
 //! so notifications and scheduling agree on the window semantics.
@@ -43,20 +43,57 @@ pub struct NotifiableEvent {
     pub detail: Option<String>,
 }
 
-/// The max number of INDIVIDUAL failure toasts one cycle raises; beyond this the cycle
-/// summary covers the rest, so a large cycle never floods the user (AC4).
-pub const MAX_FAILURE_TOASTS: usize = 3;
+/// Local wall-clock minutes since midnight (`0..=1439`), the unit quiet hours needs.
+///
+/// A newtype (Codex review finding 4) so a caller cannot accidentally pass unix seconds,
+/// a raw timestamp, or UTC where LOCAL time is required - the name and the validated
+/// range make the contract explicit at the boundary that is about to be wired. The edge
+/// MUST source this from the SAME offset-aware scheduler clock used for scheduling
+/// ([`crate::scheduler::Clock::local_minutes_of_day`]); the UTC-to-local offset is owned
+/// there (the deferred `SystemClock` offset), not here, so notifications and the
+/// scheduler agree on "now".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalMinute(i64);
+
+impl LocalMinute {
+    /// Construct from minutes-since-midnight, validating `0..=1439`. Returns `None` for
+    /// an out-of-range value (a sign the caller passed seconds or a raw timestamp).
+    #[allow(clippy::manual_range_contains)]
+    pub const fn new(minute: i64) -> Option<LocalMinute> {
+        if 0 <= minute && minute <= 1439 {
+            Some(LocalMinute(minute))
+        } else {
+            None
+        }
+    }
+
+    /// The wrapped minute-of-day.
+    fn get(self) -> i64 {
+        self.0
+    }
+}
+
+/// The max INDIVIDUAL toasts of EACH kind (release, failure) one cycle raises before the
+/// overflow folds into a single summary. Identity is preserved for the common small
+/// cycle, and a large cycle stays bounded (AC4) without dropping or double-reporting any
+/// event.
+pub const MAX_INDIVIDUAL_TOASTS: usize = 3;
 
 /// Whether an event passes the gate: not during quiet hours (AC3), and its kind's
 /// toggle is on (AC1/AC2). Quiet hours reuse the scheduler's tested predicate.
-fn passes_gate(event: &NotifiableEvent, settings: &Settings, now_min: i64) -> bool {
+fn passes_gate(event: &NotifiableEvent, settings: &Settings, now: LocalMinute) -> bool {
     if in_quiet_hours(
-        now_min,
+        now.get(),
         settings.quiet_hours_start,
         settings.quiet_hours_end,
     ) {
         return false;
     }
+    // NOTE (Codex review finding 4): auth is gated by `notify_on_failure`, per the spec
+    // (E-14 AC2: "a failed check/update or an auth failure raises a toast when
+    // notify_on_failure is on, and none when off"); the frozen settings schema has no
+    // separate auth toggle. A dedicated critical-/auth-notification policy (always-on, or
+    // its own toggle) is a V1.1 enhancement tracked as BL-NI-17.
     match event.kind {
         NoteKind::Release => settings.notify_on_release,
         NoteKind::Failure | NoteKind::Auth => settings.notify_on_failure,
@@ -94,20 +131,22 @@ fn build_payload(event: &NotifiableEvent) -> NotificationFiredPayload {
     }
 }
 
-/// The single cycle-summary toast tallying the releases and failures, omitting a
-/// zero category so the body reads naturally.
-fn summary_payload(releases: usize, failures: usize) -> NotificationFiredPayload {
+/// The single OVERFLOW-summary toast for the events beyond the per-kind caps, omitting
+/// a zero category so the body reads naturally ("2 more new releases, 5 more failures").
+/// It tallies only the overflow, never events already shown individually, so no event is
+/// double-reported (Codex review finding 2).
+fn summary_payload(more_releases: usize, more_failures: usize) -> NotificationFiredPayload {
     let mut parts: Vec<String> = Vec::new();
-    if releases > 0 {
+    if more_releases > 0 {
         parts.push(format!(
-            "{releases} new release{}",
-            if releases == 1 { "" } else { "s" }
+            "{more_releases} more new release{}",
+            if more_releases == 1 { "" } else { "s" }
         ));
     }
-    if failures > 0 {
+    if more_failures > 0 {
         parts.push(format!(
-            "{failures} failure{}",
-            if failures == 1 { "" } else { "s" }
+            "{more_failures} more failure{}",
+            if more_failures == 1 { "" } else { "s" }
         ));
     }
     NotificationFiredPayload {
@@ -123,42 +162,53 @@ fn summary_payload(releases: usize, failures: usize) -> NotificationFiredPayload
 pub fn decide(
     event: &NotifiableEvent,
     settings: &Settings,
-    now_min: i64,
+    now: LocalMinute,
 ) -> Option<NotificationFiredPayload> {
-    passes_gate(event, settings, now_min).then(|| build_payload(event))
+    passes_gate(event, settings, now).then(|| build_payload(event))
 }
 
-/// Reduce one scheduler cycle's events into a BOUNDED set of toasts (AC4): individual
-/// failure toasts capped at [`MAX_FAILURE_TOASTS`] (failures are the actionable ones),
-/// plus ONE cycle summary when releases are present (releases are never individual in a
-/// cycle) or when failures overflow the cap, so nothing is silently dropped. The total
-/// is bounded by `MAX_FAILURE_TOASTS + 1` regardless of cycle size, never one per repo.
+/// Reduce one scheduler cycle's events into a BOUNDED set of toasts (AC4): each kind
+/// (release, failure) is shown individually up to [`MAX_INDIVIDUAL_TOASTS`], so the common
+/// small cycle keeps full event identity (Codex review finding 1); then ONE summary covers
+/// only the OVERFLOW beyond the caps, so nothing already toasted is repeated (finding 2)
+/// and nothing is dropped. The total is bounded by `2 * MAX_INDIVIDUAL_TOASTS + 1`
+/// regardless of cycle size, never one per repo.
 pub fn coalesce(
     events: &[NotifiableEvent],
     settings: &Settings,
-    now_min: i64,
+    now: LocalMinute,
 ) -> Vec<NotificationFiredPayload> {
-    let mut releases = 0usize;
+    let mut releases: Vec<&NotifiableEvent> = Vec::new();
     let mut failures: Vec<&NotifiableEvent> = Vec::new();
     for e in events {
-        if !passes_gate(e, settings, now_min) {
+        if !passes_gate(e, settings, now) {
             continue;
         }
         match e.kind {
-            NoteKind::Release => releases += 1,
+            NoteKind::Release => releases.push(e),
             NoteKind::Failure | NoteKind::Auth => failures.push(e),
         }
     }
-    if releases == 0 && failures.is_empty() {
+    if releases.is_empty() && failures.is_empty() {
         return Vec::new();
     }
 
+    // Individual toasts up to the per-kind cap, so each event keeps its identity (repo +
+    // detail) for the common small cycle - the edge can build a faithful toast and click
+    // action (Codex review finding 1).
     let mut out: Vec<NotificationFiredPayload> = Vec::new();
-    for &e in failures.iter().take(MAX_FAILURE_TOASTS) {
+    for &e in releases.iter().take(MAX_INDIVIDUAL_TOASTS) {
         out.push(build_payload(e));
     }
-    if releases > 0 || failures.len() > MAX_FAILURE_TOASTS {
-        out.push(summary_payload(releases, failures.len()));
+    for &e in failures.iter().take(MAX_INDIVIDUAL_TOASTS) {
+        out.push(build_payload(e));
+    }
+    // One summary for ONLY the overflow beyond the caps, so a large cycle stays bounded
+    // (AC4) without repeating an already-toasted event (finding 2) or dropping one.
+    let release_overflow = releases.len().saturating_sub(MAX_INDIVIDUAL_TOASTS);
+    let failure_overflow = failures.len().saturating_sub(MAX_INDIVIDUAL_TOASTS);
+    if release_overflow > 0 || failure_overflow > 0 {
+        out.push(summary_payload(release_overflow, failure_overflow));
     }
     out
 }
@@ -215,7 +265,27 @@ mod tests {
     }
 
     // 10:00 (600 minutes) - outside the test quiet window (09:00-17:00).
-    const MIDDAY: i64 = 600;
+    const MIDDAY: LocalMinute = match LocalMinute::new(600) {
+        Some(m) => m,
+        None => panic!("600 is a valid minute-of-day"),
+    };
+
+    #[test]
+    fn local_minute_validates_range() {
+        // Codex review finding 4: the type rejects an out-of-range value so a caller
+        // cannot pass seconds or a raw timestamp where local minutes-of-day is required.
+        assert!(LocalMinute::new(0).is_some());
+        assert!(LocalMinute::new(1439).is_some());
+        assert!(
+            LocalMinute::new(1440).is_none(),
+            "minutes-of-day is 0..=1439"
+        );
+        assert!(LocalMinute::new(-1).is_none());
+        assert!(
+            LocalMinute::new(86_400).is_none(),
+            "a seconds value is rejected"
+        );
+    }
 
     #[test]
     fn release_notifies_only_when_enabled() {
@@ -270,7 +340,8 @@ mod tests {
     #[test]
     fn coalesce_bounds_a_large_cycle() {
         // AC4: a cycle over many repos raises a BOUNDED number of toasts, not one per
-        // repo. 20 failures + 5 releases must collapse to at most the cap + 1 summary.
+        // repo. 20 failures + 5 releases stay within the per-kind caps plus one overflow
+        // summary, nowhere near 25.
         let mut events: Vec<NotifiableEvent> = (0..20).map(failure).collect();
         events.extend((100..105).map(release));
         let out = coalesce(&events, &settings(true, true, None), MIDDAY);
@@ -279,29 +350,73 @@ mod tests {
             "a cycle with notifiable events raises something"
         );
         assert!(
-            out.len() <= MAX_FAILURE_TOASTS + 1,
-            "bounded to the failure cap plus one summary, got {}",
+            out.len() <= 2 * MAX_INDIVIDUAL_TOASTS + 1,
+            "bounded to the per-kind caps plus one overflow summary, got {}",
             out.len()
         );
     }
 
     #[test]
-    fn coalesce_caps_failures_and_summarizes_releases() {
-        // The default policy: individual failure toasts capped at MAX_FAILURE_TOASTS,
-        // plus one cycle summary that tallies the releases (never individual) and the
-        // full failure count.
-        let mut events: Vec<NotifiableEvent> = (0..5).map(failure).collect();
-        events.extend((100..105).map(release));
+    fn coalesce_small_cycle_keeps_individual_identity() {
+        // Codex review findings 1 + 2: a small cycle shows each event individually with
+        // FULL identity (repo + detail) and never collapses to an anonymous summary or
+        // double-reports a failure.
+        let out = coalesce(
+            &[release(7), failure(9)],
+            &settings(true, true, None),
+            MIDDAY,
+        );
+        assert_eq!(
+            out.len(),
+            2,
+            "two events -> two individual toasts, no summary"
+        );
+        let rel = out
+            .iter()
+            .find(|p| p.kind == "release")
+            .expect("a release toast");
+        assert_eq!(rel.repo_id, Some(7), "the release keeps its repo identity");
+        assert!(
+            rel.body.contains("v1.0.0"),
+            "the release keeps its tag detail"
+        );
+        let fail = out
+            .iter()
+            .find(|p| p.kind == "failure")
+            .expect("a failure toast");
+        assert_eq!(fail.repo_id, Some(9));
+        assert!(
+            out.iter().all(|p| p.kind != "summary"),
+            "no redundant summary for a small cycle"
+        );
+    }
+
+    #[test]
+    fn coalesce_large_mixed_cycle_caps_each_kind_and_summarizes_overflow() {
+        // Codex review findings 1 + 2: individual toasts per kind up to the cap, then a
+        // summary ONLY for the overflow beyond the caps - so nothing already toasted is
+        // repeated (no double-report) and nothing is dropped.
+        let mut events: Vec<NotifiableEvent> = (0..5).map(release).collect();
+        events.extend((100..105).map(failure));
         let out = coalesce(&events, &settings(true, true, None), MIDDAY);
 
+        let releases = out.iter().filter(|p| p.kind == "release").count();
         let failures = out.iter().filter(|p| p.kind == "failure").count();
         let summaries = out.iter().filter(|p| p.kind == "summary").count();
-        assert_eq!(failures, MAX_FAILURE_TOASTS, "failures capped at the bound");
-        assert_eq!(summaries, 1, "exactly one cycle summary");
+        assert_eq!(
+            releases, MAX_INDIVIDUAL_TOASTS,
+            "releases shown individually up to the cap"
+        );
+        assert_eq!(
+            failures, MAX_INDIVIDUAL_TOASTS,
+            "failures shown individually up to the cap"
+        );
+        assert_eq!(summaries, 1, "one overflow summary");
         let summary = out.iter().find(|p| p.kind == "summary").unwrap();
         assert!(
-            summary.body.contains('5'),
-            "summary tallies the 5 releases / failures"
+            summary.body.contains('2'),
+            "the summary tallies the 2-each overflow, got {:?}",
+            summary.body
         );
     }
 
