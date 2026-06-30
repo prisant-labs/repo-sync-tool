@@ -43,3 +43,8 @@ reposync-core = { path = "../crates/reposync-core" }
 # commands run under; sqlx provides the SqlitePool type held in AppState.
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 tokio = { workspace = true }
+# Edge local-time (the edge-wiring effort): the timezone-free core cannot compute
+# the user's local day / minute, and the headless scheduler cannot ask the webview,
+# so the edge owns it via the `time` crate's local-offset (Win32 on Windows; a UTC
+# fallback elsewhere). Core stays time-free - this pin is edge-only.
+time = { workspace = true, features = ["local-offset"] }

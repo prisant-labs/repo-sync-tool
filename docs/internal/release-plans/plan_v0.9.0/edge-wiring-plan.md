@@ -18,6 +18,8 @@ Every core effort to date was verified test-first: a failing unit test, then min
 
 > Honest boundary: between the two gates, edge glue is "compiles + the core it calls is tested" - not "behavior verified." That gap is real and is closed only by the smoke-test. Slices are kept thin so the unverified surface per slice stays small.
 
+> Update (2026-06-30): `src-tauri` **library** unit tests DO run on Windows - only full-runtime integration tests need the comctl32 manifest (`build.rs`). So pure edge helpers (timezone math, path resolution, arg parsing) are unit-testable in `src-tauri` after all, and should be built test-first like core. Only genuinely launch-only behavior (tray, toasts, autostart registration, the webview) falls to the smoke-test. This shrinks the unverified surface meaningfully - e.g. the `localtime` day-window math landed with 3 unit tests.
+
 ## Inventory (grounded in `src-tauri`, 2026-06-30)
 
 ### Commands - 11 of 19 already real; the rest:
@@ -25,7 +27,7 @@ Every core effort to date was verified test-first: a failing unit test, then min
 | Command | State | Edge-wiring task |
 |---------|-------|------------------|
 | `activity_list` | **DONE 2026-06-30** | wired to new `activity::list` core read (test-first) |
-| `summary_today` | stub; core ready (E-11) | needs the **local-day `DayWindow`** - blocked on the local-time decision below |
+| `summary_today` | **DONE 2026-06-30** | wired via a new edge `localtime` helper (the `time` crate, jp's call); the local-day window math is unit-tested |
 | `repo_refresh_metadata` | stub; core ready (E-10, a/c-hardened) | construct `ReqwestTransport` + `NoToken`, call `refresh_one(now)`, re-read `RepoDetail`. Manual refresh is unaffected by the BL-NI-15b cadence caveat |
 | `repo_open_folder/terminal/editor/remote` | stub; **no core** | resolve the repo's local path / remote URL / configured editor+terminal (test-first core helper), then OS shell-out (launch-only) |
 | `summary_week` | inert stub | stays a V1.1 stub |

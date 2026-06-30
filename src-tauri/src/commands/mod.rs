@@ -231,12 +231,16 @@ pub async fn activity_list(
     reposync_core::activity::list(&state.pool, &filter).await
 }
 
-/// Get today's daily summary.
+/// Get today's daily summary (for the user's local day).
+///
+/// Thin wrapper over [`reposync_core::summary::summary_today`]: the edge supplies the
+/// local-day window ([`crate::localtime::local_day_window`]) because reposync-core is
+/// timezone-free, then the core aggregates the day's activity + state read-only.
 #[tauri::command]
 #[specta::specta]
-pub async fn summary_today(_state: tauri::State<'_, AppState>) -> Result<DailySummary, AppError> {
-    // TODO(E-11): compute (or read the cached) daily summary.
-    Err(not_implemented())
+pub async fn summary_today(state: tauri::State<'_, AppState>) -> Result<DailySummary, AppError> {
+    let window = crate::localtime::local_day_window();
+    reposync_core::summary::summary_today(&state.pool, &window).await
 }
 
 /// Get the current week's summary (V1.1 stub).

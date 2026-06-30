@@ -46,6 +46,12 @@ sqlx = { version = "0.9.0", default-features = false }
 # goes through the git CLI, never git2. Required for the dependency-hygiene gate.
 git2 = { version = "0.21.0", default-features = false }
 
+# Edge-only (the edge-wiring effort): local-time math the timezone-free core
+# deliberately omits. Already in the tree via sqlx, so enabling `local-offset` on
+# the src-tauri side adds no new crate. NEVER a reposync-core dependency - the
+# dependency-hygiene gate keeps `time` out of the core tree.
+time = "0.3.49"
+
 # Per-push CI / default release profile. Tuned for a small bundle but with THIN LTO
 # and parallel codegen so per-push CI builds stay fast (a full-LTO single-codegen-unit
 # build took about 35 min on the Windows runner). Maximal-size public artifacts use the

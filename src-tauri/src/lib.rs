@@ -13,6 +13,7 @@
 
 mod commands;
 mod events;
+mod localtime;
 mod tray;
 mod windows;
 
