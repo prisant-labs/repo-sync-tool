@@ -41,7 +41,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-07 | Update-Policy Engine | MUST | ready | ready | Done |
 | E-08 | Scheduler | MUST | ready | ready | Done |
 | E-09 | Activity Log Writer and Retention | MUST | ready | ready | Done |
-| E-10 | GitHub Metadata Client | SHOULD | ready | ready | Done (core; BL-NI-15 before wiring) |
+| E-10 | GitHub Metadata Client | SHOULD | ready | ready | Done (core; BL-NI-15a/c done, BL-NI-15b before wiring) |
 | E-11 | Summary Engine (Daily) | SHOULD | ready | ready | Done |
 | E-12 | Tracer Bullet and Packaging Spike | MUST | ready | ready | Done |
 | E-13 | Tray Native Menu | MUST | ready | ready | Deferred (edge-wiring effort) |

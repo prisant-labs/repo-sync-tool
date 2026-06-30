@@ -69,7 +69,7 @@ Each effort's contract (`spec.md`) and execution (`implementation-plan.md`) live
 | E-07 | [spec](release-plans/plan_v0.9.0/E-07-update-policy-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-07-update-policy-engine/implementation-plan.md) | Done | #9 |
 | E-08 | [spec](release-plans/plan_v0.9.0/E-08-scheduler/spec.md) | [plan](release-plans/plan_v0.9.0/E-08-scheduler/implementation-plan.md) | Done | #10 |
 | E-09 | [spec](release-plans/plan_v0.9.0/E-09-activity-log/spec.md) | [plan](release-plans/plan_v0.9.0/E-09-activity-log/implementation-plan.md) | Done | #11 |
-| E-10 | [spec](release-plans/plan_v0.9.0/E-10-github-client/spec.md) | [plan](release-plans/plan_v0.9.0/E-10-github-client/implementation-plan.md) | Done (core; BL-NI-15 before wiring) | #12 |
+| E-10 | [spec](release-plans/plan_v0.9.0/E-10-github-client/spec.md) | [plan](release-plans/plan_v0.9.0/E-10-github-client/implementation-plan.md) | Done (core; BL-NI-15a/c done, BL-NI-15b before wiring) | #12 |
 | E-11 | [spec](release-plans/plan_v0.9.0/E-11-summary-engine/spec.md) | [plan](release-plans/plan_v0.9.0/E-11-summary-engine/implementation-plan.md) | Done | #13 |
 | E-12 | [spec](release-plans/plan_v0.9.0/E-12-tracer-bullet/spec.md) | [plan](release-plans/plan_v0.9.0/E-12-tracer-bullet/implementation-plan.md) | Done | #14 |
 | E-13 | [spec](release-plans/plan_v0.9.0/E-13-tray-menu/spec.md) | [plan](release-plans/plan_v0.9.0/E-13-tray-menu/implementation-plan.md) | Deferred (edge-wiring effort) | #15 |
