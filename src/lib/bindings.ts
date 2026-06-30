@@ -48,7 +48,14 @@ export const commands = {
 	 *  outcome and returns the full [`UpdateResult`].
 	 */
 	repoUpdateNow: (id: number, mode: UpdateMode) => typedError<UpdateResult, AppErrorPayload>(__TAURI_INVOKE("repo_update_now", { id, mode })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Refresh GitHub / remote metadata for a repo. */
+	/**
+	 *  Refresh GitHub / remote metadata for a repo, then return the updated detail.
+	 * 
+	 *  Thin edge over [`reposync_core::github::refresh_one`] on the unauthenticated V1 path
+	 *  (`NoToken`): fetch + persist, map any engine failure to an [`AppError`]
+	 *  ([`refresh_report_error`]), then re-read the [`RepoDetail`]. A MANUAL refresh fetches
+	 *  unconditionally, so the deferred release-cadence caveat (BL-NI-15b) does not apply.
+	 */
 	repoRefreshMetadata: (id: number) => typedError<RepoDetail, AppErrorPayload>(__TAURI_INVOKE("repo_refresh_metadata", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Open the repo's folder in the OS file manager. */
 	repoOpenFolder: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_folder", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
@@ -58,9 +65,21 @@ export const commands = {
 	repoOpenEditor: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_editor", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Open the repo's remote (origin URL) in the browser. */
 	repoOpenRemote: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_remote", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  List activity-log records, filtered. */
+	/**
+	 *  List activity-log records, filtered (newest first).
+	 * 
+	 *  Thin wrapper over [`reposync_core::activity::list`]: the read-side counterpart
+	 *  to the E-09 writer, returning the filtered audit trail for the activity-timeline
+	 *  UI. The core clamps the row limit so a UI read can never pull the whole log.
+	 */
 	activityList: (filter: ActivityFilter) => typedError<ActivityRecord[], AppErrorPayload>(__TAURI_INVOKE("activity_list", { filter })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Get today's daily summary. */
+	/**
+	 *  Get today's daily summary (for the user's local day).
+	 * 
+	 *  Thin wrapper over [`reposync_core::summary::summary_today`]: the edge supplies the
+	 *  local-day window ([`crate::localtime::local_day_window`]) because reposync-core is
+	 *  timezone-free, then the core aggregates the day's activity + state read-only.
+	 */
 	summaryToday: () => typedError<DailySummary, AppErrorPayload>(__TAURI_INVOKE("summary_today")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Get the current week's summary (V1.1 stub). */
 	summaryWeek: () => typedError<WeeklySummary, AppErrorPayload>(__TAURI_INVOKE("summary_week")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
