@@ -50,16 +50,14 @@ pub struct RepoCoords {
     pub name: String,
 }
 
-/// The host metadata mapped from a GitHub API response into the
-/// `repo_remote_meta` shape (E-02). `latest_release_at` is unix seconds (the
-/// column is INTEGER), converted from the API's ISO-8601 `published_at`.
+/// The repo-RESOURCE metadata mapped from a GitHub repo API response into the
+/// `repo_remote_meta` shape (E-02). The latest-release fields are modeled separately as a
+/// [`ReleaseState`] / [`GhRelease`], because the release sub-fetch can fail independently
+/// of the repo fetch (BL-NI-15a).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GhMetadata {
     pub description: Option<String>,
     pub default_branch: Option<String>,
-    pub latest_release_tag: Option<String>,
-    pub latest_release_at: Option<i64>,
-    pub latest_release_url: Option<String>,
     /// Topics, serialized to a JSON-array string for `topics_json`.
     pub topics_json: Option<String>,
     pub is_archived: bool,
@@ -72,15 +70,29 @@ pub struct RateLimit {
     pub limit: i64,
 }
 
-/// Whether the `/releases/latest` sub-fetch within a 200 repo fetch was conclusive
-/// (BL-NI-15a). `Known` means the release endpoint answered - a 200 with a release, OR a
-/// 404 meaning "no release" - so the [`GhMetadata`] release fields are authoritative
-/// (`Some` = the release, `None` = confirmed no release). `Unknown` means that sub-fetch
-/// FAILED (network / parse / rate-limit) while the repo fetch itself succeeded, so the
-/// cached release fields must be PRESERVED, never overwritten with a spurious `None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseInfo {
-    Known,
+/// A latest-release object from `/releases/latest`. Its fields are nullable in the API,
+/// so they stay `Option`; `published_at` is unix seconds (converted from the ISO string).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GhRelease {
+    pub tag: Option<String>,
+    pub published_at: Option<i64>,
+    pub url: Option<String>,
+}
+
+/// The conclusive state of the `/releases/latest` sub-fetch within a 200 repo fetch
+/// (BL-NI-15a). A SINGLE typed value (Codex review): the release payload lives ONLY inside
+/// `Found`, so an "unknown yet carrying a release" state is unrepresentable - the edge
+/// cannot mistakenly persist an untrusted release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseState {
+    /// `/releases/latest` returned a release (200): authoritative, write it.
+    Found(GhRelease),
+    /// `/releases/latest` returned 404 - the repo has no release: authoritative, so a
+    /// stale cached release is cleared.
+    NoRelease,
+    /// The sub-fetch FAILED (network / parse / rate-limit / any other status) while the
+    /// repo fetch itself succeeded: the cached release fields are PRESERVED, never
+    /// overwritten with a spurious `None`.
     Unknown,
 }
 
@@ -95,7 +107,7 @@ pub enum FetchOutcome {
         etag: Option<String>,
         observed_sha: Option<String>,
         rate_limit: RateLimit,
-        release: ReleaseInfo,
+        release: ReleaseState,
     },
     /// 304 Not Modified: the cached metadata is still current; only the budget.
     NotModified { rate_limit: RateLimit },
@@ -136,6 +148,12 @@ pub enum RefreshOutcome {
 pub struct RefreshReport {
     pub outcome: RefreshOutcome,
     pub rate_limit: Option<RateLimit>,
+    /// True when a 200 refresh's latest-release sub-fetch was `Unknown` (BL-NI-15a/c): the
+    /// repo metadata refreshed but the cached release could not be confirmed, so the
+    /// orchestrator knows the release dimension is stale. Decoupling the release re-check
+    /// from the repo's 24h freshness window (so it actually retries) is the deferred
+    /// BL-NI-15b work.
+    pub release_stale: bool,
 }
 
 // =============================================================================
@@ -321,14 +339,10 @@ fn is_utc_zone(tz: &str) -> bool {
     false
 }
 
-/// Map a GitHub repo JSON (and optional latest-release JSON) into the
-/// [`GhMetadata`] / `repo_remote_meta` shape (AC1). Explicit column mapping:
-/// `published_at` -> `latest_release_at` (ISO -> unix), `html_url` ->
-/// `latest_release_url`, `topics` -> `topics_json` (a JSON-array string).
-pub fn map_metadata(
-    repo_json: &serde_json::Value,
-    release_json: Option<&serde_json::Value>,
-) -> GhMetadata {
+/// Map a GitHub REPO JSON into the [`GhMetadata`] / `repo_remote_meta` shape (AC1):
+/// `topics` -> `topics_json` (a JSON-array string), plus description / default_branch /
+/// archived. The latest release is mapped separately by [`map_release`].
+pub fn map_metadata(repo_json: &serde_json::Value) -> GhMetadata {
     let str_field = |v: &serde_json::Value, key: &str| -> Option<String> {
         v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
     };
@@ -346,24 +360,29 @@ pub fn map_metadata(
                 .collect();
             serde_json::to_string(&topics).unwrap_or_else(|_| "[]".to_string())
         });
-    let (latest_release_tag, latest_release_at, latest_release_url) = match release_json {
-        Some(r) => (
-            str_field(r, "tag_name"),
-            str_field(r, "published_at")
-                .as_deref()
-                .and_then(iso8601_to_unix),
-            str_field(r, "html_url"),
-        ),
-        None => (None, None, None),
-    };
     GhMetadata {
         description: str_field(repo_json, "description"),
         default_branch: str_field(repo_json, "default_branch"),
-        latest_release_tag,
-        latest_release_at,
-        latest_release_url,
         topics_json,
         is_archived,
+    }
+}
+
+/// Map a `/releases/latest` JSON body into a [`GhRelease`]: `tag_name` -> `tag`,
+/// `published_at` (ISO-8601) -> unix `published_at`, `html_url` -> `url`.
+pub fn map_release(release_json: &serde_json::Value) -> GhRelease {
+    let str_field = |key: &str| -> Option<String> {
+        release_json
+            .get(key)
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    };
+    GhRelease {
+        tag: str_field("tag_name"),
+        published_at: str_field("published_at")
+            .as_deref()
+            .and_then(iso8601_to_unix),
+        url: str_field("html_url"),
     }
 }
 
@@ -431,6 +450,7 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
         return Ok(RefreshReport {
             outcome: RefreshOutcome::Skipped,
             rate_limit: None,
+            release_stale: false,
         });
     };
 
@@ -450,6 +470,7 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
         return Ok(RefreshReport {
             outcome: RefreshOutcome::Cached,
             rate_limit: None,
+            release_stale: false,
         });
     }
 
@@ -469,16 +490,22 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             rate_limit,
             release,
         } => {
+            // All metadata writes for a 200 run in ONE transaction so the freshness
+            // markers (last_fetched_at, etag) cannot advance unless the release write is
+            // also durable (BL-NI-15a atomicity). Otherwise a release-write failure could
+            // leave the repo marked freshly-fetched with a stale release, which the 24h
+            // window would then hide.
+            let mut tx = pool.begin().await?;
             // default_branch lives on repos; the rest on repo_remote_meta.
             sqlx::query(
                 "UPDATE repos SET default_branch = COALESCE(?, default_branch) WHERE id = ?",
             )
             .bind(&metadata.default_branch)
             .bind(repo_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
             // The repo-RESOURCE columns are always authoritative on a 200. The release
-            // columns are written SEPARATELY (below) so a failed latest-release sub-fetch
+            // columns are written separately (next) so a failed latest-release sub-fetch
             // never erases the cached release (BL-NI-15a).
             sqlx::query(
                 "INSERT INTO repo_remote_meta \
@@ -497,28 +524,42 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             .bind(&observed_sha)
             .bind(now)
             .bind(&new_etag)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
-            // Write the release columns ONLY when the sub-fetch was conclusive (BL-NI-15a):
-            // Known-with-values writes them, Known-with-None clears a deleted release, and
-            // Unknown leaves the cached fields untouched. The row exists after the upsert
-            // above, so a first insert with Unknown correctly leaves them NULL (no cache to
-            // preserve).
-            if release == ReleaseInfo::Known {
-                sqlx::query(
-                    "UPDATE repo_remote_meta SET latest_release_tag = ?, \
-                     latest_release_at = ?, latest_release_url = ? WHERE repo_id = ?",
-                )
-                .bind(&metadata.latest_release_tag)
-                .bind(metadata.latest_release_at)
-                .bind(&metadata.latest_release_url)
-                .bind(repo_id)
-                .execute(pool)
-                .await?;
-            }
+            // Release columns, by the conclusive state of the sub-fetch (BL-NI-15a):
+            // Found writes the release, NoRelease clears a deleted one, Unknown preserves
+            // the cached fields and is surfaced as release_stale.
+            let release_stale = match &release {
+                ReleaseState::Found(rel) => {
+                    sqlx::query(
+                        "UPDATE repo_remote_meta SET latest_release_tag = ?, \
+                         latest_release_at = ?, latest_release_url = ? WHERE repo_id = ?",
+                    )
+                    .bind(&rel.tag)
+                    .bind(rel.published_at)
+                    .bind(&rel.url)
+                    .bind(repo_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    false
+                }
+                ReleaseState::NoRelease => {
+                    sqlx::query(
+                        "UPDATE repo_remote_meta SET latest_release_tag = NULL, \
+                         latest_release_at = NULL, latest_release_url = NULL WHERE repo_id = ?",
+                    )
+                    .bind(repo_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    false
+                }
+                ReleaseState::Unknown => true,
+            };
+            tx.commit().await?;
             Ok(RefreshReport {
                 outcome: RefreshOutcome::Updated,
                 rate_limit: Some(rate_limit),
+                release_stale,
             })
         }
         FetchOutcome::NotModified { rate_limit } => {
@@ -533,19 +574,23 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             Ok(RefreshReport {
                 outcome: RefreshOutcome::NotModified,
                 rate_limit: Some(rate_limit),
+                release_stale: false,
             })
         }
         FetchOutcome::NetworkLost => Ok(RefreshReport {
             outcome: RefreshOutcome::NetworkLost,
             rate_limit: None,
+            release_stale: false,
         }),
         FetchOutcome::NotFound => Ok(RefreshReport {
             outcome: RefreshOutcome::NotFound,
             rate_limit: None,
+            release_stale: false,
         }),
         FetchOutcome::RateLimited => Ok(RefreshReport {
             outcome: RefreshOutcome::RateLimited,
             rate_limit: None,
+            release_stale: false,
         }),
     }
 }
@@ -647,7 +692,7 @@ impl Transport for ReqwestTransport {
             "{GITHUB_API_BASE}/repos/{}/{}/releases/latest",
             coords.owner, coords.name
         );
-        let (release_json, release): (Option<serde_json::Value>, ReleaseInfo) = match self
+        let release: ReleaseState = match self
             .client
             .get(&release_url)
             .header("Accept", "application/vnd.github+json")
@@ -656,20 +701,20 @@ impl Transport for ReqwestTransport {
         {
             // 200: a release exists - parse it. A parse failure is NOT authoritative, so
             // it is Unknown (preserve any cached release) rather than a spurious "none".
-            Ok(r) if r.status().is_success() => match r.json().await {
-                Ok(v) => (Some(v), ReleaseInfo::Known),
-                Err(_) => (None, ReleaseInfo::Unknown),
+            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                Ok(v) => ReleaseState::Found(map_release(&v)),
+                Err(_) => ReleaseState::Unknown,
             },
             // 404: GitHub confirmed the repo has no latest release - authoritative None.
-            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => (None, ReleaseInfo::Known),
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => ReleaseState::NoRelease,
             // Any other status (incl. a rate-limited 403) or a transport error: do not
             // trust it - preserve the cached release fields (BL-NI-15a). Sending the
             // release endpoint its own conditional/rate-limit handling is the deferred
-            // wiring work (BL-NI-15b/c).
-            _ => (None, ReleaseInfo::Unknown),
+            // wiring work (BL-NI-15b).
+            _ => ReleaseState::Unknown,
         };
 
-        let metadata = map_metadata(&repo_json, release_json.as_ref());
+        let metadata = map_metadata(&repo_json);
         // The observed SHA (last_remote_sha) is the default branch HEAD; a precise
         // value needs a separate commits call. V1 leaves it None when not cheaply
         // available; a commits-based fill is a documented refinement (backlog).
@@ -893,35 +938,37 @@ mod tests {
             "archived": true,
             "topics": ["rust", "cli"]
         });
-        let release = serde_json::json!({
-            "tag_name": "v1.2.3",
-            "published_at": "2024-01-15T10:30:00Z",
-            "html_url": "https://github.com/o/n/releases/tag/v1.2.3"
-        });
-        let m = map_metadata(&repo, Some(&release));
+        let m = map_metadata(&repo);
         assert_eq!(m.description.as_deref(), Some("a repo"));
         assert_eq!(m.default_branch.as_deref(), Some("main"));
         assert!(m.is_archived);
-        assert_eq!(m.latest_release_tag.as_deref(), Some("v1.2.3"));
-        assert_eq!(m.latest_release_at, Some(1_705_314_600));
-        assert_eq!(
-            m.latest_release_url.as_deref(),
-            Some("https://github.com/o/n/releases/tag/v1.2.3")
-        );
         // topics serialize to a JSON-array string.
         let topics: Vec<String> = serde_json::from_str(m.topics_json.as_deref().unwrap()).unwrap();
         assert_eq!(topics, vec!["rust", "cli"]);
     }
 
     #[test]
-    fn map_metadata_no_release_leaves_release_fields_none() {
-        let repo =
-            serde_json::json!({"description": "x", "default_branch": "main", "archived": false});
-        let m = map_metadata(&repo, None);
-        assert_eq!(m.latest_release_tag, None);
-        assert_eq!(m.latest_release_at, None);
-        assert_eq!(m.latest_release_url, None);
-        assert!(!m.is_archived);
+    fn map_release_maps_tag_published_and_url() {
+        let release = serde_json::json!({
+            "tag_name": "v1.2.3",
+            "published_at": "2024-01-15T10:30:00Z",
+            "html_url": "https://github.com/o/n/releases/tag/v1.2.3"
+        });
+        let r = map_release(&release);
+        assert_eq!(r.tag.as_deref(), Some("v1.2.3"));
+        assert_eq!(r.published_at, Some(1_705_314_600));
+        assert_eq!(
+            r.url.as_deref(),
+            Some("https://github.com/o/n/releases/tag/v1.2.3")
+        );
+    }
+
+    #[test]
+    fn map_release_missing_fields_are_none() {
+        let r = map_release(&serde_json::json!({}));
+        assert_eq!(r.tag, None);
+        assert_eq!(r.published_at, None);
+        assert_eq!(r.url, None);
     }
 
     // --- is_within_refresh_window (AC3) -------------------------------------
@@ -1054,9 +1101,6 @@ mod tests {
         GhMetadata {
             description: Some("desc".into()),
             default_branch: Some("main".into()),
-            latest_release_tag: Some("v1".into()),
-            latest_release_at: Some(1000),
-            latest_release_url: Some("https://github.com/owner/name/releases/tag/v1".into()),
             topics_json: Some("[\"a\"]".into()),
             is_archived: false,
         }
@@ -1097,10 +1141,15 @@ mod tests {
                 remaining: 59,
                 limit: 60,
             },
-            release: ReleaseInfo::Known,
+            release: ReleaseState::Found(GhRelease {
+                tag: Some("v1".into()),
+                published_at: Some(1000),
+                url: Some("https://github.com/owner/name/releases/tag/v1".into()),
+            }),
         });
         let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
+        assert!(!out.release_stale, "a Found release is not stale");
 
         let row = sqlx::query(
             "SELECT m.description, m.topics_json, m.latest_release_tag, m.latest_release_at, \
@@ -1276,9 +1325,6 @@ mod tests {
             metadata: GhMetadata {
                 description: Some("fresh desc".into()),
                 default_branch: Some("main".into()),
-                latest_release_tag: None,
-                latest_release_at: None,
-                latest_release_url: None,
                 topics_json: Some("[]".into()),
                 is_archived: false,
             },
@@ -1288,11 +1334,15 @@ mod tests {
                 remaining: 59,
                 limit: 60,
             },
-            release: ReleaseInfo::Unknown,
+            release: ReleaseState::Unknown,
         });
         let now = 1 + REFRESH_WINDOW_SECS + 10;
         let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
+        assert!(
+            out.release_stale,
+            "an Unknown release sub-fetch is surfaced as stale (BL-NI-15c)"
+        );
         let row = sqlx::query(
             "SELECT description, latest_release_tag, latest_release_at \
              FROM repo_remote_meta WHERE repo_id = ?",
@@ -1343,9 +1393,6 @@ mod tests {
             metadata: GhMetadata {
                 description: Some("d".into()),
                 default_branch: None,
-                latest_release_tag: None,
-                latest_release_at: None,
-                latest_release_url: None,
                 topics_json: None,
                 is_archived: false,
             },
@@ -1355,10 +1402,14 @@ mod tests {
                 remaining: 59,
                 limit: 60,
             },
-            release: ReleaseInfo::Known,
+            release: ReleaseState::NoRelease,
         });
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert!(
+            !out.release_stale,
+            "a confirmed NoRelease is authoritative, not stale"
+        );
         let tag: Option<String> =
             sqlx::query("SELECT latest_release_tag FROM repo_remote_meta WHERE repo_id = ?")
                 .bind(id)
@@ -1390,7 +1441,7 @@ mod tests {
                 remaining: 3,
                 limit: 60,
             },
-            release: ReleaseInfo::Known,
+            release: ReleaseState::NoRelease,
         });
         let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
