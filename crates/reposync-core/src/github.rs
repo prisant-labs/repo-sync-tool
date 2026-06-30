@@ -72,16 +72,30 @@ pub struct RateLimit {
     pub limit: i64,
 }
 
+/// Whether the `/releases/latest` sub-fetch within a 200 repo fetch was conclusive
+/// (BL-NI-15a). `Known` means the release endpoint answered - a 200 with a release, OR a
+/// 404 meaning "no release" - so the [`GhMetadata`] release fields are authoritative
+/// (`Some` = the release, `None` = confirmed no release). `Unknown` means that sub-fetch
+/// FAILED (network / parse / rate-limit) while the repo fetch itself succeeded, so the
+/// cached release fields must be PRESERVED, never overwritten with a spurious `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseInfo {
+    Known,
+    Unknown,
+}
+
 /// One transport fetch result. The transport classifies the HTTP outcome; the
 /// caller ([`refresh_one`]) decides what to persist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchOutcome {
-    /// 200: fresh metadata, the new ETag, the observed commit SHA, and the budget.
+    /// 200: fresh metadata, the new ETag, the observed commit SHA, the budget, and
+    /// whether the latest-release sub-fetch was conclusive (BL-NI-15a).
     Modified {
         metadata: GhMetadata,
         etag: Option<String>,
         observed_sha: Option<String>,
         rate_limit: RateLimit,
+        release: ReleaseInfo,
     },
     /// 304 Not Modified: the cached metadata is still current; only the budget.
     NotModified { rate_limit: RateLimit },
@@ -110,6 +124,18 @@ pub enum RefreshOutcome {
     NetworkLost,
     NotFound,
     RateLimited,
+}
+
+/// The full result of [`refresh_one`]: the [`RefreshOutcome`] plus the rate-limit budget
+/// observed when the network was actually reached (`Some` on a 200/304; `None` when served
+/// from cache, skipped, or on a transport failure that carries no budget). The deferred
+/// refresh-pass orchestrator feeds `rate_limit` to [`should_backoff`] to decide whether to
+/// pause the remaining repos (BL-NI-15c); designing the orchestration cadence itself is the
+/// edge-wiring effort's job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshReport {
+    pub outcome: RefreshOutcome,
+    pub rate_limit: Option<RateLimit>,
 }
 
 // =============================================================================
@@ -384,7 +410,7 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
     tokens: &P,
     repo_id: i64,
     now: i64,
-) -> Result<RefreshOutcome, AppError> {
+) -> Result<RefreshReport, AppError> {
     // 1. Resolve the repo's coords; a missing id is NotFound, a non-GitHub repo
     //    (or unparseable URL) is a clean skip - never a network call.
     let repo_row = sqlx::query("SELECT remote_origin_url, host_type FROM repos WHERE id = ?")
@@ -402,7 +428,10 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
         .as_deref()
         .and_then(|u| parse_github_coords(u, &host_type))
     else {
-        return Ok(RefreshOutcome::Skipped);
+        return Ok(RefreshReport {
+            outcome: RefreshOutcome::Skipped,
+            rate_limit: None,
+        });
     };
 
     // 2. Read the cached ETag + last_fetched_at (a repo may have no meta row yet).
@@ -418,7 +447,10 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
 
     // 3. Inside the ~24h refresh window -> serve from cache, no network (AC3).
     if is_within_refresh_window(last_fetched_at, now) {
-        return Ok(RefreshOutcome::Cached);
+        return Ok(RefreshReport {
+            outcome: RefreshOutcome::Cached,
+            rate_limit: None,
+        });
     }
 
     // 4. Fetch with the stored ETag as If-None-Match and the seam's token (V1: None).
@@ -434,9 +466,10 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             metadata,
             etag: new_etag,
             observed_sha,
-            rate_limit: _,
+            rate_limit,
+            release,
         } => {
-            // default_branch lives on repos; the rest on repo_remote_meta (UPSERT).
+            // default_branch lives on repos; the rest on repo_remote_meta.
             sqlx::query(
                 "UPDATE repos SET default_branch = COALESCE(?, default_branch) WHERE id = ?",
             )
@@ -444,34 +477,51 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             .bind(repo_id)
             .execute(pool)
             .await?;
+            // The repo-RESOURCE columns are always authoritative on a 200. The release
+            // columns are written SEPARATELY (below) so a failed latest-release sub-fetch
+            // never erases the cached release (BL-NI-15a).
             sqlx::query(
                 "INSERT INTO repo_remote_meta \
-                 (repo_id, description, topics_json, latest_release_tag, latest_release_at, \
-                  latest_release_url, is_archived, last_remote_sha, last_fetched_at, etag) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 (repo_id, description, topics_json, is_archived, last_remote_sha, \
+                  last_fetched_at, etag) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?) \
                  ON CONFLICT(repo_id) DO UPDATE SET \
                   description = excluded.description, topics_json = excluded.topics_json, \
-                  latest_release_tag = excluded.latest_release_tag, \
-                  latest_release_at = excluded.latest_release_at, \
-                  latest_release_url = excluded.latest_release_url, \
                   is_archived = excluded.is_archived, last_remote_sha = excluded.last_remote_sha, \
                   last_fetched_at = excluded.last_fetched_at, etag = excluded.etag",
             )
             .bind(repo_id)
             .bind(&metadata.description)
             .bind(&metadata.topics_json)
-            .bind(&metadata.latest_release_tag)
-            .bind(metadata.latest_release_at)
-            .bind(&metadata.latest_release_url)
             .bind(metadata.is_archived as i64)
             .bind(&observed_sha)
             .bind(now)
             .bind(&new_etag)
             .execute(pool)
             .await?;
-            Ok(RefreshOutcome::Updated)
+            // Write the release columns ONLY when the sub-fetch was conclusive (BL-NI-15a):
+            // Known-with-values writes them, Known-with-None clears a deleted release, and
+            // Unknown leaves the cached fields untouched. The row exists after the upsert
+            // above, so a first insert with Unknown correctly leaves them NULL (no cache to
+            // preserve).
+            if release == ReleaseInfo::Known {
+                sqlx::query(
+                    "UPDATE repo_remote_meta SET latest_release_tag = ?, \
+                     latest_release_at = ?, latest_release_url = ? WHERE repo_id = ?",
+                )
+                .bind(&metadata.latest_release_tag)
+                .bind(metadata.latest_release_at)
+                .bind(&metadata.latest_release_url)
+                .bind(repo_id)
+                .execute(pool)
+                .await?;
+            }
+            Ok(RefreshReport {
+                outcome: RefreshOutcome::Updated,
+                rate_limit: Some(rate_limit),
+            })
         }
-        FetchOutcome::NotModified { rate_limit: _ } => {
+        FetchOutcome::NotModified { rate_limit } => {
             sqlx::query(
                 "INSERT INTO repo_remote_meta (repo_id, last_fetched_at) VALUES (?, ?) \
                  ON CONFLICT(repo_id) DO UPDATE SET last_fetched_at = excluded.last_fetched_at",
@@ -480,11 +530,23 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             .bind(now)
             .execute(pool)
             .await?;
-            Ok(RefreshOutcome::NotModified)
+            Ok(RefreshReport {
+                outcome: RefreshOutcome::NotModified,
+                rate_limit: Some(rate_limit),
+            })
         }
-        FetchOutcome::NetworkLost => Ok(RefreshOutcome::NetworkLost),
-        FetchOutcome::NotFound => Ok(RefreshOutcome::NotFound),
-        FetchOutcome::RateLimited => Ok(RefreshOutcome::RateLimited),
+        FetchOutcome::NetworkLost => Ok(RefreshReport {
+            outcome: RefreshOutcome::NetworkLost,
+            rate_limit: None,
+        }),
+        FetchOutcome::NotFound => Ok(RefreshReport {
+            outcome: RefreshOutcome::NotFound,
+            rate_limit: None,
+        }),
+        FetchOutcome::RateLimited => Ok(RefreshReport {
+            outcome: RefreshOutcome::RateLimited,
+            rate_limit: None,
+        }),
     }
 }
 
@@ -585,15 +647,26 @@ impl Transport for ReqwestTransport {
             "{GITHUB_API_BASE}/repos/{}/{}/releases/latest",
             coords.owner, coords.name
         );
-        let release_json: Option<serde_json::Value> = match self
+        let (release_json, release): (Option<serde_json::Value>, ReleaseInfo) = match self
             .client
             .get(&release_url)
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => r.json().await.ok(),
-            _ => None,
+            // 200: a release exists - parse it. A parse failure is NOT authoritative, so
+            // it is Unknown (preserve any cached release) rather than a spurious "none".
+            Ok(r) if r.status().is_success() => match r.json().await {
+                Ok(v) => (Some(v), ReleaseInfo::Known),
+                Err(_) => (None, ReleaseInfo::Unknown),
+            },
+            // 404: GitHub confirmed the repo has no latest release - authoritative None.
+            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => (None, ReleaseInfo::Known),
+            // Any other status (incl. a rate-limited 403) or a transport error: do not
+            // trust it - preserve the cached release fields (BL-NI-15a). Sending the
+            // release endpoint its own conditional/rate-limit handling is the deferred
+            // wiring work (BL-NI-15b/c).
+            _ => (None, ReleaseInfo::Unknown),
         };
 
         let metadata = map_metadata(&repo_json, release_json.as_ref());
@@ -607,6 +680,7 @@ impl Transport for ReqwestTransport {
             etag: new_etag,
             observed_sha,
             rate_limit,
+            release,
         }
     }
 }
@@ -1002,7 +1076,7 @@ mod tests {
         .last_insert_rowid();
         let t = FakeTransport::new(FetchOutcome::NotFound);
         let out = refresh_one(&pool, &t, &NoToken, id, 1000).await.unwrap();
-        assert_eq!(out, RefreshOutcome::Skipped);
+        assert_eq!(out.outcome, RefreshOutcome::Skipped);
         assert_eq!(
             *t.calls.borrow(),
             0,
@@ -1023,9 +1097,10 @@ mod tests {
                 remaining: 59,
                 limit: 60,
             },
+            release: ReleaseInfo::Known,
         });
         let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
-        assert_eq!(out, RefreshOutcome::Updated);
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
 
         let row = sqlx::query(
             "SELECT m.description, m.topics_json, m.latest_release_tag, m.latest_release_at, \
@@ -1091,7 +1166,7 @@ mod tests {
         .unwrap();
         let t = FakeTransport::new(FetchOutcome::NetworkLost);
         let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
-        assert_eq!(out, RefreshOutcome::Cached);
+        assert_eq!(out.outcome, RefreshOutcome::Cached);
         assert_eq!(
             *t.calls.borrow(),
             0,
@@ -1122,7 +1197,7 @@ mod tests {
         });
         let now = 1 + REFRESH_WINDOW_SECS + 10;
         let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
-        assert_eq!(out, RefreshOutcome::NotModified);
+        assert_eq!(out.outcome, RefreshOutcome::NotModified);
         assert_eq!(
             t.last_etag.borrow().as_deref(),
             Some("\"stored-etag\""),
@@ -1164,7 +1239,7 @@ mod tests {
         let t = FakeTransport::new(FetchOutcome::NetworkLost);
         let now = 1 + REFRESH_WINDOW_SECS + 10;
         let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
-        assert_eq!(out, RefreshOutcome::NetworkLost);
+        assert_eq!(out.outcome, RefreshOutcome::NetworkLost);
         let desc: Option<String> =
             sqlx::query("SELECT description FROM repo_remote_meta WHERE repo_id = ?")
                 .bind(id)
@@ -1178,5 +1253,170 @@ mod tests {
             Some("keep"),
             "a network error leaves the cached row intact"
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_200_release_unknown_preserves_cached_release() {
+        // BL-NI-15a: a 200 repo fetch whose latest-release SUB-fetch failed
+        // (ReleaseInfo::Unknown) must NOT erase the previously-cached release - it
+        // preserves the release fields while still refreshing the repo-resource columns.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, description, latest_release_tag, latest_release_at, latest_release_url, last_fetched_at) \
+             VALUES (?, 'old desc', 'v0', 500, 'https://github.com/owner/name/releases/tag/v0', 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(FetchOutcome::Modified {
+            metadata: GhMetadata {
+                description: Some("fresh desc".into()),
+                default_branch: Some("main".into()),
+                latest_release_tag: None,
+                latest_release_at: None,
+                latest_release_url: None,
+                topics_json: Some("[]".into()),
+                is_archived: false,
+            },
+            etag: Some("\"new\"".into()),
+            observed_sha: None,
+            rate_limit: RateLimit {
+                remaining: 59,
+                limit: 60,
+            },
+            release: ReleaseInfo::Unknown,
+        });
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
+        let row = sqlx::query(
+            "SELECT description, latest_release_tag, latest_release_at \
+             FROM repo_remote_meta WHERE repo_id = ?",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            row.try_get::<Option<String>, _>("latest_release_tag")
+                .unwrap()
+                .as_deref(),
+            Some("v0"),
+            "an Unknown release sub-fetch preserves the cached release tag"
+        );
+        assert_eq!(
+            row.try_get::<Option<i64>, _>("latest_release_at").unwrap(),
+            Some(500),
+            "an Unknown release sub-fetch preserves the cached release timestamp"
+        );
+        assert_eq!(
+            row.try_get::<Option<String>, _>("description")
+                .unwrap()
+                .as_deref(),
+            Some("fresh desc"),
+            "the repo-resource columns still refresh on a 200"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_200_release_known_none_clears_cached_release() {
+        // BL-NI-15a: a CONFIRMED no-release (404 -> ReleaseInfo::Known with None fields)
+        // legitimately clears a stale cached release (e.g. the release was deleted
+        // upstream). Known + None is authoritative; only Unknown preserves.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, latest_release_tag, latest_release_at, last_fetched_at) \
+             VALUES (?, 'v0', 500, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(FetchOutcome::Modified {
+            metadata: GhMetadata {
+                description: Some("d".into()),
+                default_branch: None,
+                latest_release_tag: None,
+                latest_release_at: None,
+                latest_release_url: None,
+                topics_json: None,
+                is_archived: false,
+            },
+            etag: None,
+            observed_sha: None,
+            rate_limit: RateLimit {
+                remaining: 59,
+                limit: 60,
+            },
+            release: ReleaseInfo::Known,
+        });
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let tag: Option<String> =
+            sqlx::query("SELECT latest_release_tag FROM repo_remote_meta WHERE repo_id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("latest_release_tag")
+                .unwrap();
+        assert_eq!(
+            tag, None,
+            "a confirmed no-release clears the stale cached release"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_surfaces_rate_limit_budget_for_backoff() {
+        // BL-NI-15c: refresh_one surfaces the observed rate-limit budget so the deferred
+        // refresh-pass orchestrator can call should_backoff and pause. A near-exhausted
+        // budget on a 200 must reach the caller (the old code discarded it).
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        let t = FakeTransport::new(FetchOutcome::Modified {
+            metadata: sample_metadata(),
+            etag: None,
+            observed_sha: None,
+            // 3 of 60 remaining = 5%, below the 10% backoff floor.
+            rate_limit: RateLimit {
+                remaining: 3,
+                limit: 60,
+            },
+            release: ReleaseInfo::Known,
+        });
+        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
+        let budget = out
+            .rate_limit
+            .expect("a 200 surfaces the observed rate-limit budget");
+        assert!(
+            should_backoff(&budget),
+            "a near-exhausted budget reaches the caller so the orchestrator backs off"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_from_cache_surfaces_no_budget() {
+        // A cache hit makes no network call, so there is no budget to report (None).
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query("INSERT INTO repo_remote_meta (repo_id, last_fetched_at) VALUES (?, 9900)")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let t = FakeTransport::new(FetchOutcome::NetworkLost);
+        let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Cached);
+        assert_eq!(out.rate_limit, None, "a cache hit reports no budget");
     }
 }
