@@ -28,7 +28,7 @@ Every core effort to date was verified test-first: a failing unit test, then min
 |---------|-------|------------------|
 | `activity_list` | **DONE 2026-06-30** | wired to new `activity::list` core read (test-first) |
 | `summary_today` | **DONE 2026-06-30** | wired via a new edge `localtime` helper (the `time` crate, jp's call); the local-day window math is unit-tested |
-| `repo_refresh_metadata` | stub; core ready (E-10, a/c-hardened) | construct `ReqwestTransport` + `NoToken`, call `refresh_one(now)`, map the engine outcome to `AppError` (the `NetworkLost`/`RateLimited`/`NotFound` outcomes are returned as values, not errors), re-read `RepoDetail`. **Coupling found 2026-06-30:** `RateLimit` carries only `remaining`/`limit`, so an honest `AppError::RateLimited { reset_at }` needs the engine to also parse `X-RateLimit-Reset` (small test-first core change) - else the error's `reset_at` is a guess. Manual refresh is otherwise unaffected by the BL-NI-15b cadence caveat |
+| `repo_refresh_metadata` | **DONE 2026-06-30** | wired over `refresh_one` (NoToken path); engine outcome -> `AppError` via a pure **unit-tested** mapper (Offline / NotFound / RateLimited{reset_at}; cache/200/Skipped = success -> re-read detail). Prerequisite landed test-first: the engine now captures `X-RateLimit-Reset` into `RateLimit.reset_at` and `FetchOutcome::RateLimited` carries the budget, so the rate-limited error is honest (not a guessed reset). Manual refresh is unaffected by the BL-NI-15b cadence caveat |
 | `repo_open_folder/terminal/editor/remote` | stub; **no core** | resolve the repo's local path / remote URL / configured editor+terminal (test-first core helper), then OS shell-out (launch-only) |
 | `summary_week` | inert stub | stays a V1.1 stub |
 

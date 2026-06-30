@@ -61,6 +61,15 @@ pub fn local_day_window() -> DayWindow {
     day_window_for(OffsetDateTime::now_utc(), local_offset())
 }
 
+/// Current unix time in whole seconds - the edge clock for engine calls that take a
+/// `now` (e.g. the GitHub refresh window). Saturates to 0 before the epoch.
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

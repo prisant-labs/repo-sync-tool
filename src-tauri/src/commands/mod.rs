@@ -166,16 +166,62 @@ fn update_mode_label(mode: &UpdateMode) -> &'static str {
     }
 }
 
-/// Refresh GitHub / remote metadata for a repo.
+/// Map a [`RefreshReport`](reposync_core::github::RefreshReport)'s engine-level outcome
+/// to an [`AppError`], or `None` when the refresh succeeded (the command then re-reads
+/// and returns the updated detail).
+///
+/// The engine returns network failures as outcome VALUES, not errors; the E-05 wrapping
+/// happens here at the edge. `Skipped` (a non-GitHub repo) is treated as success - the
+/// command returns the unchanged detail. `RateLimited` carries the parsed reset time, so
+/// the error is honest. Pure, so it is unit-tested below.
+fn refresh_report_error(
+    report: &reposync_core::github::RefreshReport,
+    repo_id: i64,
+) -> Option<AppError> {
+    use reposync_core::github::RefreshOutcome;
+    match report.outcome {
+        // Refreshed, served from cache, still-current, or a non-GitHub skip: success.
+        RefreshOutcome::Cached
+        | RefreshOutcome::Updated
+        | RefreshOutcome::NotModified
+        | RefreshOutcome::Skipped => None,
+        RefreshOutcome::NetworkLost => Some(AppError::Offline),
+        RefreshOutcome::NotFound => Some(AppError::NotFound {
+            entity: format!("GitHub repository for repo {repo_id}"),
+        }),
+        // The budget (with the parsed reset) rides along on the rate-limited outcome;
+        // fall back to 0 ("unknown") only if it is somehow absent.
+        RefreshOutcome::RateLimited => Some(AppError::RateLimited {
+            reset_at: report.rate_limit.map(|r| r.reset_at).unwrap_or(0),
+        }),
+    }
+}
+
+/// Refresh GitHub / remote metadata for a repo, then return the updated detail.
+///
+/// Thin edge over [`reposync_core::github::refresh_one`] on the unauthenticated V1 path
+/// (`NoToken`): fetch + persist, map any engine failure to an [`AppError`]
+/// ([`refresh_report_error`]), then re-read the [`RepoDetail`]. A MANUAL refresh fetches
+/// unconditionally, so the deferred release-cadence caveat (BL-NI-15b) does not apply.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_refresh_metadata(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<RepoDetail, AppError> {
-    // TODO(E-10): fetch remote meta (release, topics, archived) for `id`.
-    let _ = id;
-    Err(not_implemented())
+    let transport = reposync_core::github::ReqwestTransport::new()?;
+    let report = reposync_core::github::refresh_one(
+        &state.pool,
+        &transport,
+        &reposync_core::github::NoToken,
+        id,
+        crate::localtime::now_unix(),
+    )
+    .await?;
+    if let Some(err) = refresh_report_error(&report, id) {
+        return Err(err);
+    }
+    reposync_core::store::repo_get(&state.pool, RepoId(id)).await
 }
 
 /// Open the repo's folder in the OS file manager.
@@ -266,4 +312,57 @@ pub async fn settings_set(
     settings: Settings,
 ) -> Result<(), AppError> {
     reposync_core::store::settings_set(&state.pool, &settings).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reposync_core::github::{RateLimit, RefreshOutcome, RefreshReport};
+
+    fn report(outcome: RefreshOutcome, rate_limit: Option<RateLimit>) -> RefreshReport {
+        RefreshReport {
+            outcome,
+            rate_limit,
+            release_stale: false,
+        }
+    }
+
+    #[test]
+    fn refresh_report_error_maps_engine_outcomes_to_apperror() {
+        // Success-ish outcomes carry no error: the command re-reads + returns the detail.
+        for ok in [
+            RefreshOutcome::Cached,
+            RefreshOutcome::Updated,
+            RefreshOutcome::NotModified,
+            RefreshOutcome::Skipped,
+        ] {
+            assert!(
+                refresh_report_error(&report(ok, None), 7).is_none(),
+                "{ok:?} is not an error"
+            );
+        }
+
+        // Engine failures map to typed AppErrors (E-05 wrapping at the edge).
+        assert!(matches!(
+            refresh_report_error(&report(RefreshOutcome::NetworkLost, None), 7),
+            Some(AppError::Offline)
+        ));
+        assert!(matches!(
+            refresh_report_error(&report(RefreshOutcome::NotFound, None), 7),
+            Some(AppError::NotFound { .. })
+        ));
+
+        // RateLimited carries the parsed reset time through to an honest error.
+        let rl = RateLimit {
+            remaining: 0,
+            limit: 60,
+            reset_at: 1_700_000_000,
+        };
+        assert!(matches!(
+            refresh_report_error(&report(RefreshOutcome::RateLimited, Some(rl)), 7),
+            Some(AppError::RateLimited {
+                reset_at: 1_700_000_000
+            })
+        ));
+    }
 }
