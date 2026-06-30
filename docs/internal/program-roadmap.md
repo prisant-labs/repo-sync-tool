@@ -74,7 +74,7 @@ Each effort's contract (`spec.md`) and execution (`implementation-plan.md`) live
 | E-12 | [spec](release-plans/plan_v0.9.0/E-12-tracer-bullet/spec.md) | [plan](release-plans/plan_v0.9.0/E-12-tracer-bullet/implementation-plan.md) | Done | #14 |
 | E-13 | [spec](release-plans/plan_v0.9.0/E-13-tray-menu/spec.md) | [plan](release-plans/plan_v0.9.0/E-13-tray-menu/implementation-plan.md) | Deferred (edge-wiring effort) | #15 |
 | E-14 | [spec](release-plans/plan_v0.9.0/E-14-notifications/spec.md) | [plan](release-plans/plan_v0.9.0/E-14-notifications/implementation-plan.md) | Done (core; plugin wiring deferred) | #16 |
-| E-15 | [spec](release-plans/plan_v0.9.0/E-15-autostart/spec.md) | [plan](release-plans/plan_v0.9.0/E-15-autostart/implementation-plan.md) | Not started | #17 |
+| E-15 | [spec](release-plans/plan_v0.9.0/E-15-autostart/spec.md) | [plan](release-plans/plan_v0.9.0/E-15-autostart/implementation-plan.md) | Done (core; plugin wiring deferred) | #17 |
 
 ## Dependency graph
 

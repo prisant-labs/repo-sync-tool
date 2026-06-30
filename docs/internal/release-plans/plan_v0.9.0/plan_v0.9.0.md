@@ -46,11 +46,11 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-12 | Tracer Bullet and Packaging Spike | MUST | ready | ready | Done |
 | E-13 | Tray Native Menu | MUST | ready | ready | Deferred (edge-wiring effort) |
 | E-14 | Desktop Notifications | SHOULD | ready | ready | Done (core; plugin wiring deferred) |
-| E-15 | Autostart (Launch on Login) | SHOULD | ready | ready | Not started |
+| E-15 | Autostart (Launch on Login) | SHOULD | ready | ready | Done (core; plugin wiring deferred) |
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
-Summary: 15 efforts in scope. 13 done (E-01 through E-12 plus E-14 notifications core; E-10 and E-14 are core-only with their plugin/edge wiring deferred to the edge-wiring effort, and E-11 ships with the BL-NI-16 release-event caveat). Remaining: E-15 (autostart) not started; E-13 (tray) DEFERRED into the edge-wiring effort (pure Tauri chrome that adds no product logic, blocked on the scheduler control surface + a window); plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
+Summary: 15 efforts in scope. 14 done (E-01 through E-12 plus the E-14 notifications and E-15 autostart cores; E-10 / E-14 / E-15 are core-only with their plugin/edge wiring deferred to the edge-wiring effort, and E-11 ships with the BL-NI-16 release-event caveat). Remaining: E-13 (tray) DEFERRED into the edge-wiring effort (pure Tauri chrome that adds no product logic, blocked on the scheduler control surface + a window); plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap. All buildable behind-the-seam cores are now done; what remains before a release is the edge-wiring effort and the GUI.
 
 ---
 
@@ -63,7 +63,7 @@ These doc-readiness conditions block tagging; verify them by hand. They are a pr
 | (a) Spec final | Every effort's `spec.md` is final/agreed, not a draft | OK (specs are `status: ready`) |
 | (b) Coupled plan | Every effort has an `implementation-plan.md` | PASS (12 of 12) |
 | (c) AC addressed | Every plan addresses its spec's acceptance criteria | Verify per effort as it is built |
-| (d) Work complete | Every effort's implementation is complete and verified | NOT YET (E-15 not started; E-13 deferred to edge wiring; E-10/E-14 core-only; GUI unbuilt) |
+| (d) Work complete | Every effort's implementation is complete and verified | NOT YET (E-13 deferred to edge wiring; E-10/E-14/E-15 core-only; GUI unbuilt) |
 | (e) Not stale | No spec changed after its plan without the plan catching up | PASS (moved together this session) |
 
 **Current readiness: NOT READY (expected, mid-build).** Check (d) is the real driver: most of the work is unbuilt. (a)/(b)/(e) are fine; (c) is confirmed per effort as each lands.

@@ -15,9 +15,9 @@ source: docs/internal/v1-architecture-and-decisions.md (cross-platform table row
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started (spec drafted 2026-06-23 to close a category-C gap: the `autostart` setting column exists, but no effort owned the OS registration mechanism).
-- **Next:** wire the `autostart` setting to `tauri-plugin-autostart` so toggling it registers/unregisters launch-on-login.
-- **Blockers:** needs E-02's `autostart` setting persistence.
+- **State:** core done (2026-06-29). `reconcile(os, setting_on)` (the AC2 startup drift-correction decision over a tri-state OS read, with a non-actuating `Unknown`) and `is_autostart_launch(args, flag)` (the AC3 launch detection) live in `reposync-core/src/autostart.rs`, built test-first (5 tests) and adversarially reviewed - the tri-state `Unknown` fix landed test-first; the "setting wins vs adopt the OS change" policy is filed as BL-NI-18. The `tauri-plugin-autostart` actuation + the start-minimized window behavior are the deferred edge.
+- **Next:** the edge-wiring effort queries the OS registration, calls `reconcile`, actuates via `tauri-plugin-autostart` (AC1), starts minimized on an autostart launch (AC3), and configures the per-user / no-elevation registration (AC4).
+- **Blockers (edge only):** none for the core; the edge needs E-01's window/tray lifecycle for the minimized start.
 
 ## Context
 
@@ -43,10 +43,10 @@ A resident tray utility is most useful when it is already running. This effort m
 
 ## Acceptance criteria
 
-- [ ] AC1: Enabling the `autostart` setting registers RepoSync to launch on login; disabling it removes the registration. Source: settings `autostart`; brief platform-seam row.
-- [ ] AC2: On startup, the OS autostart state is reconciled to match the persisted setting. Source: derived robustness requirement (drift correction).
-- [ ] AC3: When launched by autostart, the app starts minimized to the tray and does not focus a window. Source: resident-utility UX (brief Section 8 + autostart row).
-- [ ] AC4: Autostart is per-user and requires no elevation. Source: brief security model (no admin install in V1).
+- [ ] AC1: Enabling the `autostart` setting registers RepoSync to launch on login; disabling it removes the registration. Source: settings `autostart`; brief platform-seam row. **Deferred edge** - the core provides the register/unregister DECISION (`reconcile`); the `tauri-plugin-autostart` enable/disable call is the edge.
+- [x] AC2: On startup, the OS autostart state is reconciled to match the persisted setting. Source: derived robustness requirement (drift correction). **Done in core** (`reconcile`: the startup drift-correction decision over a tri-state OS read; `Unknown` is non-actuating so a failed OS query never mutates state; the edge supplies the OS state + actuates).
+- [ ] AC3: When launched by autostart, the app starts minimized to the tray and does not focus a window. Source: resident-utility UX (brief Section 8 + autostart row). **Detection done in core** (`is_autostart_launch`, whole-argument match so a repo path cannot false-positive); the start-minimized / no-focus window behavior is the deferred edge.
+- [ ] AC4: Autostart is per-user and requires no elevation. Source: brief security model (no admin install in V1). **Deferred edge** - a property of the per-user `tauri-plugin-autostart` registration; no core logic.
 
 ## Dependencies
 
