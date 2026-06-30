@@ -148,11 +148,14 @@ pub enum RefreshOutcome {
 pub struct RefreshReport {
     pub outcome: RefreshOutcome,
     pub rate_limit: Option<RateLimit>,
-    /// True when a 200 refresh's latest-release sub-fetch was `Unknown` (BL-NI-15a/c): the
-    /// repo metadata refreshed but the cached release could not be confirmed, so the
-    /// orchestrator knows the release dimension is stale. Decoupling the release re-check
-    /// from the repo's 24h freshness window (so it actually retries) is the deferred
-    /// BL-NI-15b work.
+    /// A TRANSIENT per-cycle hint: `true` only when THIS 200 refresh's latest-release
+    /// sub-fetch was `Unknown` (BL-NI-15a/c), so the repo metadata refreshed but the cached
+    /// release could not be confirmed. It is NOT persisted - the cache-hit / 304 / failure
+    /// paths report `false` because they did not attempt a release fetch, NOT because the
+    /// release is proven fresh. A DURABLE cross-cycle release-freshness boundary (a
+    /// `release_last_checked_at` / `release_etag` column the cache/304 paths derive staleness
+    /// from, so a flaky release endpoint actually retries despite the repo's 24h window) is
+    /// the deferred BL-NI-15b work; until it lands, treat this as a within-pass hint only.
     pub release_stale: bool,
 }
 
@@ -692,20 +695,28 @@ impl Transport for ReqwestTransport {
             "{GITHUB_API_BASE}/repos/{}/{}/releases/latest",
             coords.owner, coords.name
         );
-        let release: ReleaseState = match self
+        // The release sub-request MUST use the SAME auth context as the repo request
+        // (Codex review): otherwise, once the V1.1 PAT lands, a private repo could be
+        // fetched WITH the token but its release endpoint hit WITHOUT it, and that 404
+        // ("inaccessible", not "no release") would be misread as NoRelease and wrongly
+        // CLEAR the cached release. Sending the same token makes a 404 authoritative,
+        // because the repo was proven accessible under that same context.
+        let mut release_req = self
             .client
             .get(&release_url)
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-        {
+            .header("Accept", "application/vnd.github+json");
+        if let Some(tok) = token {
+            release_req = release_req.header("Authorization", format!("Bearer {tok}"));
+        }
+        let release: ReleaseState = match release_req.send().await {
             // 200: a release exists - parse it. A parse failure is NOT authoritative, so
             // it is Unknown (preserve any cached release) rather than a spurious "none".
             Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                 Ok(v) => ReleaseState::Found(map_release(&v)),
                 Err(_) => ReleaseState::Unknown,
             },
-            // 404: GitHub confirmed the repo has no latest release - authoritative None.
+            // 404 under the same verified auth context: GitHub confirmed the repo has no
+            // latest release - authoritative None.
             Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => ReleaseState::NoRelease,
             // Any other status (incl. a rate-limited 403) or a transport error: do not
             // trust it - preserve the cached release fields (BL-NI-15a). Sending the
