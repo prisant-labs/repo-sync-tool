@@ -17,6 +17,7 @@ pub mod error;
 pub mod git;
 pub mod github;
 pub mod ipc;
+pub mod notify;
 pub mod paths;
 pub mod policy;
 pub mod repo;
