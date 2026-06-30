@@ -24,9 +24,9 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | Update now (ff-only pull) | `repo_update_now` | MUST | E-07 | **Done** |
 | Update policy (modes, auto-pause) | `repo_set_policy` | MUST | E-07 | **Done** |
 | Quick actions (folder/terminal/editor/remote) | `repo_open_*` | MUST | E-03* | **Stub (unbuilt)** |
-| Activity log + retention | `activity_list` | MUST | E-09 | **Done** (writer + retention; `activity_list` read is E-06/UI) |
-| Daily summary | `summary_today` | SHOULD | E-11 | **Done** (daily roll-up over activity + state; release-event fidelity = BL-NI-16; weekly = V1.1 seam) |
-| GitHub enrichment (unauthenticated) | `repo_refresh_metadata` | SHOULD | E-10 | **Done** (core; release data-loss + rate-limit backoff hardened = BL-NI-15a/c; release-ETag/cadence = BL-NI-15b before wiring) |
+| Activity log + retention | `activity_list` | MUST | E-09 | **Done + wired** (writer + retention; the `activity_list` read + IPC command wired in the edge-wiring effort) |
+| Daily summary | `summary_today` | SHOULD | E-11 | **Done + wired** (daily roll-up over activity + state; command wired with the edge local-day window; release-event fidelity = BL-NI-16; weekly = V1.1 seam) |
+| GitHub enrichment (unauthenticated) | `repo_refresh_metadata` | SHOULD | E-10 | **Done + wired** (command wired over the unauthenticated client; `X-RateLimit-Reset` now captured for an honest rate-limit error; release data-loss + backoff = BL-NI-15a/c; release-ETag/cadence = BL-NI-15b) |
 | Settings | `settings_get/set` | MUST | E-02 | **Done** |
 | Error / degraded states | `AppError` | MUST | E-05 | **Done** (taxonomy) |
 | Tray + native menu | `tray.rs` | MUST | E-13 | Deferred (folds into the edge-wiring effort - pure Tauri chrome, no unit-testable core) |
