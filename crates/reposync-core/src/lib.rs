@@ -12,6 +12,7 @@
 //! names its owning effort; later efforts fill them in.
 
 pub mod activity;
+pub mod autostart;
 pub mod db;
 pub mod error;
 pub mod git;
