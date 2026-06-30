@@ -217,16 +217,18 @@ pub async fn repo_open_remote(_state: tauri::State<'_, AppState>, id: i64) -> Re
     Err(not_implemented())
 }
 
-/// List activity-log records, filtered.
+/// List activity-log records, filtered (newest first).
+///
+/// Thin wrapper over [`reposync_core::activity::list`]: the read-side counterpart
+/// to the E-09 writer, returning the filtered audit trail for the activity-timeline
+/// UI. The core clamps the row limit so a UI read can never pull the whole log.
 #[tauri::command]
 #[specta::specta]
 pub async fn activity_list(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     filter: ActivityFilter,
 ) -> Result<Vec<ActivityRecord>, AppError> {
-    // TODO(E-09): query activity_records and apply `filter`.
-    let _ = filter;
-    Err(not_implemented())
+    reposync_core::activity::list(&state.pool, &filter).await
 }
 
 /// Get today's daily summary.

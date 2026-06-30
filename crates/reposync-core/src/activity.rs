@@ -19,6 +19,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use sqlx::{Row, SqlitePool};
 
 use crate::error::AppError;
+use crate::ipc;
+
+/// The default and hard cap on rows returned by [`list`] when the filter's `limit`
+/// is absent or unreasonably large, so a UI read can never pull the whole log.
+pub const ACTIVITY_DEFAULT_LIMIT: i64 = 200;
+pub const ACTIVITY_MAX_LIMIT: i64 = 1000;
 
 /// The retention default (days), mirroring the schema's `activity_retention_d`
 /// default. Used when the settings row is missing or unreadable.
@@ -97,6 +103,69 @@ pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
             input.action_type, input.repo_id
         );
     }
+}
+
+/// Read `activity_records` newest-first, applying the optional [`ActivityFilter`]
+/// (repo / action_type / status) and a row limit. The read-side counterpart to
+/// [`record`]; E-09 owns only the writer + sweep, so this is the E-06/UI access
+/// path (the `idx_activity_repo_time` / `idx_activity_time` indexes back the
+/// `ORDER BY timestamp DESC` reads). The limit is clamped to
+/// `ACTIVITY_DEFAULT_LIMIT` (absent) / `ACTIVITY_MAX_LIMIT` (cap) so a UI read can
+/// never pull the whole log. Returns rows newest-first.
+pub async fn list(
+    pool: &SqlitePool,
+    filter: &ipc::ActivityFilter,
+) -> Result<Vec<ipc::ActivityRecord>, AppError> {
+    // A non-positive limit is treated as unspecified (-> default), never as a
+    // 0-row read; any positive limit is capped at the hard maximum.
+    let limit = match filter.limit {
+        Some(n) if n > 0 => n.min(ACTIVITY_MAX_LIMIT),
+        _ => ACTIVITY_DEFAULT_LIMIT,
+    };
+
+    // sqlx 0.9's `SqlSafeStr` requires a compile-time-known query string, so the
+    // filter cannot be a dynamically-built `String`. Use a STATIC query whose
+    // `(? IS NULL OR col = ?)` guards make each filter optional: an absent filter
+    // binds NULL (matching every row), a present one constrains. Each placeholder
+    // is bound once (the Option is bound twice), so the values stay parameterized -
+    // never interpolated. `ORDER BY timestamp DESC` is served by the E-02 indexes.
+    let rows = sqlx::query(
+        "SELECT id, repo_id, timestamp, action_type, status, reason_code, summary, \
+         commit_range, raw_command, raw_stdout, raw_stderr, exit_code, duration_ms \
+         FROM activity_records \
+         WHERE (? IS NULL OR repo_id = ?) \
+           AND (? IS NULL OR action_type = ?) \
+           AND (? IS NULL OR status = ?) \
+         ORDER BY timestamp DESC LIMIT ?",
+    )
+    .bind(filter.repo_id)
+    .bind(filter.repo_id)
+    .bind(filter.action_type.as_deref())
+    .bind(filter.action_type.as_deref())
+    .bind(filter.status.as_deref())
+    .bind(filter.status.as_deref())
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(ipc::ActivityRecord {
+            id: r.try_get("id")?,
+            repo_id: r.try_get("repo_id")?,
+            timestamp: r.try_get("timestamp")?,
+            action_type: r.try_get("action_type")?,
+            status: r.try_get("status")?,
+            reason_code: r.try_get("reason_code")?,
+            summary: r.try_get("summary")?,
+            commit_range: r.try_get("commit_range")?,
+            raw_command: r.try_get("raw_command")?,
+            raw_stdout: r.try_get("raw_stdout")?,
+            raw_stderr: r.try_get("raw_stderr")?,
+            exit_code: r.try_get("exit_code")?,
+            duration_ms: r.try_get("duration_ms")?,
+        });
+    }
+    Ok(out)
 }
 
 /// Delete `activity_records` older than `settings.activity_retention_d` days
@@ -415,6 +484,92 @@ mod tests {
         assert!(
             plan_time.iter().any(|d| d.contains("idx_activity_time")),
             "time read must use idx_activity_time; plan was {plan_time:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_filters_orders_newest_first_and_falls_back_on_bad_limit() {
+        // The E-06/UI read path: newest-first ordering, each optional filter
+        // (repo / status) constrains, the limit caps, and a non-positive limit
+        // falls back to the default rather than reading nothing or the whole log.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let r1 = seed_repo(&pool, "r1").await;
+        let r2 = seed_repo(&pool, "r2").await;
+        record(&pool, &success_input(r1, 1000)).await; // update / success
+        record(&pool, &failure_input(r1, 2000)).await; // check  / failed
+        record(&pool, &success_input(r2, 3000)).await; // update / success
+
+        let none = ipc::ActivityFilter {
+            repo_id: None,
+            action_type: None,
+            status: None,
+            limit: None,
+        };
+
+        // No filter -> all three, newest (largest timestamp) first.
+        let all = list(&pool, &none).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].timestamp, 3000, "newest first");
+        assert_eq!(all[2].timestamp, 1000, "oldest last");
+        // Mapping carries the full row (the failed middle row's classified fields).
+        assert_eq!(all[1].status, "failed");
+        assert_eq!(all[1].reason_code.as_deref(), Some("net.offline"));
+        assert_eq!(all[1].exit_code, Some(128));
+
+        // Filter by repo.
+        let only_r1 = list(
+            &pool,
+            &ipc::ActivityFilter {
+                repo_id: Some(r1),
+                ..none.clone()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(only_r1.len(), 2);
+        assert!(only_r1.iter().all(|a| a.repo_id == r1));
+
+        // Filter by status.
+        let failed = list(
+            &pool,
+            &ipc::ActivityFilter {
+                status: Some("failed".into()),
+                ..none.clone()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].action_type, "check");
+
+        // A positive limit keeps the newest N.
+        let limited = list(
+            &pool,
+            &ipc::ActivityFilter {
+                limit: Some(1),
+                ..none.clone()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].timestamp, 3000, "limit keeps the newest");
+
+        // A non-positive limit is treated as unspecified -> default, not 0 rows.
+        let zero = list(
+            &pool,
+            &ipc::ActivityFilter {
+                limit: Some(0),
+                ..none.clone()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            zero.len(),
+            3,
+            "limit <= 0 falls back to the default, not an empty read"
         );
     }
 
