@@ -42,7 +42,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-08 | Scheduler | MUST | ready | ready | Done |
 | E-09 | Activity Log Writer and Retention | MUST | ready | ready | Done |
 | E-10 | GitHub Metadata Client | SHOULD | ready | ready | Done (core; BL-NI-15 before wiring) |
-| E-11 | Summary Engine (Daily) | SHOULD | ready | ready | Not started |
+| E-11 | Summary Engine (Daily) | SHOULD | ready | ready | Done |
 | E-12 | Tracer Bullet and Packaging Spike | MUST | ready | ready | Done |
 | E-13 | Tray Native Menu | MUST | ready | ready | Not started |
 | E-14 | Desktop Notifications | SHOULD | ready | ready | Not started |
@@ -50,7 +50,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
-Summary: 15 efforts in scope. 11 done (E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-10, E-12; E-10 core only - its release/cache/rate-limit hardening BL-NI-15 must land before it is wired), 4 not started (E-11, E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
+Summary: 15 efforts in scope. 12 done (E-01, E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-10, E-11, E-12; E-10 core only - its release/cache/rate-limit hardening BL-NI-15 must land before it is wired), 3 not started (E-13-E-15), plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap.
 
 ---
 
@@ -63,7 +63,7 @@ These doc-readiness conditions block tagging; verify them by hand. They are a pr
 | (a) Spec final | Every effort's `spec.md` is final/agreed, not a draft | OK (specs are `status: ready`) |
 | (b) Coupled plan | Every effort has an `implementation-plan.md` | PASS (12 of 12) |
 | (c) AC addressed | Every plan addresses its spec's acceptance criteria | Verify per effort as it is built |
-| (d) Work complete | Every effort's implementation is complete and verified | NOT YET (6 not started + GUI unbuilt) |
+| (d) Work complete | Every effort's implementation is complete and verified | NOT YET (3 not started + GUI unbuilt) |
 | (e) Not stale | No spec changed after its plan without the plan catching up | PASS (moved together this session) |
 
 **Current readiness: NOT READY (expected, mid-build).** Check (d) is the real driver: most of the work is unbuilt. (a)/(b)/(e) are fine; (c) is confirmed per effort as each lands.

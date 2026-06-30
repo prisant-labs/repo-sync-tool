@@ -15,9 +15,9 @@ source: docs/internal/v1-architecture-and-decisions.md (Sections 3, 4.4); docs/i
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started.
-- **Next:** implement `summary_today() -> DailySummary`, aggregating the day's activity and state changes.
-- **Blockers:** none beyond E-09 (the activity records the summary reads are written there).
+- **State:** done (2026-06-29). Built test-first in `crates/reposync-core/src/summary.rs` (+11 tests); commits `671cdb9` (build) + `32755e7` (adversarial-review fixes); reviewed via `codex:adversarial-review`. Issue #13 closed. NOTE: `summary_today` returns the FROZEN `ipc::DailySummary` (E-06 froze the shape, field `attention`); the spec's "E-11 owns the shape" language predates that freeze.
+- **Next:** wiring only - expose `summary_today` as the IPC command (the edge wiring effort supplies the local-midnight `DayWindow`); the Dashboard "Today's read" card renders the value.
+- **Blockers:** none. Carry-forward: new-release detection uses the mutable latest-release snapshot, so an immutable release-event source is needed for faithful past-day / multi-release history (BL-NI-16, resolve with the E-10 wiring + BL-NI-15). Weekly stays the V1.1 `summary_week` seam.
 
 ## Context
 
@@ -64,11 +64,11 @@ This effort writes the aggregation. It does NOT write the activity records it re
 
 ## Acceptance criteria
 
-- [ ] AC1: E-11 owns and defines the `DailySummary` shape - `updated_count`, `releases_count`, `attention_count`, `no_change_count`, plus the `updated` / `new_releases` / `needs_attention` item lists - and `summary_today()` returns it aggregated from `activity_records` and the cached state tables. E-06 consumes this shape (circular ownership resolved in E-11's favor). Source: brief Section 4.4 (`summary_today() -> DailySummary`) and Section 6 (summary workstream).
-- [ ] AC2: The aggregation is read-only - no git operations, no network calls - and runs on demand cheaply. Source: brief Section 6 ("daily summary ... what makes the tray feel alive") and Section 3 (SHOULD: cheap to build).
-- [ ] AC3: Weekly aggregation is NOT implemented in V1; `summary_week()` is left as a documented stubbed seam for V1.1. Source: brief Section 4.4 (`summary_week()`/`WeeklySummary` cut to V1.1) and Section 3 (CUT to V1.1: weekly summary).
-- [ ] AC4: The daily counts (updated / releases / attention / no-change) are correct against seeded activity data, classified using the `status` and `action_type` enums and the (status, action_type) -> tally mapping: success + `pull_ff`/`pull`/`rebase` -> updated; success + `check`/`fetch` with no new commits (or `skipped`) -> no-change; `failed`/`warning` -> attention. Source: `docs/internal/strategy-and-roadmap.md` Section 4.2 (`status`/`action_type` enums), brief Section 6 (summary workstream) and Section 5.3 (the "Today's read" tallies the day with colored dots).
-- [ ] AC5: The V1 `attention_count` is computed without E-07's thresholds - count repos in `repo_local_state` with `last_error_code` set OR `is_dirty` set. The richer threshold-based attention semantics owned by E-07 are deferred and flagged as an open question. Source: V1 scoping decision to avoid a hard E-07 dependency (see open questions).
+- [x] AC1: E-11 owns and defines the `DailySummary` shape - `updated_count`, `releases_count`, `attention_count`, `no_change_count`, plus the `updated` / `new_releases` / `needs_attention` item lists - and `summary_today()` returns it aggregated from `activity_records` and the cached state tables. E-06 consumes this shape (circular ownership resolved in E-11's favor). Source: brief Section 4.4 (`summary_today() -> DailySummary`) and Section 6 (summary workstream).
+- [x] AC2: The aggregation is read-only - no git operations, no network calls - and runs on demand cheaply. Source: brief Section 6 ("daily summary ... what makes the tray feel alive") and Section 3 (SHOULD: cheap to build).
+- [x] AC3: Weekly aggregation is NOT implemented in V1; `summary_week()` is left as a documented stubbed seam for V1.1. Source: brief Section 4.4 (`summary_week()`/`WeeklySummary` cut to V1.1) and Section 3 (CUT to V1.1: weekly summary).
+- [x] AC4: The daily counts (updated / releases / attention / no-change) are correct against seeded activity data, classified using the `status` and `action_type` enums and the (status, action_type) -> tally mapping: success + `pull_ff`/`pull`/`rebase` -> updated; success + `check`/`fetch` with no new commits (or `skipped`) -> no-change; `failed`/`warning` -> attention. Source: `docs/internal/strategy-and-roadmap.md` Section 4.2 (`status`/`action_type` enums), brief Section 6 (summary workstream) and Section 5.3 (the "Today's read" tallies the day with colored dots).
+- [x] AC5: The V1 `attention_count` is computed without E-07's thresholds - count repos in `repo_local_state` with `last_error_code` set OR `is_dirty` set. The richer threshold-based attention semantics owned by E-07 are deferred and flagged as an open question. Source: V1 scoping decision to avoid a hard E-07 dependency (see open questions).
 
 ## Dependencies
 

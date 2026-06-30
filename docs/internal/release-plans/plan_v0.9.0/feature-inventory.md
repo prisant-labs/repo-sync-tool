@@ -1,13 +1,13 @@
 # v0.9.0 Feature Inventory (scope at a glance)
 
-- **Date:** 2026-06-23 (last updated 2026-06-25)
+- **Date:** 2026-06-23 (last updated 2026-06-29)
 - **Purpose:** The user-facing feature/function view of the v0.9.0 scope, by readiness. The efforts ([program-roadmap.md](../../program-roadmap.md)) are implementation units; this is the feature view across them.
 - **Companion:** [plan_v0.9.0.md](plan_v0.9.0.md) (the release plan), [program-roadmap.md](../../program-roadmap.md) (per-effort spec/plan/issue links). Keep this file's Status column in step with the release plan as efforts land.
 - **Status legend:** **Done** = the backend command/function is implemented + tested (no GUI rendering yet); **Specced** = spec + plan exist, not built; **Stub** = a typed stub command exists but is unbuilt; **Gap** = no effort owns it.
 
 ## The honest shape
 
-The 12 original efforts deliberately build the **backend behind the IPC seam** (the roadmap is titled "non-GUI functional efforts"). Three **integration efforts** (E-13 tray, E-14 notifications, E-15 autostart) were added 2026-06-23 to close the native-chrome gap. As of 2026-06-25, **11 of 15 efforts are done** and 11 of the 18 V1 commands are real. The one piece still unowned by any effort is the **webview GUI** - the screens that render everything.
+The 12 original efforts deliberately build the **backend behind the IPC seam** (the roadmap is titled "non-GUI functional efforts"). Three **integration efforts** (E-13 tray, E-14 notifications, E-15 autostart) were added 2026-06-23 to close the native-chrome gap. As of 2026-06-29, **12 of 15 efforts are done** and the daily-summary backend is real (12 of the 18 V1 commands). The one piece still unowned by any effort is the **webview GUI** - the screens that render everything.
 
 ## Simplified feature list
 
@@ -25,7 +25,7 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | Update policy (modes, auto-pause) | `repo_set_policy` | MUST | E-07 | **Done** |
 | Quick actions (folder/terminal/editor/remote) | `repo_open_*` | MUST | E-03* | **Stub (unbuilt)** |
 | Activity log + retention | `activity_list` | MUST | E-09 | **Done** (writer + retention; `activity_list` read is E-06/UI) |
-| Daily summary | `summary_today` | SHOULD | E-11 | Specced |
+| Daily summary | `summary_today` | SHOULD | E-11 | **Done** (daily roll-up over activity + state; release-event fidelity = BL-NI-16; weekly = V1.1 seam) |
 | GitHub enrichment (unauthenticated) | `repo_refresh_metadata` | SHOULD | E-10 | **Done** (core; release/cache/rate-limit hardening = BL-NI-15 before wiring) |
 | Settings | `settings_get/set` | MUST | E-02 | **Done** |
 | Error / degraded states | `AppError` | MUST | E-05 | **Done** (taxonomy) |
@@ -38,9 +38,9 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 
 ## Readiness categories
 
-**A. Done (built + reviewed)** - **11 efforts:** E-01 (foundation + CI), E-02 (persistence + the list/get/scan/remove/enable/settings commands), E-03 (git engine), E-04 (fixture harness), E-05 (error taxonomy), E-06 (frozen IPC contract), E-07 (policy engine + update-now/set-policy + check-now promotion), E-08 (scheduler: tokio interval, bounded concurrency, per-repo mutex, injected clock, auto-pause persistence), E-09 (activity writer + retention sweep), E-10 (GitHub metadata client core - fetch/map/cache + parser hardened; the release/cache/rate-limit rework is backlogged as BL-NI-15 to land before wiring), E-12 (tracer + Windows MSI spike). All built test-first, adversarially reviewed, findings fixed or filed.
+**A. Done (built + reviewed)** - **12 efforts:** E-01 (foundation + CI), E-02 (persistence + the list/get/scan/remove/enable/settings commands), E-03 (git engine), E-04 (fixture harness), E-05 (error taxonomy), E-06 (frozen IPC contract), E-07 (policy engine + update-now/set-policy + check-now promotion), E-08 (scheduler: tokio interval, bounded concurrency, per-repo mutex, injected clock, auto-pause persistence), E-09 (activity writer + retention sweep), E-10 (GitHub metadata client core - fetch/map/cache + parser hardened; the release/cache/rate-limit rework is backlogged as BL-NI-15 to land before wiring), E-11 (daily summary engine: read-only roll-up over activity + state; attention and no-change disjoint; new-release detection via the latest-release snapshot, with release-event fidelity backlogged as BL-NI-16; weekly is a V1.1 seam), E-12 (tracer + Windows MSI spike). All built test-first, adversarially reviewed, findings fixed or filed.
 
-**B. Specced, not built** - E-11 (daily summary), E-13 (tray menu), E-14 (notifications), E-15 (autostart). Plus the `repo_open_*` quick-action stubs (no live owner).
+**B. Specced, not built** - E-13 (tray menu), E-14 (notifications), E-15 (autostart). Plus the `repo_open_*` quick-action stubs (no live owner).
 
 **C. Identified but no effort owns it** - the **webview GUI**: dashboard, repo list + detail, activity timeline, settings screen, add/scan flow. Mockups exist (Draft 2: dashboard, onboarding, settings, repo-detail, Windows parity); no effort, no spec.
 
@@ -55,5 +55,5 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 
 ## The two tracks to v0.9.0
 
-1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-10, E-12) is done (E-10 core; its BL-NI-15 hardening lands at wiring). Remaining: **E-11 daily summary** (recommended next), plus E-13/E-14/E-15, the E-10 wiring/integration that resolves BL-NI-15, and the small `repo_open_*` follow-up. None needs a UI decision; all headlessly testable.
+1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-12) is done (E-10 core; its BL-NI-15 hardening lands at wiring; E-11 daily summary done, with release-event fidelity = BL-NI-16). Remaining: **E-13/E-14/E-15** (the integration efforts), the E-10 wiring/integration that resolves BL-NI-15/BL-NI-16, and the small `repo_open_*` follow-up. None needs a UI decision; all headlessly testable.
 2. **The GUI (needs design):** the webview screens. Category C. The Draft 2 mockups exist; needs a spec/effort before building; renders against the frozen `bindings.ts` and the now-real commands.
