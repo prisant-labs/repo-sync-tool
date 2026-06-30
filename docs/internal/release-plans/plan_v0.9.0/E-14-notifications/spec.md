@@ -15,9 +15,9 @@ source: docs/internal/v1-architecture-and-decisions.md (deliverable 11 "Notifica
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started (spec drafted 2026-06-23 to close a category-C gap: `notification:fired` and the `notify_on_release` / `notify_on_failure` settings exist, but no effort owned the firing rules).
-- **Next:** define the firing decision (when/what to toast) in the scheduler's check-completion path and call `tauri-plugin-notification`.
-- **Blockers:** needs E-08's check-completion hook, E-10's release-detection signal, E-02's settings + quiet hours.
+- **State:** core done (2026-06-29). The pure firing decision (`decide`) + per-cycle coalescing (`coalesce`) live in `reposync-core/src/notify.rs`, built test-first (10 tests over the release/failure/auth x toggle x quiet-hours matrix, plus the coalescing bound) and adversarially reviewed - findings fixed test-first (release identity preserved, no double-report, typed `LocalMinute`); the auth-toggle policy is filed as BL-NI-17. The `tauri-plugin-notification` emit-site is the only remaining piece (AC5), deferred to the edge-wiring effort.
+- **Next:** the edge-wiring effort calls `decide`/`coalesce` from the scheduler's check-completion path, raises the OS toast via `tauri-plugin-notification`, and emits `notification:fired` (AC5). It sources the `LocalMinute` from the scheduler's offset-aware clock so notifications and scheduling agree on "now".
+- **Blockers (edge only):** needs E-08's check-completion hook wired and E-10's release-detection signal live (BL-NI-16 for faithful per-release identity); the core logic itself is unblocked and done.
 
 ## Context
 
@@ -47,12 +47,12 @@ Notifications are gated by two settings (`notify_on_release`, `notify_on_failure
 
 ## Acceptance criteria
 
-- [ ] AC1: A completed check that detects a new release raises exactly one toast when `notify_on_release` is on, and none when it is off. Source: brief deliverable 11; settings `notify_on_release`.
-- [ ] AC2: A failed check/update or an auth failure raises a toast when `notify_on_failure` is on, and none when off. Source: brief deliverable 11; settings `notify_on_failure`.
-- [ ] AC3: No toast is raised during quiet hours; the underlying work still runs and is logged. Source: brief Section on quiet hours; settings `quiet_hours_start/end`.
-- [ ] AC4: A scheduler cycle over many repos raises a bounded (coalesced) number of toasts, not one per repo. Source: notification-spam avoidance (derived; brief deliverable 11 "another surface to QA").
-- [ ] AC5: Each raised toast emits the `notification:fired` event. Source: brief event surface `notification:fired` (E-06 contract).
-- [ ] AC6: The firing decision is a pure function unit-tested across the toggle/quiet-hours/event matrix, with no plugin or UI dependency. Source: the seam principle (logic is Tauri-free and testable).
+- [x] AC1: A completed check that detects a new release raises exactly one toast when `notify_on_release` is on, and none when it is off. Source: brief deliverable 11; settings `notify_on_release`. **Done in core** (`decide` returns one payload; the edge raises the OS toast).
+- [x] AC2: A failed check/update or an auth failure raises a toast when `notify_on_failure` is on, and none when off. Source: brief deliverable 11; settings `notify_on_failure`. **Done in core** (auth shares the failure toggle per this AC; separate auth policy = BL-NI-17).
+- [x] AC3: No toast is raised during quiet hours; the underlying work still runs and is logged. Source: brief Section on quiet hours; settings `quiet_hours_start/end`. **Done in core** (`passes_gate` reuses the scheduler's `in_quiet_hours`; the gate withholds only the toast).
+- [x] AC4: A scheduler cycle over many repos raises a bounded (coalesced) number of toasts, not one per repo. Source: notification-spam avoidance (derived; brief deliverable 11 "another surface to QA"). **Done in core** (`coalesce`: per-kind individual toasts up to the cap + one overflow summary, bounded by `2 * MAX_INDIVIDUAL_TOASTS + 1`).
+- [ ] AC5: Each raised toast emits the `notification:fired` event. Source: brief event surface `notification:fired` (E-06 contract). **Deferred edge** - the core returns the ready `NotificationFiredPayload`; the `src-tauri` raise + emit is the edge-wiring effort.
+- [x] AC6: The firing decision is a pure function unit-tested across the toggle/quiet-hours/event matrix, with no plugin or UI dependency. Source: the seam principle (logic is Tauri-free and testable). **Done in core** (`reposync-core/src/notify.rs`; 10 tests; `cargo tree` confirms no tauri).
 
 ## Dependencies
 

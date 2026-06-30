@@ -7,7 +7,7 @@
 
 ## The honest shape
 
-The 12 original efforts deliberately build the **backend behind the IPC seam** (the roadmap is titled "non-GUI functional efforts"). Three **integration efforts** (E-13 tray, E-14 notifications, E-15 autostart) were added 2026-06-23 to close the native-chrome gap. As of 2026-06-29, **12 of 15 efforts are done** and the daily-summary backend is real (12 of the 18 V1 commands). The one piece still unowned by any effort is the **webview GUI** - the screens that render everything.
+The 12 original efforts deliberately build the **backend behind the IPC seam** (the roadmap is titled "non-GUI functional efforts"). Three **integration efforts** (E-13 tray, E-14 notifications, E-15 autostart) were added 2026-06-23 to close the native-chrome gap. As of 2026-06-29, **13 of 15 efforts are done** (E-14 desktop-notifications core - the firing decision + coalescing - added; its plugin emit-site is deferred edge). The one piece still unowned by any effort is the **webview GUI** - the screens that render everything.
 
 ## Simplified feature list
 
@@ -29,8 +29,8 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | GitHub enrichment (unauthenticated) | `repo_refresh_metadata` | SHOULD | E-10 | **Done** (core; release/cache/rate-limit hardening = BL-NI-15 before wiring) |
 | Settings | `settings_get/set` | MUST | E-02 | **Done** |
 | Error / degraded states | `AppError` | MUST | E-05 | **Done** (taxonomy) |
-| Tray + native menu | `tray.rs` | MUST | E-13 | Specced |
-| Desktop notifications | `notification:fired` | SHOULD | E-14 | Specced |
+| Tray + native menu | `tray.rs` | MUST | E-13 | Deferred (folds into the edge-wiring effort - pure Tauri chrome, no unit-testable core) |
+| Desktop notifications | `notification:fired` | SHOULD | E-14 | **Done** (core firing decision + coalescing, quiet-hours aware; `tauri-plugin-notification` emit-site deferred edge) |
 | Autostart (launch on login) | `settings.autostart` | SHOULD | E-15 | Specced |
 | The GUI (all screens) | - | MUST to be usable | none | Gap - mockups only |
 
@@ -38,9 +38,9 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 
 ## Readiness categories
 
-**A. Done (built + reviewed)** - **12 efforts:** E-01 (foundation + CI), E-02 (persistence + the list/get/scan/remove/enable/settings commands), E-03 (git engine), E-04 (fixture harness), E-05 (error taxonomy), E-06 (frozen IPC contract), E-07 (policy engine + update-now/set-policy + check-now promotion), E-08 (scheduler: tokio interval, bounded concurrency, per-repo mutex, injected clock, auto-pause persistence), E-09 (activity writer + retention sweep), E-10 (GitHub metadata client core - fetch/map/cache + parser hardened; the release/cache/rate-limit rework is backlogged as BL-NI-15 to land before wiring), E-11 (daily summary engine: read-only roll-up over activity + state; attention and no-change disjoint; new-release detection via the latest-release snapshot, with release-event fidelity backlogged as BL-NI-16; weekly is a V1.1 seam), E-12 (tracer + Windows MSI spike). All built test-first, adversarially reviewed, findings fixed or filed.
+**A. Done (built + reviewed)** - **13 efforts:** E-01 (foundation + CI), E-02 (persistence + the list/get/scan/remove/enable/settings commands), E-03 (git engine), E-04 (fixture harness), E-05 (error taxonomy), E-06 (frozen IPC contract), E-07 (policy engine + update-now/set-policy + check-now promotion), E-08 (scheduler: tokio interval, bounded concurrency, per-repo mutex, injected clock, auto-pause persistence), E-09 (activity writer + retention sweep), E-10 (GitHub metadata client core - fetch/map/cache + parser hardened; the release/cache/rate-limit rework is backlogged as BL-NI-15 to land before wiring), E-11 (daily summary engine: read-only roll-up over activity + state; attention and no-change disjoint; new-release detection via the latest-release snapshot, with release-event fidelity backlogged as BL-NI-16; weekly is a V1.1 seam), E-12 (tracer + Windows MSI spike), E-14 (desktop-notifications core: the pure firing decision + cycle coalescing with per-kind identity preserved, quiet-hours aware via the scheduler's predicate; the `tauri-plugin-notification` emit-site is deferred edge; auth-toggle policy = BL-NI-17). All built test-first, adversarially reviewed, findings fixed or filed.
 
-**B. Specced, not built** - E-13 (tray menu), E-14 (notifications), E-15 (autostart). Plus the `repo_open_*` quick-action stubs (no live owner).
+**B. Specced, not built** - E-15 (autostart). E-13 (tray menu) is DEFERRED into the edge-wiring effort (pure Tauri chrome that adds no product logic, blocked on the scheduler control surface + a window, so there is nothing to unit-test now). Plus the `repo_open_*` quick-action stubs (no live owner).
 
 **C. Identified but no effort owns it** - the **webview GUI**: dashboard, repo list + detail, activity timeline, settings screen, add/scan flow. Mockups exist (Draft 2: dashboard, onboarding, settings, repo-detail, Windows parity); no effort, no spec.
 
@@ -55,5 +55,5 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 
 ## The two tracks to v0.9.0
 
-1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-12) is done (E-10 core; its BL-NI-15 hardening lands at wiring; E-11 daily summary done, with release-event fidelity = BL-NI-16). Remaining: **E-13/E-14/E-15** (the integration efforts), the E-10 wiring/integration that resolves BL-NI-15/BL-NI-16, and the small `repo_open_*` follow-up. None needs a UI decision; all headlessly testable.
+1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-12) plus E-14 notifications core is done (E-10 and E-14 core-only, their plugin/edge wiring deferred; E-11 done with the BL-NI-16 caveat). Remaining: **E-15** (autostart core), then the **edge-wiring effort** - spawn the scheduler at launch, wire the manual commands to shared locks, build the tray (E-13) + the E-14 `tauri-plugin-notification` emit-site + autostart registration, and resolve BL-NI-15/BL-NI-16. Plus the small `repo_open_*` follow-up. The core logic is all headlessly testable; the edge chrome needs a real Windows launch.
 2. **The GUI (needs design):** the webview screens. Category C. The Draft 2 mockups exist; needs a spec/effort before building; renders against the frozen `bindings.ts` and the now-real commands.
