@@ -50,6 +50,8 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 
 **Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
 
+**Also committed to the release, spec deferred:** **Groups (repo tags)** - user-defined, colored, many-to-many labels for repos. Promoted from V1.1 into v0.9.0 on 2026-06-30 (ledger amendment in [program-roadmap.md](../../program-roadmap.md); backlog BL-V11-04). The `groups` / `repo_groups` schema is already frozen into migration 0002, but the store/IPC layer, the GUI, and the feature spec are deferred until the GUI is finalized. Product framing: [features-and-outcomes.md](features-and-outcomes.md) Section 3. (Build status: schema ready; spec/build not started.)
+
 Summary: 15 efforts in scope. 14 done (E-01 through E-12 plus the E-14 notifications and E-15 autostart cores; E-10 / E-14 / E-15 are core-only with their plugin/edge wiring deferred to the edge-wiring effort, and E-11 ships with the BL-NI-16 release-event caveat). Remaining: E-13 (tray) DEFERRED into the edge-wiring effort (pure Tauri chrome that adds no product logic, blocked on the scheduler control surface + a window); plus the unbuilt GUI. E-13 to E-15 are the integration efforts added 2026-06-23 to close the category-C gap. All buildable behind-the-seam cores are now done; what remains before a release is the edge-wiring effort and the GUI.
 
 ---

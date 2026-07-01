@@ -14,6 +14,7 @@ Adversarial reviews (Claude and Codex passes over the plan, specs, and code) fee
 | open | Awaiting a decision or an answer; non-blocking for current work |
 | watch | A future condition to monitor; no action yet |
 | seam-stubbed | The integration point exists in V1 code behind a seam; the feature plugs in later |
+| promoted | Pulled forward into an earlier release than originally cut to; no longer deferred |
 
 ## V1.1 cut features
 
@@ -24,10 +25,12 @@ Cut from V1 by the ratified scope ledger ([docs/internal/program-roadmap.md](int
 | BL-V11-01 (tray popup window) | Frameless left-click popup window anchored near the tray icon (the native right-click menu is kept in V1). | Scope ledger; brief Section 3 (heavy, OS-specific geometry, unverifiable on macOS from Windows). | UI surface; out of the V1 efforts entirely. Native menu stays. | deferred |
 | BL-V11-02 (keyring PAT) | OS-keychain-backed GitHub Personal Access Token for the authenticated rate limit (5000/hour vs 60/hour unauthenticated). | Scope ledger; brief Section 3 (a three-platform credential vault for an optional rate-limit lift most personal users will not hit). | Seam-stubbed in E-10: a `TokenProvider` whose V1 impl returns `None`; the V1.1 PAT impl reads from Windows Credential Manager / macOS Keychain and flips `settings.github_token_present`, leaving fetch/cache/backoff untouched. See [E-10 (GitHub client) spec](internal/release-plans/plan_v0.9.0/E-10-github-client/spec.md) AC5 and V1.1 extension points. | seam-stubbed |
 | BL-V11-03 (weekly summary) | Weekly aggregation card, alongside the daily summary V1 ships. | Scope ledger; brief Section 3. | Seam-stubbed in E-11: weekly is left as a V1.1 extension point on the daily aggregation. See [E-11 (summary engine) spec](internal/release-plans/plan_v0.9.0/E-11-summary-engine/spec.md). The `summary_week() -> WeeklySummary` IPC command exists in the brief's surface (Section 4.4). | seam-stubbed |
-| BL-V11-04 (grouping / tags) | User-defined groups and tags for repos (the mockups show a Groups sidebar). | Scope ledger; brief Section 3. | UI surface; out of the V1 efforts entirely. | deferred |
+| BL-V11-04 (grouping / tags) | User-defined groups and tags for repos (the mockups show a Groups sidebar). | Scope ledger; brief Section 3. Promoted into v0.9.0 on 2026-06-30 (see [features-and-outcomes.md](internal/release-plans/plan_v0.9.0/features-and-outcomes.md) Section 3). | Schema scaffolding exists (`groups` + `repo_groups`, frozen in migration 0002); the store/IPC layer, GUI, and feature spec are deferred until the GUI is finalized. | promoted (v0.9.0) |
 | BL-V11-05 (saved filters) | Persisted, named filters over the repo list. | Scope ledger; brief Section 3. | UI surface; out of the V1 efforts entirely. | deferred |
 | BL-V11-06 (custom command recipes) | User-defined command recipes per repo. | Scope ledger; brief Section 3. | UI surface; out of the V1 efforts entirely. | deferred |
 | BL-V11-07 (auto-updater) | In-app self-update. | Scope ledger; brief Section 3. | Out of the V1 efforts entirely; depends on a signing posture not yet set (see BL-DEC-01). | deferred |
+
+> **Note:** BL-V11-04 is promoted, not cut: it is committed to **v0.9.0** with its spec deferred until the GUI is finalized (schema already frozen in). It stays listed here for traceability. See [features-and-outcomes.md](internal/release-plans/plan_v0.9.0/features-and-outcomes.md) Section 3 and the [program-roadmap.md](internal/program-roadmap.md) 2026-06-30 ledger amendment.
 
 ## Deferred human decisions
 

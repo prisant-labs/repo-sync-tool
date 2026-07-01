@@ -264,6 +264,8 @@ graph LR
 | **SHOULD (keep)** | Lightweight **unauthenticated** GitHub enrichment with ETag caching; daily summary | Cheap to build, high delight, and they anchor the tray's value (new releases, "what changed today") without the cross-platform secrets surface. |
 | **CUT to V1.1** | Tray popup window (keep the native right-click menu); keyring PAT; weekly summary; grouping/tags; saved filters; custom command recipes; auto-updater | Each is either heavy, optional, or unverifiable on Windows-only hardware. The native menu covers the essential tray interaction; the popup is polish. |
 
+> **Superseded 2026-06-30 (grouping/tags):** grouping/tags was later promoted out of this CUT set into the **v0.9.0** initial release (feature committed, schema ready, spec deferred until the GUI is finalized). This table (and the diagram above) preserve the original ratified proposal as the historical record; the live scope ledger and its dated amendment are in [program-roadmap.md](program-roadmap.md), and the product framing is in [release-plans/plan_v0.9.0/features-and-outcomes.md](release-plans/plan_v0.9.0/features-and-outcomes.md) Section 3.
+
 The key moves: **keep the native tray menu, cut the popup window to V1.1** (you get a working tray without the unverifiable geometry); **cut the keyring PAT to V1.1** but **keep unauthenticated enrichment** (you get the delight without the three-platform vault); and **explicitly treat macOS signed packaging as the most likely silent buffer-eater**, gated on Mac access per section A.
 
 #### Recommendation

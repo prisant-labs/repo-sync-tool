@@ -2,7 +2,7 @@
 
 - **Date:** 2026-06-23 (last updated 2026-06-29)
 - **Purpose:** The user-facing feature/function view of the v0.9.0 scope, by readiness. The efforts ([program-roadmap.md](../../program-roadmap.md)) are implementation units; this is the feature view across them.
-- **Companion:** [plan_v0.9.0.md](plan_v0.9.0.md) (the release plan), [program-roadmap.md](../../program-roadmap.md) (per-effort spec/plan/issue links). Keep this file's Status column in step with the release plan as efforts land.
+- **Companion:** [plan_v0.9.0.md](plan_v0.9.0.md) (the release plan), [program-roadmap.md](../../program-roadmap.md) (per-effort spec/plan/issue links), [features-and-outcomes.md](features-and-outcomes.md) (the product-facing view: features + the user problem each solves). Keep this file's Status column in step with the release plan as efforts land.
 - **Status legend:** **Done** = the backend command/function is implemented + tested (no GUI rendering yet); **Specced** = spec + plan exist, not built; **Stub** = a typed stub command exists but is unbuilt; **Gap** = no effort owns it.
 
 ## The honest shape
@@ -19,6 +19,7 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | Repo detail | `repo_get` | MUST | E-02 | **Done** |
 | Remove repo | `repo_remove` | MUST | E-02 | **Done** |
 | Enable/disable per repo | `repo_set_enabled` | MUST | E-02 | **Done** |
+| Groups (repo tags) | `groups` / `repo_groups` (schema) | SHOULD | none (spec deferred) | **Planned - schema ready** (promoted from V1.1 2026-06-30; store/IPC/GUI + spec deferred until the GUI is finalized) |
 | Check now | `repo_check_now` | MUST | E-12/E-03/E-07 | **Done** |
 | Scheduled background checks | scheduler | MUST | E-08 | **Done** |
 | Update now (ff-only pull) | `repo_update_now` | MUST | E-07 | **Done** |
@@ -35,6 +36,8 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | The GUI (all screens) | - | MUST to be usable | none | Gap - mockups only |
 
 > **\*Quick actions are a loose end.** `repo_open_folder/terminal/editor/remote` are tagged E-03 but the E-03 effort delivered the git engine, not these OS shell-out commands - they remain typed stubs. They are small and UI-adjacent (triggered from the repo-detail screen), so they fold naturally into the GUI work or a tiny follow-up; not currently owned by a live effort.
+
+> **Groups (repo tags)** were promoted from V1.1 into v0.9.0 on 2026-06-30. The `groups` + `repo_groups` schema is already frozen into migration 0002 (a many-to-many association with name + color), so a repo can be linked to several. The store/IPC layer, the GUI, and the feature spec are deferred until the GUI is finalized, so no effort owns it yet. Ledger amendment: [program-roadmap.md](../../program-roadmap.md) (2026-06-30); backlog BL-V11-04; product framing in [features-and-outcomes.md](features-and-outcomes.md) Section 3.
 
 ## Readiness categories
 

@@ -14,6 +14,7 @@ It operationalizes `docs/internal/v1-architecture-and-decisions.md` (the archite
 | Gitignore (repo hygiene) | `docs/internal/` is **TRACKED**; `_local/` is gitignored. This **OVERRIDES** the brief Section 6 repo-hygiene wording about quarantining `docs/internal/`. | 2026-06-19 |
 | Command naming | Normalized to singular `repo_list` (the brief mixed `repos_list` with the `repo_*` family). All command names use the singular `repo_*` form. | 2026-06-19 |
 | Schema additions | `repo_local_state` gains `consecutive_failures` and `auto_paused` columns (for the 3-strikes auto-pause); `repo_remote_meta` gains `etag`. All land in the **initial migration**. | 2026-06-19 |
+| Groups/tags promotion | Grouping/tags (BL-V11-04) promoted from **CUT to V1.1** into the **v0.9.0** initial release. The `groups` / `repo_groups` schema is already frozen into migration 0002; the store/IPC layer, the GUI, and the feature spec are deferred until the GUI is finalized (it is primarily a UI surface). No numbered effort owns it yet. | 2026-06-30 |
 
 ## Scope ledger
 
@@ -22,7 +23,9 @@ It operationalizes `docs/internal/v1-architecture-and-decisions.md` (the archite
 | **MUST** | Add/scan repos, list + detail, manual + scheduled fetch (ff-only), activity log, error states, enable/disable, settings | E-02, E-03, E-04, E-05, E-06, E-07, E-08, E-09, E-12 |
 | **SHOULD (keep)** | Unauthenticated GitHub enrichment + ETag caching, daily summary | E-10 (unauthenticated path), E-11 (daily only) |
 | **Integration (native chrome / OS)** | Tray native menu, desktop notifications, autostart | E-13 (MUST), E-14 (SHOULD), E-15 (SHOULD) |
-| **CUT to V1.1** | Tray popup window (keep native menu), keyring PAT, weekly summary, grouping/tags, saved filters, recipes, auto-updater | Stubbed behind seams: PAT path in E-10, weekly aggregation in E-11; the rest are UI-surface and out of these efforts entirely |
+| **CUT to V1.1** | Tray popup window (keep native menu), keyring PAT, weekly summary, saved filters, recipes, auto-updater | Stubbed behind seams: PAT path in E-10, weekly aggregation in E-11; the rest are UI-surface and out of these efforts entirely |
+
+> **Amended 2026-06-30:** grouping/tags moved out of **CUT to V1.1** and into the **v0.9.0** release (feature committed, schema ready, spec deferred until the GUI is finalized). See the ratified-decisions amendment above, [features-and-outcomes.md](release-plans/plan_v0.9.0/features-and-outcomes.md) Section 3, and backlog BL-V11-04. It remains outside the numbered efforts: no effort owns it yet, and the spec waits on the GUI.
 
 ## The seam principle (why this is all buildable now)
 
