@@ -1,5 +1,7 @@
+import { History } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { AsyncPanel } from "@/components/async-panel";
+import { EmptyState } from "@/components/empty-state";
 import { useActivity } from "@/hooks/queries";
 import { relativeTime } from "@/lib/status";
 
@@ -20,7 +22,14 @@ export function ActivityScreen() {
       <AsyncPanel
         state={activity}
         emptyWhen={(rows) => rows.length === 0}
-        emptyMessage="No activity has been recorded yet."
+        emptyMessage={
+          <EmptyState
+            icon={History}
+            title="No activity yet"
+            description="Checks and updates will show up here as soon as RepoSync runs one."
+            compact
+          />
+        }
       >
         {(rows) => (
           <Card className="divide-y divide-border">

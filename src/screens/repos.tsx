@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
-import { Plus, RefreshCw, Search } from "lucide-react";
+import { FolderGit2, Plus, RefreshCw, Search } from "lucide-react";
 import { commands } from "@/lib/bindings";
 import type { RepoSummary } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AsyncPanel } from "@/components/async-panel";
+import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
 import { Drawer } from "@/components/ui/drawer";
@@ -84,39 +85,52 @@ export function ReposScreen() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative w-full max-w-xs">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Filter by name"
-            className="pl-8"
-            spellCheck={false}
-          />
+      {list.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative w-full max-w-xs">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter by name"
+              className="pl-8"
+              spellCheck={false}
+            />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
+            {STATUS_ORDER.map(
+              (s) =>
+                counts[s] > 0 && (
+                  <FilterChip
+                    key={s}
+                    label={STATUS_STYLE[s].label}
+                    count={counts[s]}
+                    active={chip === s}
+                    tone={STATUS_STYLE[s].text}
+                    onClick={() => setChip(s)}
+                  />
+                ),
+            )}
+          </div>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
-          {STATUS_ORDER.map(
-            (s) =>
-              counts[s] > 0 && (
-                <FilterChip
-                  key={s}
-                  label={STATUS_STYLE[s].label}
-                  count={counts[s]}
-                  active={chip === s}
-                  tone={STATUS_STYLE[s].text}
-                  onClick={() => setChip(s)}
-                />
-              ),
-          )}
-        </div>
-      </div>
+      )}
 
       <AsyncPanel
         state={repos}
         emptyWhen={(l) => l.length === 0}
-        emptyMessage="No repositories are being watched yet. Use Add repos to get started."
+        emptyMessage={
+          <EmptyState
+            icon={FolderGit2}
+            title="No repositories yet"
+            description="Scan a folder or add a single path to start tracking sync status."
+            action={
+              <Button onClick={() => setAddOpen(true)}>
+                <Plus /> Add repositories
+              </Button>
+            }
+          />
+        }
       >
         {() =>
           filtered.length === 0 ? (

@@ -17,7 +17,7 @@ export function AsyncPanel<T>({
   state: AsyncState<T>;
   children: (data: NonNullable<T>) => ReactNode;
   emptyWhen?: (data: NonNullable<T>) => boolean;
-  emptyMessage?: string;
+  emptyMessage?: ReactNode;
 }) {
   if (state.loading && state.data === null) {
     return (
@@ -43,7 +43,7 @@ export function AsyncPanel<T>({
 
   // The null case is handled above; the cast tells TS the generic is non-null here.
   if (state.data === null || (emptyWhen && emptyWhen(state.data as NonNullable<T>))) {
-    return <div className="py-16 text-center text-sm text-muted-foreground">{emptyMessage}</div>;
+    return <div className="py-2 text-center text-sm text-muted-foreground">{emptyMessage}</div>;
   }
 
   return <>{children(state.data as NonNullable<T>)}</>;
