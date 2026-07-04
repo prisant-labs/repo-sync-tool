@@ -1,9 +1,5 @@
 # Product
 
-## Register
-
-product
-
 ## Users
 
 Technically competent developers who keep a personal library of 5 to 100+ cloned

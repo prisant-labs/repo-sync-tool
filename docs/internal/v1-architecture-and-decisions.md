@@ -6,13 +6,14 @@ owner: jprisant
 audience: internal, shareable (founder, agentic dev contributors)
 extends: docs/internal/strategy-and-roadmap.md
 related:
-  - docs/internal/mockups/
+  - DESIGN.md (canonical design system, Graphite direction)
+  - _local/gui/archived-mockups/ (draft mockups, archived 2026-07-03; superseded)
 tech_stack: Tauri v2, Rust, React, TypeScript, shadcn/ui, SQLite
 ---
 
 # RepoSync V1, Architecture and Decisions
 
-> A working architecture and decision record for the cross-platform V1. This document captures where a design collaboration between jp and an AI coding agent (Claude) landed: it synthesizes the existing `strategy-and-roadmap.md`, a multi-agent analysis of that plan, the four UI mockups under `docs/internal/mockups/`, and the decisions reached in conversation. It is written to be shared.
+> A working architecture and decision record for the cross-platform V1. This document captures where a design collaboration between jp and an AI coding agent (Claude) landed: it synthesizes the existing `strategy-and-roadmap.md`, a multi-agent analysis of that plan, the four UI mockups (now archived to `_local/gui/archived-mockups/`, superseded by the Graphite design language in `DESIGN.md`), and the decisions reached in conversation. It is written to be shared.
 
 ## 1. What this document is
 
@@ -605,6 +606,12 @@ WebView2 is preinstalled on Windows 11 (jp's machine) and current Windows 10, so
 
 ## 5. UI and UX
 
+> **Superseded (2026-07-03).** The canonical design system is now `DESIGN.md` at the
+> repo root, reconciled to the SHIPPED React UI (the "Graphite" direction: oklch tokens
+> in `src/index.css`, shadcn/ui components). This section documents an earlier
+> "editorial" direction (Fraunces/Geist, hex tokens) grounded in the draft mockups, which
+> were archived to `_local/gui/archived-mockups/`. It is preserved as a historical
+> decision record, not a build target. Build to `DESIGN.md` and the implementation.
 
 This section is the visual and interaction contract for RepoSync V1. It is grounded entirely in the four mockup surfaces and their shared design system. Where a value is exact (a hex token, a font axis, a pixel metric), it is reproduced from the markup so engineering can build to it without guessing.
 
@@ -988,4 +995,4 @@ Everything in Section 6: the `reposync-core` scaffold, the SQLite schema and mig
 
 ### Provenance
 
-This document was assembled from: `strategy-and-roadmap.md`; a six-agent analysis that ranked the execution decisions and adversarially verified the ranking; the four mockups under `docs/internal/mockups/`; and the platform, autonomy, and scope decisions reached in conversation with jp on 2026-05-31. It extends, and does not replace, the strategy and roadmap.
+This document was assembled from: `strategy-and-roadmap.md`; a six-agent analysis that ranked the execution decisions and adversarially verified the ranking; the four mockups (now archived to `_local/gui/archived-mockups/`); and the platform, autonomy, and scope decisions reached in conversation with jp on 2026-05-31. It extends, and does not replace, the strategy and roadmap.

@@ -33,7 +33,7 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | Tray + native menu | `tray.rs` | MUST | E-13 | Deferred (folds into the edge-wiring effort - pure Tauri chrome, no unit-testable core) |
 | Desktop notifications | `notification:fired` | SHOULD | E-14 | **Done** (core firing decision + coalescing, quiet-hours aware; `tauri-plugin-notification` emit-site deferred edge) |
 | Autostart (launch on login) | `settings.autostart` | SHOULD | E-15 | **Done** (core: reconcile drift policy with a non-actuating Unknown OS state + launch-arg detection; `tauri-plugin-autostart` actuation deferred edge) |
-| The GUI (all screens) | - | MUST to be usable | none | Gap - mockups only |
+| The GUI (all screens) | - | MUST to be usable | none | In build: foundation + core screens landed; design language settled in DESIGN.md |
 
 > **\*Quick actions are a loose end.** `repo_open_folder/terminal/editor/remote` are tagged E-03 but the E-03 effort delivered the git engine, not these OS shell-out commands - they remain typed stubs. They are small and UI-adjacent (triggered from the repo-detail screen), so they fold naturally into the GUI work or a tiny follow-up; not currently owned by a live effort.
 
@@ -59,4 +59,4 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 ## The two tracks to v0.9.0
 
 1. **Backend + integration (UI-independent, all specced):** the foundation (E-01..E-12) plus the E-14 notifications and E-15 autostart cores is done (E-10 / E-14 / E-15 core-only, their plugin/edge wiring deferred; E-11 done with the BL-NI-16 caveat). All behind-the-seam cores are complete. Remaining: the **edge-wiring effort** - spawn the scheduler at launch, wire the manual commands to shared locks, build the tray (E-13) + the E-14 `tauri-plugin-notification` emit-site + the E-15 autostart registration/OS-query, and resolve BL-NI-15 / BL-NI-16 / BL-NI-18. Plus the small `repo_open_*` follow-up. The core logic is all headlessly tested; the edge chrome needs a real Windows launch.
-2. **The GUI (needs design):** the webview screens. Category C. The Draft 2 mockups exist; needs a spec/effort before building; renders against the frozen `bindings.ts` and the now-real commands.
+2. **The GUI:** the webview screens. Category C. Foundation + Dashboard/Repos/Activity/Settings + detail drawer + add/scan are built on `build/e-01-foundation` against the frozen `bindings.ts` and the now-real commands; the design language is the Graphite direction in `DESIGN.md` (draft mockups archived to `_local/gui/archived-mockups/`).

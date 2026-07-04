@@ -159,7 +159,7 @@ The awareness half of the product: reading state at a glance, proving what happe
 
 ## 9. The screens and surfaces
 
-The GUI is five primary areas in a persistent left sidebar (a `Workspace` group), plus a `Groups` section for the taxonomy, plus two tray surfaces. The sidebar footer always shows a live "Watching N repos / next sweep in Xh Ym" status. Draft mockups exist for most of these in `docs/internal/mockups/`.
+The GUI is five primary areas in a persistent left sidebar (a `Workspace` group), plus a `Groups` section for the taxonomy, plus two tray surfaces. The sidebar footer always shows a live "Watching N repos / next sweep in Xh Ym" status. The canonical design language is the Graphite direction in `DESIGN.md`; the earlier draft mockups were archived to `_local/gui/archived-mockups/`.
 
 | Surface | What it shows | What you do here | Mockup |
 |---------|---------------|------------------|--------|

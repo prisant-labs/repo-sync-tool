@@ -48,7 +48,7 @@ Scope authority: `docs/internal/program-roadmap.md` (the execution plan, depende
 | E-14 | Desktop Notifications | SHOULD | ready | ready | Done (core; plugin wiring deferred) |
 | E-15 | Autostart (Launch on Login) | SHOULD | ready | ready | Done (core; plugin wiring deferred) |
 
-**Not an effort, tracked here because it gates the release:** the **GUI**. `src/App.tsx` is a throwaway debug surface; the four mockups in `docs/internal/mockups/` are Draft 1 design intent. At least the dashboard + repo list must ship for v0.9.0. (Build status: Not started.)
+**Not an effort, tracked here because it gates the release:** the **GUI**. the E-12 throwaway `src/App.tsx` tracer has been replaced by the real app shell and the Dashboard, Repos, Activity, and Settings screens (plus the repo detail drawer, add/scan, and editable settings), wired through `bindings.ts`. The design language is settled: the Graphite direction in `DESIGN.md` (earlier draft mockups archived to `_local/gui/archived-mockups/`). At least the dashboard + repo list must ship for v0.9.0. (Build status: in active build on `build/e-01-foundation`; foundation + core screens landed, remaining flows and polish ongoing.)
 
 **Also committed to the release, spec deferred:** **Groups (repo tags)** - user-defined, colored, many-to-many labels for repos. Promoted from V1.1 into v0.9.0 on 2026-06-30 (ledger amendment in [program-roadmap.md](../../program-roadmap.md); backlog BL-V11-04). The `groups` / `repo_groups` schema is already frozen into migration 0002, but the store/IPC layer, the GUI, and the feature spec are deferred until the GUI is finalized. Product framing: [features-and-outcomes.md](features-and-outcomes.md) Section 3. (Build status: schema ready; spec/build not started.)
 
