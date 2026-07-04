@@ -153,6 +153,9 @@ pub fn run() {
             // Register the event registry so typed emit/listen resolve names.
             builder.mount_events(app);
 
+            // Build the tray icon + menu (E-01 stub replaced by the GUI effort).
+            tray::init(app)?;
+
             // Initialize the pool + git engine synchronously during setup. The
             // tracer accepts a blocking init; later efforts can move this off
             // the setup thread if startup latency matters.

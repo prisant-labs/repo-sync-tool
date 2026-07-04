@@ -31,7 +31,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { workspace = true }
 
 [dependencies]
-tauri = { workspace = true, features = [] }
+tauri = { workspace = true, features = ["tray-icon"] }
 tauri-specta = { workspace = true, features = ["derive", "typescript"] }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
