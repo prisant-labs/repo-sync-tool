@@ -27,8 +27,11 @@ pub async fn repo_add_path(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<RepoId, AppError> {
-    let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
-    reposync_core::repo::add(&state.pool, git, std::path::Path::new(&path)).await
+    // Clone the engine OUT of the read lock and drop the guard immediately, so a
+    // long-running git operation never holds the lock against a `settings_set`
+    // re-probe (BL-NI-19). The engine is cheap to clone (it wraps shared handles).
+    let git = { state.git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
+    reposync_core::repo::add(&state.pool, &git, std::path::Path::new(&path)).await
 }
 
 /// Run a "check now" for a tracked repo, then broadcast the result.
@@ -43,12 +46,15 @@ pub async fn repo_check_now(
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<CheckResult, AppError> {
-    let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
+    // Clone the engine OUT of the read lock and drop the guard immediately, so a
+    // long-running git operation never holds the lock against a `settings_set`
+    // re-probe (BL-NI-19). The engine is cheap to clone (it wraps shared handles).
+    let git = { state.git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
     // Serialize with any scheduled job on the same repo via the shared per-repo
     // lock: hold it across the whole check so a manual and a scheduled git op
     // never run two `git` processes in one working tree at once.
     let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
-    let result = reposync_core::repo::check_now(&state.pool, git, RepoId(id)).await?;
+    let result = reposync_core::repo::check_now(&state.pool, &git, RepoId(id)).await?;
     emit_check_completed(&app, &result);
     Ok(result)
 }
@@ -100,8 +106,11 @@ pub async fn repo_scan_parent(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<ScanResult, AppError> {
-    let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
-    reposync_core::store::repo_scan_parent(&state.pool, git, std::path::Path::new(&path)).await
+    // Clone the engine OUT of the read lock and drop the guard immediately, so a
+    // long-running git operation never holds the lock against a `settings_set`
+    // re-probe (BL-NI-19). The engine is cheap to clone (it wraps shared handles).
+    let git = { state.git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
+    reposync_core::store::repo_scan_parent(&state.pool, &git, std::path::Path::new(&path)).await
 }
 
 /// Remove a tracked repo (does not touch the working tree).
@@ -155,13 +164,16 @@ pub async fn repo_update_now(
     id: i64,
     mode: UpdateMode,
 ) -> Result<UpdateResult, AppError> {
-    let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
+    // Clone the engine OUT of the read lock and drop the guard immediately, so a
+    // long-running git operation never holds the lock against a `settings_set`
+    // re-probe (BL-NI-19). The engine is cheap to clone (it wraps shared handles).
+    let git = { state.git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
     // Serialize with any scheduled job on the same repo via the shared per-repo
     // lock, held across the entire update (started -> execute -> completed).
     let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
     // The started event carries the requested mode label (snake_case wire form).
     emit_update_started(&app, id, update_mode_label(&mode));
-    let result = reposync_core::repo::update_now(&state.pool, git, RepoId(id), mode).await?;
+    let result = reposync_core::repo::update_now(&state.pool, &git, RepoId(id), mode).await?;
     emit_update_completed(&app, id, &result.outcome);
     Ok(result)
 }
@@ -330,7 +342,28 @@ pub async fn settings_set(
     state: tauri::State<'_, AppState>,
     settings: Settings,
 ) -> Result<(), AppError> {
-    reposync_core::store::settings_set(&state.pool, &settings).await
+    reposync_core::store::settings_set(&state.pool, &settings).await?;
+
+    // Live git re-probe (BL-NI-19): once the new settings are persisted, rebuild
+    // the git engine from the newly-saved `git_executable_path` and swap the
+    // shared engine, so a user who fixes a broken/missing git path recovers
+    // WITHOUT restarting - the command path picks up the new engine immediately.
+    // Re-read the persisted settings so this mirrors the startup construction
+    // EXACTLY (same source, same infallible `new`, same unavailable-check). The
+    // resident scheduler keeps its own initial engine and only picks up the
+    // re-probe on restart - a known limitation (see `AppState` / setup notes).
+    let configured_git_path = reposync_core::store::settings_get(&state.pool)
+        .await
+        .ok()
+        .and_then(|s| s.git_executable_path);
+    let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
+    let next = if engine.availability().is_unavailable() {
+        None
+    } else {
+        Some(engine)
+    };
+    *state.git.write().await = next;
+    Ok(())
 }
 
 #[cfg(test)]

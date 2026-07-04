@@ -38,10 +38,14 @@ use events::{
 /// that `reposync-core` flows operate on. Built once in [`run`]'s setup and
 /// handed to Tauri via `app.manage`.
 ///
-/// `git` is `None` when git could not be discovered at startup. Git absence must
-/// NOT prevent launch (E-03 degraded-state contract): the app still opens and
-/// git-dependent commands return [`AppError::GitNotFound`]. The full re-probe
-/// state machine is E-03 scope; this is the minimal tolerant form.
+/// `git` holds `None` when git could not be discovered. Git absence must NOT
+/// prevent launch (E-03 degraded-state contract): the app still opens and
+/// git-dependent commands return [`AppError::GitNotFound`]. The engine sits
+/// behind an `RwLock` so `settings_set` can re-probe from the newly-saved
+/// `git_executable_path` and swap it live (BL-NI-19), letting a user who fixes a
+/// broken git path recover without restarting - the command path picks up the
+/// new engine immediately. (The resident scheduler keeps its own initial engine
+/// and only picks up a re-probe on restart; see the setup note below.)
 ///
 /// `db_recovered` / `db_backup_path` carry the E-02 AC7 migration-recovery notice
 /// produced by `init_pool_with_recovery`: `db_recovered` is true exactly when the
@@ -51,7 +55,12 @@ use events::{
 /// and dropped, so the notice could never reach the UI.
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
-    pub git: Option<reposync_core::git::SystemGitEngine>,
+    /// The discovered git engine, behind an `RwLock` so `settings_set` can
+    /// re-probe and swap it LIVE when the user fixes a broken/missing git path
+    /// (BL-NI-19). Readers clone the engine out under a read guard (they never
+    /// block each other); only the settings writer takes the write guard. No
+    /// `Arc` is needed - `AppState` is already behind Tauri's managed `Arc`.
+    pub git: tokio::sync::RwLock<Option<reposync_core::git::SystemGitEngine>>,
     /// The per-repo lock map, SHARED with the resident scheduler (when git is
     /// present it is the scheduler's own `RepoLocks`). Manual command handlers
     /// acquire the same per-repo mutex the scheduler's jobs do, so a "check now"
@@ -277,9 +286,16 @@ pub fn run() {
                     reposync_core::scheduler::RepoLocks::default()
                 };
 
+                // Wrap the initial engine in an RwLock so `settings_set` can
+                // re-probe and swap it live (BL-NI-19). NOTE: the scheduler
+                // spawned above captured its OWN clone of the initial `git`
+                // engine (a local, not `AppState.git`); the running scheduler
+                // therefore keeps that initial engine and only picks up a
+                // re-probe on the NEXT restart. This pass makes the command path
+                // live, not the scheduler loop - a known limitation.
                 handle.manage(AppState {
                     pool,
-                    git,
+                    git: tokio::sync::RwLock::new(git),
                     locks,
                     db_recovered,
                     db_backup_path,
