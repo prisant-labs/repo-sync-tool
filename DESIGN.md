@@ -113,7 +113,10 @@ data/identity plane**: repo names, owners, branches, SHAs, counts, status words,
 timestamps, paths, raw commands and output, and column headers. **Sans is the
 human/chrome plane**: navigation, buttons, section and page titles, help text, prose, and
 error explanations. Mono says "this is machine state you can trust"; sans says "this is
-the app talking to you." Never mono for prose; never sans for a SHA.
+the app talking to you." Never mono for prose; never sans for a SHA. When the app
+offers a **choice** to the user (an update mode, a policy option), the primary label is
+the human-readable sans name; the machine identifier (the config enum) may sit beside it
+as a secondary mono tag, but never stands in as the only label.
 
 ## 4. Elevation & Differentiation
 
@@ -149,7 +152,7 @@ match their behavior.
 - **Data-table row.** The heart of the Repos view: checkbox, identity (name + owner + destination links, path beneath), branch, status mark, staleness bar, last-checked, and hover-revealed operations.
 - **Buttons.** Primary (solid accent), secondary (hairline border), icon-ghost. Active scale of 0.975 for tactile feedback.
 - **Search + filter chips.** Mono search field; filter chips where the active chip is solid ink.
-- **Segmented control.** The per-repo update-mode selector; unavailable/advanced modes (merge, rebase) render as disabled caution wells, never as live options.
+- **Option cards.** For a choice the user must understand to pick well (update mode, dirty-tree handling, branch eligibility): a stacked list of cards, each with a human-readable name, an optional secondary mono enum tag, and a one-line plain-language consequence that is **always visible** (not revealed only on selection). Unavailable/advanced options (merge, rebase) render as disabled caution wells, never as live cards. This replaces segmented controls and bare dropdowns for any consequential setting. Cards stack in a single vertical column capped to a comfortable reading width (about half the container), never full-bleed and never in a multi-column grid, so a mutually-exclusive group reads as one linear top-to-bottom choice.
 - **Activity row.** Expandable; the raw command, stdout, exit code, and duration live in a dark monospace well, the one dark surface in the app, reserved for literal terminal output.
 - **Floating surfaces.** Tray popover, dropdowns, dialogs: the only surfaces with a resting shadow, because they float.
 
@@ -160,12 +163,14 @@ match their behavior.
 - **Do** reserve saturated color for repo status and the blue accent for interaction; keep the two color languages strictly separate.
 - **Do** encode every repo state as color plus shape plus word, so it survives grayscale and color blindness. Never rely on hue alone.
 - **Do** keep destination links (local clone, web repo) always visible; hide only operations (check, pause) until hover.
+- **Do** show every option's meaning up front for a consequential choice: render mutually-exclusive settings as option cards whose plain-language consequence is always visible, so the user can compare before selecting. Lead with the human label; the config enum is a secondary annotation.
 - **Do** meet WCAG AA on all text, secondary and small included; push muted text toward ink until it clears 4.5:1.
 - **Do** use monospace for the data plane and tabular numerals for counts.
 - **Do** keep motion to functional feedback (a check resolving, the staleness sweep, hover and focus), and ship a `prefers-reduced-motion` fallback for each.
 
 ### Don't:
 - **Don't** reach for drop-shadowed cards to create hierarchy; that is the generic professional-dashboard reflex. Differentiate with type, color, and the signal first; earn depth only for floating surfaces and one focal region.
+- **Don't** hide an option's meaning behind interaction. Never surface a raw internal enum (`check_only`, `pull_ff_only`) as the primary label of a choice, and never make the user click a segment or open a dropdown just to learn what an option does. For consequential settings, all choices and their consequences are visible at once.
 - **Don't** build the generic AI dashboard: no gradient text, no glassy hero-metric cards, no uppercase tracked eyebrow over every section, no identical icon-card grid.
 - **Don't** build the heavy pro-git client: no commit-graph DAGs, no branch/tag/stash trees, no dense multi-verb git toolbars. RepoSync is not a Git client.
 - **Don't** stack light gray small text on gray surfaces. Gray-on-gray low-contrast text is prohibited; "muted" means lower hierarchy, not lower legibility.
