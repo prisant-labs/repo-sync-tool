@@ -239,40 +239,47 @@ pub async fn repo_refresh_metadata(
 /// Open the repo's folder in the OS file manager.
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_open_folder(_state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
-    // TODO(E-03): resolve `id`'s local_path and reveal it via the shell.
-    let _ = id;
-    Err(not_implemented())
+pub async fn repo_open_folder(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+    let detail = reposync_core::store::repo_get(&state.pool, RepoId(id)).await?;
+    crate::opener::open_folder(std::path::Path::new(&detail.local_path))
 }
 
 /// Open the repo in a terminal.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_open_terminal(
-    _state: tauri::State<'_, AppState>,
+    state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<(), AppError> {
-    // TODO(E-03): launch the configured terminal at `id`'s local_path.
-    let _ = id;
-    Err(not_implemented())
+    let detail = reposync_core::store::repo_get(&state.pool, RepoId(id)).await?;
+    let settings = reposync_core::store::settings_get(&state.pool).await?;
+    let terminal = settings.terminal_command.ok_or(AppError::InvalidSetting {
+        field: "terminal_command".into(),
+    })?;
+    crate::opener::open_terminal(&terminal, std::path::Path::new(&detail.local_path))
 }
 
 /// Open the repo in the configured editor.
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_open_editor(_state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
-    // TODO(E-03): launch the configured editor at `id`'s local_path.
-    let _ = id;
-    Err(not_implemented())
+pub async fn repo_open_editor(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+    let detail = reposync_core::store::repo_get(&state.pool, RepoId(id)).await?;
+    let settings = reposync_core::store::settings_get(&state.pool).await?;
+    let editor = settings.editor_command.ok_or(AppError::InvalidSetting {
+        field: "editor_command".into(),
+    })?;
+    crate::opener::open_editor(&editor, std::path::Path::new(&detail.local_path))
 }
 
 /// Open the repo's remote (origin URL) in the browser.
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_open_remote(_state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
-    // TODO(E-03): open `id`'s remote_origin_url in the default browser.
-    let _ = id;
-    Err(not_implemented())
+pub async fn repo_open_remote(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+    let detail = reposync_core::store::repo_get(&state.pool, RepoId(id)).await?;
+    let url = detail.remote_origin_url.ok_or_else(|| AppError::NotFound {
+        entity: format!("remote origin URL for repo {id}"),
+    })?;
+    crate::opener::open_url(&url)
 }
 
 /// List activity-log records, filtered (newest first).

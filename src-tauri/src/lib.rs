@@ -14,6 +14,7 @@
 mod commands;
 mod events;
 mod localtime;
+mod opener;
 mod tray;
 mod windows;
 
