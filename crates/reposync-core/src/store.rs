@@ -572,7 +572,11 @@ mod tests {
         let detail = repo_get(&pool, id).await.expect("get");
         assert_eq!(detail.id, id.0);
         assert_eq!(detail.update_mode, "fetch_only");
-        assert_eq!(detail.check_frequency_min, 360);
+        assert_eq!(
+            detail.check_frequency_min, 0,
+            "a newly-added repo inherits the global cadence (check_frequency_min = 0), \
+             not the old 360 per-repo default"
+        );
         assert_eq!(detail.consecutive_failures, 0);
 
         // get of an unknown id is NotFound.

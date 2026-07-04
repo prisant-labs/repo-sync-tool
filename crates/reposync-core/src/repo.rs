@@ -90,10 +90,15 @@ pub async fn add(
     let created_at = now_secs();
 
     // 5. Insert the repos row; UNIQUE(local_path) violation -> DuplicateRepo.
+    //    check_frequency_min is inserted as 0, the INHERIT sentinel: a new repo
+    //    follows the global cadence (settings.global_check_minutes) until a user
+    //    sets an explicit positive per-repo override. The schema default is 360,
+    //    but that would read as a 6h override that ignores the global control, so
+    //    `add` sets 0 explicitly rather than relying on the column default.
     let insert = sqlx::query(
         "INSERT INTO repos \
-         (local_name, local_path, remote_origin_url, host_type, created_at) \
-         VALUES (?, ?, ?, ?, ?)",
+         (local_name, local_path, remote_origin_url, host_type, created_at, check_frequency_min) \
+         VALUES (?, ?, ?, ?, ?, 0)",
     )
     .bind(&local_name)
     .bind(&local_path)

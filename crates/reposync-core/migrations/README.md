@@ -15,6 +15,10 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   (`repo_local_state`, `repo_remote_meta`).
 - `0002_activity_settings.sql` - audit trail (`activity_records` + its two
   indexes), grouping (`groups`, `repo_groups`), and the `settings` singleton.
+- `0003_cadence_inherit.sql` - data migration (BL-NI-20) that rewrites every
+  `repos.check_frequency_min` to `0`, the INHERIT sentinel, so existing repos
+  follow the global cadence (`settings.global_check_minutes`). Additive and
+  data-only.
 
 ## Migration policy
 

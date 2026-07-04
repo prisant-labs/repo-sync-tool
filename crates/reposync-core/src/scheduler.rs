@@ -47,8 +47,12 @@ pub const DEFAULT_CONCURRENCY: usize = 4;
 /// jitter (random 0-30s)").
 pub const STARTUP_JITTER_MAX_SECS: i64 = 30;
 
-/// The global default check frequency in minutes (strategy doc Section 4.5:
-/// `check_frequency_min` default 360 = 6h).
+/// The hard cadence floor in minutes (6h), used only when BOTH the per-repo
+/// `check_frequency_min` and the global `settings.global_check_minutes` are
+/// non-positive. It matches the schema default for `settings.global_check_minutes`
+/// so the effective cadence stays 6h when nothing overrides it. It is NOT the
+/// per-repo default: under the INHERIT model a new repo's `check_frequency_min` is
+/// 0 (inherit the global), not 360.
 pub const DEFAULT_FREQUENCY_MIN: i64 = 360;
 
 // =============================================================================
@@ -81,9 +85,11 @@ pub fn in_quiet_hours(now_min: i64, start: Option<i64>, end: Option<i64>) -> boo
 
 /// The effective check frequency in minutes for a repo: its own
 /// `check_frequency_min` when positive (the per-repo override), else the global
-/// default, else the hard [`DEFAULT_FREQUENCY_MIN`] floor. A frequency is never
-/// allowed to be zero or negative (which would schedule a check in the past or
-/// instantly).
+/// default, else the hard [`DEFAULT_FREQUENCY_MIN`] floor. A `check_frequency_min`
+/// of 0 is the INHERIT sentinel, so an inherit repo resolves to the global
+/// `settings.global_check_minutes` passed as `global_default`. A frequency is
+/// never allowed to be zero or negative (which would schedule a check in the past
+/// or instantly).
 pub fn effective_frequency_min(repo_freq_min: i64, global_default: i64) -> i64 {
     if repo_freq_min > 0 {
         repo_freq_min
@@ -625,7 +631,20 @@ impl OutcomeWriter for DbOutcomeWriter {
         now_unix: i64,
         status: RepoStatus,
     ) -> Result<(), AppError> {
-        let freq = effective_frequency_min(repo.check_frequency_min, DEFAULT_FREQUENCY_MIN);
+        // Read the LIVE global cadence so a repo whose check_frequency_min is 0
+        // (the inherit sentinel) follows settings.global_check_minutes. Seed the
+        // singleton the same idempotent way store::settings_get and the due-query
+        // do, then read just the one column. Passing the compile-time
+        // DEFAULT_FREQUENCY_MIN here (the old bug, BL-NI-20) made the global
+        // control a no-op.
+        sqlx::query("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+            .execute(&self.pool)
+            .await?;
+        let global_default = sqlx::query("SELECT global_check_minutes FROM settings WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await?
+            .try_get::<i64, _>("global_check_minutes")?;
+        let freq = effective_frequency_min(repo.check_frequency_min, global_default);
         let next = next_check_at(now_unix, freq);
         let (consecutive_failures, auto_paused) = persist_columns(status);
         sqlx::query(
@@ -1054,7 +1073,10 @@ mod tests {
     fn due(id: i64) -> DueRepo {
         DueRepo {
             id: RepoId(id),
-            check_frequency_min: 360,
+            // 0 = inherit the global cadence (the default for a newly-added repo
+            // under the INHERIT model). The fake outcome writer ignores this, so
+            // the value only documents the model for these orchestration tests.
+            check_frequency_min: 0,
             consecutive_failures: 0,
         }
     }
@@ -1179,7 +1201,7 @@ mod tests {
                 run_job(
                     DueRepo {
                         id,
-                        check_frequency_min: 360,
+                        check_frequency_min: 0,
                         consecutive_failures: 0,
                     },
                     FakeClock::new(1000, 600),
@@ -1377,7 +1399,7 @@ mod tests {
         let writer_handle = writer.clone();
         let repo = DueRepo {
             id: RepoId(5),
-            check_frequency_min: 360,
+            check_frequency_min: 0,
             consecutive_failures: 2,
         };
         let dq = FakeDueQuery {
@@ -1412,7 +1434,7 @@ mod tests {
         let writer_handle = writer.clone();
         let repo = DueRepo {
             id: RepoId(9),
-            check_frequency_min: 360,
+            check_frequency_min: 0,
             consecutive_failures: 2,
         };
         let dq = FakeDueQuery {
@@ -1534,6 +1556,112 @@ mod tests {
             selection.quiet_hours,
             (None, None),
             "default settings carry no quiet-hours window"
+        );
+    }
+
+    // =========================================================================
+    // The production outcome-writer computes next_check_at from the LIVE global
+    // cadence for an inherit (check_frequency_min = 0) repo, and honours a
+    // positive per-repo override (BL-NI-20: the global control used to be a
+    // no-op because the writer passed the compile-time DEFAULT_FREQUENCY_MIN).
+    // =========================================================================
+
+    #[tokio::test]
+    async fn db_outcome_writer_uses_global_cadence_for_inherit_repo() {
+        async fn insert_repo(pool: &SqlitePool, name: &str, freq_min: i64) -> i64 {
+            let id = sqlx::query(
+                "INSERT INTO repos (local_name, local_path, created_at, check_frequency_min) \
+                 VALUES (?, ?, 0, ?)",
+            )
+            .bind(name)
+            .bind(name)
+            .bind(freq_min)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+            sqlx::query(
+                "INSERT INTO repo_local_state (repo_id, consecutive_failures, auto_paused) \
+                 VALUES (?, 0, 0)",
+            )
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+            id
+        }
+
+        async fn read_next_check_at(pool: &SqlitePool, id: i64) -> Option<i64> {
+            sqlx::query("SELECT next_check_at FROM repo_local_state WHERE repo_id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("next_check_at")
+                .unwrap()
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = crate::db::open_pool(&tmp.path().join("cadence.db"))
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        // Set a DISTINCTIVE global cadence (120m) so a regression to the 360m
+        // const would be visible. Seed the singleton the same idempotent way the
+        // writer does, then override the one column.
+        sqlx::query("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE settings SET global_check_minutes = 120 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let inherit = insert_repo(&pool, "inherit", 0).await;
+        let overridden = insert_repo(&pool, "override", 45).await;
+
+        let writer = DbOutcomeWriter::new(pool.clone());
+        let now = 1_000_000i64;
+
+        // An inherit repo (check_frequency_min = 0) schedules from the LIVE global
+        // cadence (120m), NOT the compile-time DEFAULT_FREQUENCY_MIN (360m).
+        writer
+            .record(
+                &DueRepo {
+                    id: RepoId(inherit),
+                    check_frequency_min: 0,
+                    consecutive_failures: 0,
+                },
+                now,
+                RepoStatus::Active,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_next_check_at(&pool, inherit).await,
+            Some(now + 120 * 60),
+            "an inherit repo must schedule from the live global cadence (120m), not the 360m const"
+        );
+
+        // A positive per-repo override (45m) wins over the global cadence.
+        writer
+            .record(
+                &DueRepo {
+                    id: RepoId(overridden),
+                    check_frequency_min: 45,
+                    consecutive_failures: 0,
+                },
+                now,
+                RepoStatus::Active,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_next_check_at(&pool, overridden).await,
+            Some(now + 45 * 60),
+            "a positive per-repo override wins over the global cadence"
         );
     }
 }
