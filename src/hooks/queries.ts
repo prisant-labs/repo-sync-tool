@@ -35,6 +35,38 @@ export function useSettings() {
   return useAsync(() => unwrap(commands.settingsGet()), []);
 }
 
+/** Live list of repo groups (tags) with member counts, for the sidebar + management. */
+export function useGroups() {
+  return useAsync(() => unwrap(commands.groupList()), []);
+}
+
+/** The ids of the groups one repo belongs to. A null repo id resolves to an empty list. */
+export function useGroupsForRepo(repoId: number | null) {
+  return useAsync(
+    () => (repoId === null ? Promise.resolve<number[]>([]) : unwrap(commands.groupsForRepo(repoId))),
+    [repoId],
+  );
+}
+
+/**
+ * Group memberships for many repos at once, as a `Map<repoId, groupId[]>`.
+ *
+ * This fans out one `groups_for_repo` call per repo (O(N) IPC round-trips),
+ * which is fine for V1 repo counts. A dedicated `repos_in_group` query would
+ * collapse the fan-out into a single call and is the natural future
+ * optimization once repo counts grow.
+ */
+export function useRepoGroupMemberships(repoIds: number[]) {
+  const key = repoIds.join(",");
+  return useAsync(async () => {
+    const lists = await Promise.all(repoIds.map((id) => unwrap(commands.groupsForRepo(id))));
+    const map = new Map<number, number[]>();
+    repoIds.forEach((id, i) => map.set(id, lists[i]));
+    return map;
+    // Re-run only when the set of repo ids changes (keyed by their join above).
+  }, [key]);
+}
+
 /**
  * Call `onChange` whenever the backend broadcasts a state-affecting event
  * (a check or update finished, a repo's cached state changed, or the scheduler

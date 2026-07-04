@@ -14,14 +14,15 @@ import {
   X,
 } from "lucide-react";
 import { commands } from "@/lib/bindings";
-import type { RepoDetail as RepoDetailData, UpdateMode } from "@/lib/bindings";
+import type { GroupSummary, RepoDetail as RepoDetailData, UpdateMode } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { AsyncPanel } from "@/components/async-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
 import { useToast } from "@/hooks/use-toast";
-import { useRepoDetail } from "@/hooks/queries";
+import { useGroups, useGroupsForRepo, useRepoDetail } from "@/hooks/queries";
 import {
   deriveStatus,
   lagLabel,
@@ -70,9 +71,14 @@ export function RepoDetailPanel({
   onClose: () => void;
 }) {
   const detail = useRepoDetail(id);
+  const groupsState = useGroups();
+  const memberships = useGroupsForRepo(id);
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
+  const [groupBusyId, setGroupBusyId] = useState<number | null>(null);
   const refetch = detail.refetch;
+  const refetchGroups = groupsState.refetch;
+  const refetchMemberships = memberships.refetch;
 
   const run = useCallback<RunFn>(
     (key, action, okTitle, okMessage) => {
@@ -93,6 +99,28 @@ export function RepoDetailPanel({
     [toast, refetch, onChanged],
   );
 
+  const toggleGroup = useCallback(
+    async (group: GroupSummary, isMember: boolean) => {
+      setGroupBusyId(group.id);
+      try {
+        await unwrap(
+          isMember ? commands.groupUnassign(id, group.id) : commands.groupAssign(id, group.id),
+        );
+        toast("ok", isMember ? "Removed from group" : "Added to group", group.name);
+        // Refresh this repo's memberships and the group list (member counts),
+        // then let the parent refresh its list + membership map + sidebar.
+        refetchMemberships();
+        refetchGroups();
+        onChanged();
+      } catch (e) {
+        toast("error", "Could not update group", e instanceof IpcError ? e.message : String(e));
+      } finally {
+        setGroupBusyId(null);
+      }
+    },
+    [id, toast, refetchMemberships, refetchGroups, onChanged],
+  );
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border px-5 py-4">
@@ -105,13 +133,41 @@ export function RepoDetailPanel({
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        <AsyncPanel state={detail}>{(r) => <DetailBody r={r} busy={busy} run={run} />}</AsyncPanel>
+        <AsyncPanel state={detail}>
+          {(r) => (
+            <DetailBody
+              r={r}
+              busy={busy}
+              run={run}
+              groups={groupsState.data ?? []}
+              memberIds={memberships.data ?? []}
+              groupBusyId={groupBusyId}
+              onToggleGroup={toggleGroup}
+            />
+          )}
+        </AsyncPanel>
       </div>
     </div>
   );
 }
 
-function DetailBody({ r, busy, run }: { r: RepoDetailData; busy: string | null; run: RunFn }) {
+function DetailBody({
+  r,
+  busy,
+  run,
+  groups,
+  memberIds,
+  groupBusyId,
+  onToggleGroup,
+}: {
+  r: RepoDetailData;
+  busy: string | null;
+  run: RunFn;
+  groups: GroupSummary[];
+  memberIds: number[];
+  groupBusyId: number | null;
+  onToggleGroup: (group: GroupSummary, isMember: boolean) => void;
+}) {
   const status = deriveStatus(r);
   const style = STATUS_STYLE[status];
   const isBusy = busy !== null;
@@ -165,6 +221,13 @@ function DetailBody({ r, busy, run }: { r: RepoDetailData; busy: string | null; 
           </Button>
         )}
       </div>
+
+      <GroupsSection
+        groups={groups}
+        memberIds={memberIds}
+        groupBusyId={groupBusyId}
+        onToggleGroup={onToggleGroup}
+      />
 
       <section>
         <SectionLabel>Open in</SectionLabel>
@@ -368,6 +431,56 @@ function SectionLabel({ children }: { children: ReactNode }) {
     <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
       {children}
     </div>
+  );
+}
+
+function GroupsSection({
+  groups,
+  memberIds,
+  groupBusyId,
+  onToggleGroup,
+}: {
+  groups: GroupSummary[];
+  memberIds: number[];
+  groupBusyId: number | null;
+  onToggleGroup: (group: GroupSummary, isMember: boolean) => void;
+}) {
+  return (
+    <section>
+      <SectionLabel>Groups</SectionLabel>
+      {groups.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No groups yet. Create one from the sidebar to organize this repo.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          {groups.map((g) => {
+            const member = memberIds.includes(g.id);
+            return (
+              <div
+                key={g.id}
+                className="flex items-center gap-3 rounded-md border border-border px-3 py-2"
+              >
+                <span
+                  className={cn(
+                    "size-2.5 shrink-0 rounded-full",
+                    g.color === null && "bg-muted-foreground/50",
+                  )}
+                  style={g.color ? { backgroundColor: g.color } : undefined}
+                />
+                <span className="min-w-0 flex-1 truncate text-sm font-medium">{g.name}</span>
+                <span className="font-mono text-[11px] text-muted-foreground">{g.repoCount}</span>
+                <Switch
+                  checked={member}
+                  disabled={groupBusyId === g.id}
+                  onCheckedChange={() => onToggleGroup(g, member)}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
   );
 }
 

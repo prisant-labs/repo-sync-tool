@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Activity, LayoutDashboard, List, Moon, Settings, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { GroupsNav } from "@/components/groups-nav";
+import { useGroups } from "@/hooks/queries";
 import { DashboardScreen } from "@/screens/dashboard";
 import { ReposScreen } from "@/screens/repos";
 import { ActivityScreen } from "@/screens/activity";
@@ -26,8 +28,16 @@ function useTheme() {
 
 export function AppShell() {
   const [view, setView] = useState<View>("dashboard");
+  const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
   const { dark, toggle } = useTheme();
   const active = NAV.find((n) => n.id === view);
+  const groupsState = useGroups();
+  const groups = groupsState.data ?? [];
+
+  function selectGroup(id: number | null) {
+    setActiveGroupId(id);
+    setView("repos");
+  }
 
   return (
     <div className="grid h-svh grid-cols-[232px_1fr] bg-background text-foreground">
@@ -58,6 +68,12 @@ export function AppShell() {
             </button>
           ))}
         </nav>
+        <GroupsNav
+          groups={groups}
+          activeGroupId={activeGroupId}
+          onSelectGroup={selectGroup}
+          refetchGroups={groupsState.refetch}
+        />
       </aside>
 
       <main className="flex min-w-0 flex-col">
@@ -77,7 +93,14 @@ export function AppShell() {
         </header>
         <div className="min-h-0 flex-1 overflow-auto p-6">
           {view === "dashboard" && <DashboardScreen onOpenRepos={() => setView("repos")} />}
-          {view === "repos" && <ReposScreen />}
+          {view === "repos" && (
+            <ReposScreen
+              activeGroupId={activeGroupId}
+              groups={groups}
+              onClearGroup={() => setActiveGroupId(null)}
+              onGroupsChanged={groupsState.refetch}
+            />
+          )}
           {view === "activity" && <ActivityScreen />}
           {view === "settings" && <SettingsScreen />}
         </div>

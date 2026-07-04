@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
-import { FolderGit2, Plus, RefreshCw, Search } from "lucide-react";
+import { FolderGit2, Plus, RefreshCw, Search, X } from "lucide-react";
 import { commands } from "@/lib/bindings";
-import type { RepoSummary } from "@/lib/bindings";
+import type { GroupSummary, RepoSummary } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import { LagSignal } from "@/components/lag-signal";
 import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
-import { useBackendEvents, useRepoList } from "@/hooks/queries";
+import { useBackendEvents, useRepoGroupMemberships, useRepoList } from "@/hooks/queries";
 import {
   deriveStatus,
   lagLabel,
@@ -29,7 +29,17 @@ const STATUS_ORDER: RepoStatus[] = ["behind", "dirty", "failed", "paused", "ahea
 
 type Chip = RepoStatus | "all";
 
-export function ReposScreen() {
+export function ReposScreen({
+  activeGroupId,
+  groups,
+  onClearGroup,
+  onGroupsChanged,
+}: {
+  activeGroupId: number | null;
+  groups: GroupSummary[];
+  onClearGroup: () => void;
+  onGroupsChanged: () => void;
+}) {
   const repos = useRepoList(ALL_FILTER);
   const refetch = repos.refetch;
   useBackendEvents(refetch);
@@ -39,6 +49,32 @@ export function ReposScreen() {
   const [addOpen, setAddOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [chip, setChip] = useState<Chip>("all");
+
+  const list = useMemo(() => repos.data ?? [], [repos.data]);
+
+  // Group memberships for every tracked repo, as Map<repoId, groupId[]>. This
+  // fans out one call per repo (see useRepoGroupMemberships); a `repos_in_group`
+  // query is the future optimization once repo counts grow.
+  const repoIds = useMemo(() => list.map((r) => r.id), [list]);
+  const memberships = useRepoGroupMemberships(repoIds);
+  const membershipMap = memberships.data;
+  const refetchMemberships = memberships.refetch;
+
+  const groupById = useMemo(() => {
+    const m = new Map<number, GroupSummary>();
+    for (const g of groups) m.set(g.id, g);
+    return m;
+  }, [groups]);
+
+  const activeGroup = activeGroupId === null ? null : (groupById.get(activeGroupId) ?? null);
+
+  // After an assignment change in the drawer, refresh the list, the membership
+  // map, and the sidebar group counts together.
+  const handleRepoChanged = useCallback(() => {
+    refetch();
+    refetchMemberships();
+    onGroupsChanged();
+  }, [refetch, refetchMemberships, onGroupsChanged]);
 
   const checkNow = useCallback(
     async (id: number) => {
@@ -56,22 +92,27 @@ export function ReposScreen() {
     [refetch],
   );
 
-  const list = useMemo(() => repos.data ?? [], [repos.data]);
-
   const counts = useMemo(() => {
     const c: Record<RepoStatus, number> = { sync: 0, ahead: 0, behind: 0, dirty: 0, failed: 0, paused: 0 };
     for (const r of list) c[deriveStatus(r)] += 1;
     return c;
   }, [list]);
 
+  // Repos in the active group (before the status / name filters narrow further).
+  const inGroupCount = useMemo(() => {
+    if (activeGroupId === null) return list.length;
+    return list.filter((r) => membershipMap?.get(r.id)?.includes(activeGroupId)).length;
+  }, [list, membershipMap, activeGroupId]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return list.filter((r) => {
+      if (activeGroupId !== null && !membershipMap?.get(r.id)?.includes(activeGroupId)) return false;
       if (chip !== "all" && deriveStatus(r) !== chip) return false;
       if (q && !r.localName.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [list, query, chip]);
+  }, [list, query, chip, activeGroupId, membershipMap]);
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
@@ -84,6 +125,27 @@ export function ReposScreen() {
           <Plus /> Add repos
         </Button>
       </div>
+
+      {activeGroup && (
+        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2">
+          <span
+            className={cn(
+              "size-2.5 shrink-0 rounded-full",
+              activeGroup.color === null && "bg-muted-foreground/50",
+            )}
+            style={activeGroup.color ? { backgroundColor: activeGroup.color } : undefined}
+          />
+          <span className="text-sm">
+            Filtered to <span className="font-semibold">{activeGroup.name}</span>
+          </span>
+          <span className="font-mono text-xs text-muted-foreground">
+            {inGroupCount} {inGroupCount === 1 ? "repo" : "repos"}
+          </span>
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={onClearGroup}>
+            <X /> Clear filter
+          </Button>
+        </div>
+      )}
 
       {list.length > 0 && (
         <div className="flex flex-wrap items-center gap-3">
@@ -151,15 +213,21 @@ export function ReposScreen() {
                 <div>Checked</div>
                 <div />
               </div>
-              {filtered.map((repo) => (
-                <RepoRow
-                  key={repo.id}
-                  repo={repo}
-                  busy={busyId === repo.id}
-                  onOpen={() => setSelectedId(repo.id)}
-                  onCheck={() => checkNow(repo.id)}
-                />
-              ))}
+              {filtered.map((repo) => {
+                const repoGroups = (membershipMap?.get(repo.id) ?? [])
+                  .map((gid) => groupById.get(gid))
+                  .filter((g): g is GroupSummary => g !== undefined);
+                return (
+                  <RepoRow
+                    key={repo.id}
+                    repo={repo}
+                    repoGroups={repoGroups}
+                    busy={busyId === repo.id}
+                    onOpen={() => setSelectedId(repo.id)}
+                    onCheck={() => checkNow(repo.id)}
+                  />
+                );
+              })}
             </div>
           )
         }
@@ -167,7 +235,11 @@ export function ReposScreen() {
 
       <Drawer open={selectedId !== null} onClose={() => setSelectedId(null)}>
         {selectedId !== null && (
-          <RepoDetailPanel id={selectedId} onChanged={refetch} onClose={() => setSelectedId(null)} />
+          <RepoDetailPanel
+            id={selectedId}
+            onChanged={handleRepoChanged}
+            onClose={() => setSelectedId(null)}
+          />
         )}
       </Drawer>
 
@@ -212,11 +284,13 @@ function FilterChip({
 
 function RepoRow({
   repo,
+  repoGroups,
   busy,
   onOpen,
   onCheck,
 }: {
   repo: RepoSummary;
+  repoGroups: GroupSummary[];
   busy: boolean;
   onOpen: () => void;
   onCheck: () => void;
@@ -248,6 +322,13 @@ function RepoRow({
           {repo.hostType}
           {repo.latestReleaseTag ? ` · ${repo.latestReleaseTag}` : ""}
         </div>
+        {repoGroups.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {repoGroups.map((g) => (
+              <GroupChip key={g.id} group={g} />
+            ))}
+          </div>
+        )}
       </div>
       <StatusBadge status={status} count={count} />
       <LagSignal status={status} magnitude={lagMagnitude(repo)} label={lagLabel(repo)} />
@@ -267,5 +348,17 @@ function RepoRow({
         </Button>
       </div>
     </div>
+  );
+}
+
+function GroupChip({ group }: { group: GroupSummary }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+      <span
+        className={cn("size-1.5 rounded-full", group.color === null && "bg-muted-foreground/50")}
+        style={group.color ? { backgroundColor: group.color } : undefined}
+      />
+      {group.name}
+    </span>
   );
 }
