@@ -229,6 +229,21 @@ pub struct WeeklySummary {
 }
 
 // =============================================================================
+// Group / tag payloads
+// =============================================================================
+
+/// A repo group (tag) with its current member count. A flattened read of
+/// `groups` + a COUNT of `repo_groups` memberships, for the group-management view.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSummary {
+    pub id: i64,
+    pub name: String,
+    pub color: Option<String>,
+    pub repo_count: i64,
+}
+
+// =============================================================================
 // Filter payloads (command parameters)
 // =============================================================================
 
@@ -493,6 +508,14 @@ mod tests {
             branch_policy: BranchPolicy::DefaultBranchOnly,
         };
         assert_round_trip(&policy);
+
+        let group = GroupSummary {
+            id: 1,
+            name: "backend".into(),
+            color: Some("#3b82f6".into()),
+            repo_count: 3,
+        };
+        assert_round_trip(&group);
 
         // The error half of every fallible command: Result<RepoId, AppError>.
         // `AppError` serializes through its frozen `AppErrorPayload` wire shape

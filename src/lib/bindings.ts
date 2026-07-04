@@ -87,6 +87,20 @@ export const commands = {
 	settingsGet: () => typedError<Settings, AppErrorPayload>(__TAURI_INVOKE("settings_get")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Write the settings singleton. */
 	settingsSet: (settings: Settings) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("settings_set", { settings })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  List every group with its member repo count (group-management view). */
+	groupList: () => typedError<GroupSummary[], AppErrorPayload>(__TAURI_INVOKE("group_list")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Create a group. A duplicate name is rejected as an invalid setting. */
+	groupCreate: (name: string, color: string | null) => typedError<GroupSummary, AppErrorPayload>(__TAURI_INVOKE("group_create", { name, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Rename a group. A duplicate name is rejected; a missing id is NotFound. */
+	groupRename: (id: number, name: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_rename", { id, name })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Delete a group (idempotent; memberships cascade away). */
+	groupDelete: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_delete", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Assign a repo to a group (idempotent; a missing repo/group is NotFound). */
+	groupAssign: (repoId: number, groupId: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_assign", { repoId, groupId })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  Remove a repo from a group (idempotent). */
+	groupUnassign: (repoId: number, groupId: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_unassign", { repoId, groupId })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**  List the ids of the groups a repo belongs to (ascending). */
+	groupsForRepo: (repoId: number) => typedError<number[], AppErrorPayload>(__TAURI_INVOKE("groups_for_repo", { repoId })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 };
 
 /** Events */
@@ -232,6 +246,17 @@ export type DirtyHandling = "skip" | "warn_and_block" | "auto_stash" | "fetch_on
  */
 export type ErrorRaised = {
 	error: AppErrorPayload,
+};
+
+/**
+ *  A repo group (tag) with its current member count. A flattened read of
+ *  `groups` + a COUNT of `repo_groups` memberships, for the group-management view.
+ */
+export type GroupSummary = {
+	id: number,
+	name: string,
+	color: string | null,
+	repoCount: number,
 };
 
 /**  Typed `notification:fired` event (a desktop notification was raised). */

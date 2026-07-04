@@ -10,8 +10,9 @@
 
 use reposync_core::error::AppError;
 use reposync_core::ipc::{
-    ActivityFilter, ActivityRecord, CheckResult, DailySummary, RepoDetail, RepoFilter, RepoId,
-    RepoSummary, ScanResult, Settings, UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
+    ActivityFilter, ActivityRecord, CheckResult, DailySummary, GroupSummary, RepoDetail, RepoFilter,
+    RepoId, RepoSummary, ScanResult, Settings, UpdateMode, UpdatePolicy, UpdateResult,
+    WeeklySummary,
 };
 
 use crate::events::{emit_check_completed, emit_update_completed, emit_update_started};
@@ -364,6 +365,82 @@ pub async fn settings_set(
     };
     *state.git.write().await = next;
     Ok(())
+}
+
+// =============================================================================
+// Groups / tags (E-01 groups feature)
+//
+// Thin adapters over the `reposync_core::store` group functions. Grouping is a
+// pure metadata operation on the SQLite tables (no git, no per-repo lock), so
+// each handler just forwards the pool.
+// =============================================================================
+
+/// List every group with its member repo count (group-management view).
+#[tauri::command]
+#[specta::specta]
+pub async fn group_list(state: tauri::State<'_, AppState>) -> Result<Vec<GroupSummary>, AppError> {
+    reposync_core::store::groups_list(&state.pool).await
+}
+
+/// Create a group. A duplicate name is rejected as an invalid setting.
+#[tauri::command]
+#[specta::specta]
+pub async fn group_create(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    color: Option<String>,
+) -> Result<GroupSummary, AppError> {
+    reposync_core::store::group_create(&state.pool, &name, color.as_deref()).await
+}
+
+/// Rename a group. A duplicate name is rejected; a missing id is NotFound.
+#[tauri::command]
+#[specta::specta]
+pub async fn group_rename(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    name: String,
+) -> Result<(), AppError> {
+    reposync_core::store::group_rename(&state.pool, id, &name).await
+}
+
+/// Delete a group (idempotent; memberships cascade away).
+#[tauri::command]
+#[specta::specta]
+pub async fn group_delete(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+    reposync_core::store::group_delete(&state.pool, id).await
+}
+
+/// Assign a repo to a group (idempotent; a missing repo/group is NotFound).
+#[tauri::command]
+#[specta::specta]
+pub async fn group_assign(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+    group_id: i64,
+) -> Result<(), AppError> {
+    reposync_core::store::group_assign(&state.pool, repo_id, group_id).await
+}
+
+/// Remove a repo from a group (idempotent).
+#[tauri::command]
+#[specta::specta]
+pub async fn group_unassign(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+    group_id: i64,
+) -> Result<(), AppError> {
+    reposync_core::store::group_unassign(&state.pool, repo_id, group_id).await
+}
+
+/// List the ids of the groups a repo belongs to (ascending).
+#[tauri::command]
+#[specta::specta]
+pub async fn groups_for_repo(
+    state: tauri::State<'_, AppState>,
+    repo_id: i64,
+) -> Result<Vec<i64>, AppError> {
+    reposync_core::store::groups_for_repo(&state.pool, repo_id).await
 }
 
 #[cfg(test)]

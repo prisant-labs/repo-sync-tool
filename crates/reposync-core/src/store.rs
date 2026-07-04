@@ -16,8 +16,8 @@ use sqlx::{Row, SqlitePool};
 use crate::error::AppError;
 use crate::git::SystemGitEngine;
 use crate::ipc::{
-    RepoDetail, RepoFilter, RepoId, RepoSummary, ScanCandidate, ScanResult, Settings, UpdateMode,
-    UpdatePolicy,
+    GroupSummary, RepoDetail, RepoFilter, RepoId, RepoSummary, ScanCandidate, ScanResult, Settings,
+    UpdateMode, UpdatePolicy,
 };
 
 /// The maximum directory depth a parent-folder scan descends (defense against a
@@ -500,6 +500,195 @@ fn normalize(p: &str) -> String {
     p.replace('\\', "/").trim_end_matches('/').to_lowercase()
 }
 
+// =============================================================================
+// Groups / tags (N:M repos <-> groups)
+// =============================================================================
+
+/// List every group with its member repo count (the group-management view).
+///
+/// A LEFT JOIN + GROUP BY yields one row per group, `repo_count` being the number
+/// of `repo_groups` memberships (0 for an empty group), name-ordered.
+pub async fn groups_list(pool: &SqlitePool) -> Result<Vec<GroupSummary>, AppError> {
+    let rows = sqlx::query(
+        "SELECT g.id AS id, g.name AS name, g.color AS color, \
+            COUNT(rg.repo_id) AS repo_count \
+         FROM groups g \
+         LEFT JOIN repo_groups rg ON rg.group_id = g.id \
+         GROUP BY g.id, g.name, g.color \
+         ORDER BY g.name",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(GroupSummary {
+            id: r.try_get("id")?,
+            name: r.try_get("name")?,
+            color: r.try_get("color")?,
+            repo_count: r.try_get("repo_count")?,
+        });
+    }
+    Ok(out)
+}
+
+/// Create a group, returning it as a [`GroupSummary`] (a fresh group has
+/// `repo_count` 0). A duplicate name (the `UNIQUE(name)` constraint) maps to
+/// [`AppError::InvalidSetting`] with `field: "name"` so the caller gets a clear
+/// "that name is taken" rather than a raw database error.
+pub async fn group_create(
+    pool: &SqlitePool,
+    name: &str,
+    color: Option<&str>,
+) -> Result<GroupSummary, AppError> {
+    let res = sqlx::query("INSERT INTO groups (name, color) VALUES (?, ?)")
+        .bind(name)
+        .bind(color)
+        .execute(pool)
+        .await;
+    let inserted = match res {
+        Ok(inserted) => inserted,
+        Err(e) => {
+            if is_unique_violation(&e) {
+                return Err(AppError::InvalidSetting {
+                    field: "name".into(),
+                });
+            }
+            return Err(AppError::from(e));
+        }
+    };
+    Ok(GroupSummary {
+        id: inserted.last_insert_rowid(),
+        name: name.to_string(),
+        color: color.map(|s| s.to_string()),
+        repo_count: 0,
+    })
+}
+
+/// Rename a group. A duplicate name maps to [`AppError::InvalidSetting`]
+/// (`field: "name"`); a missing id (0 rows affected) is [`AppError::NotFound`].
+pub async fn group_rename(pool: &SqlitePool, id: i64, name: &str) -> Result<(), AppError> {
+    let res = sqlx::query("UPDATE groups SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(pool)
+        .await;
+    let updated = match res {
+        Ok(updated) => updated,
+        Err(e) => {
+            if is_unique_violation(&e) {
+                return Err(AppError::InvalidSetting {
+                    field: "name".into(),
+                });
+            }
+            return Err(AppError::from(e));
+        }
+    };
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: format!("group {id}"),
+        });
+    }
+    Ok(())
+}
+
+/// Delete a group. Idempotent (a missing id is not an error). The `ON DELETE
+/// CASCADE` on `repo_groups.group_id` clears every membership of the group.
+pub async fn group_delete(pool: &SqlitePool, id: i64) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM groups WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Assign a repo to a group. Idempotent: `INSERT OR IGNORE` swallows the
+/// duplicate-membership primary-key collision so re-assigning is a no-op.
+///
+/// Foreign keys are enforced on the pool (`db::open_pool` sets `foreign_keys(true)`),
+/// and `OR IGNORE` does NOT suppress a FOREIGN KEY violation, so a missing repo or
+/// group surfaces as an error here; it is mapped to [`AppError::NotFound`].
+pub async fn group_assign(pool: &SqlitePool, repo_id: i64, group_id: i64) -> Result<(), AppError> {
+    let res = sqlx::query("INSERT OR IGNORE INTO repo_groups (repo_id, group_id) VALUES (?, ?)")
+        .bind(repo_id)
+        .bind(group_id)
+        .execute(pool)
+        .await;
+    if let Err(e) = res {
+        if is_foreign_key_violation(&e) {
+            return Err(AppError::NotFound {
+                entity: format!("repo {repo_id} or group {group_id}"),
+            });
+        }
+        return Err(AppError::from(e));
+    }
+    Ok(())
+}
+
+/// Remove a repo from a group. Idempotent (deleting a nonexistent membership is
+/// not an error).
+pub async fn group_unassign(
+    pool: &SqlitePool,
+    repo_id: i64,
+    group_id: i64,
+) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM repo_groups WHERE repo_id = ? AND group_id = ?")
+        .bind(repo_id)
+        .bind(group_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// The ids of every group a repo belongs to (ascending).
+pub async fn groups_for_repo(pool: &SqlitePool, repo_id: i64) -> Result<Vec<i64>, AppError> {
+    let rows = sqlx::query("SELECT group_id FROM repo_groups WHERE repo_id = ? ORDER BY group_id")
+        .bind(repo_id)
+        .fetch_all(pool)
+        .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push(r.try_get::<i64, _>("group_id")?);
+    }
+    Ok(out)
+}
+
+/// Whether a sqlx error is a SQLite UNIQUE constraint violation. Mirrors the
+/// `repo.rs` helper: check the extended/primary result codes first, then fall
+/// back to the message for portability across sqlx versions.
+fn is_unique_violation(err: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = err {
+        if let Some(code) = db_err.code() {
+            if code == "2067" || code == "1555" || code == "19" {
+                return true;
+            }
+        }
+        return db_err
+            .message()
+            .to_ascii_lowercase()
+            .contains("unique constraint failed");
+    }
+    false
+}
+
+/// Whether a sqlx error is a SQLite FOREIGN KEY constraint violation. SQLite
+/// reports these with extended code "787" (`SQLITE_CONSTRAINT_FOREIGNKEY`) / the
+/// primary "19"; the message check is the portable fallback.
+fn is_foreign_key_violation(err: &sqlx::Error) -> bool {
+    if let sqlx::Error::Database(db_err) = err {
+        if let Some(code) = db_err.code() {
+            if code == "787" || code == "19" {
+                return true;
+            }
+        }
+        return db_err
+            .message()
+            .to_ascii_lowercase()
+            .contains("foreign key constraint failed");
+    }
+    false
+}
+
 /// SQLite stores booleans as 0/1 INTEGERs; map to Rust `bool`.
 fn int_to_bool(v: i64) -> bool {
     v != 0
@@ -899,5 +1088,163 @@ mod tests {
             repo_scan_parent(&pool, &git, &file).await,
             Err(AppError::NotADirectory { .. })
         ));
+    }
+
+    // =========================================================================
+    // Groups / tags
+    // =========================================================================
+
+    /// Insert a bare `repos` row directly (only the NOT NULL columns without a
+    /// default), returning its id. Git-independent, so the group tests always run
+    /// rather than skipping when git is absent.
+    async fn insert_repo(pool: &SqlitePool, name: &str, path: &str) -> i64 {
+        sqlx::query("INSERT INTO repos (local_name, local_path, created_at) VALUES (?, ?, ?)")
+            .bind(name)
+            .bind(path)
+            .bind(0_i64)
+            .execute(pool)
+            .await
+            .expect("insert repo")
+            .last_insert_rowid()
+    }
+
+    #[tokio::test]
+    async fn group_create_lists_with_repo_count() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        // Create two groups; a fresh group reports repo_count 0.
+        let backend = group_create(&pool, "backend", Some("#3b82f6"))
+            .await
+            .expect("create backend");
+        assert_eq!(backend.repo_count, 0);
+        assert_eq!(backend.color.as_deref(), Some("#3b82f6"));
+        group_create(&pool, "frontend", None)
+            .await
+            .expect("create frontend");
+
+        // Assign two repos to backend so its count reflects the memberships.
+        let r1 = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
+        let r2 = insert_repo(&pool, "beta", "C:/repos/beta").await;
+        group_assign(&pool, r1, backend.id).await.expect("assign r1");
+        group_assign(&pool, r2, backend.id).await.expect("assign r2");
+
+        // list is name-ordered and carries the counts.
+        let groups = groups_list(&pool).await.expect("list");
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].name, "backend");
+        assert_eq!(groups[0].repo_count, 2);
+        assert_eq!(groups[1].name, "frontend");
+        assert_eq!(groups[1].repo_count, 0);
+    }
+
+    #[tokio::test]
+    async fn duplicate_name_on_create_and_rename_maps_to_invalid_setting() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        group_create(&pool, "backend", None).await.expect("create");
+        let other = group_create(&pool, "frontend", None)
+            .await
+            .expect("create other");
+
+        // A duplicate name on create maps to InvalidSetting { field: "name" }.
+        let dup = group_create(&pool, "backend", None).await;
+        assert!(
+            matches!(&dup, Err(AppError::InvalidSetting { field }) if field == "name"),
+            "duplicate create name must map to InvalidSetting, got {dup:?}"
+        );
+
+        // A rename that collides with an existing name maps the same way.
+        let clash = group_rename(&pool, other.id, "backend").await;
+        assert!(
+            matches!(&clash, Err(AppError::InvalidSetting { field }) if field == "name"),
+            "duplicate rename name must map to InvalidSetting, got {clash:?}"
+        );
+
+        // Renaming a missing group id is NotFound.
+        let missing = group_rename(&pool, 9999, "whatever").await;
+        assert!(
+            matches!(missing, Err(AppError::NotFound { .. })),
+            "rename of a missing group must be NotFound"
+        );
+    }
+
+    #[tokio::test]
+    async fn assign_lists_and_unassign_round_trip() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let g1 = group_create(&pool, "one", None).await.expect("g1").id;
+        let g2 = group_create(&pool, "two", None).await.expect("g2").id;
+        let repo = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
+
+        // Assign to both groups; assigning twice is idempotent (INSERT OR IGNORE).
+        group_assign(&pool, repo, g1).await.expect("assign g1");
+        group_assign(&pool, repo, g2).await.expect("assign g2");
+        group_assign(&pool, repo, g1).await.expect("assign g1 again");
+
+        // groups_for_repo is ascending and de-duplicated by the primary key.
+        let mut expected = vec![g1, g2];
+        expected.sort_unstable();
+        assert_eq!(groups_for_repo(&pool, repo).await.expect("for repo"), expected);
+
+        // Unassign one; the other remains. Unassigning again is a no-op.
+        group_unassign(&pool, repo, g1).await.expect("unassign g1");
+        group_unassign(&pool, repo, g1).await.expect("unassign g1 again");
+        assert_eq!(groups_for_repo(&pool, repo).await.expect("for repo"), vec![g2]);
+    }
+
+    #[tokio::test]
+    async fn assign_missing_repo_or_group_is_not_found() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let group = group_create(&pool, "one", None).await.expect("group").id;
+        let repo = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
+
+        // A missing group id (foreign key on repo_groups.group_id) is NotFound.
+        let bad_group = group_assign(&pool, repo, 9999).await;
+        assert!(
+            matches!(bad_group, Err(AppError::NotFound { .. })),
+            "assigning to a missing group must be NotFound, got {bad_group:?}"
+        );
+
+        // A missing repo id (foreign key on repo_groups.repo_id) is NotFound.
+        let bad_repo = group_assign(&pool, 9999, group).await;
+        assert!(
+            matches!(bad_repo, Err(AppError::NotFound { .. })),
+            "assigning a missing repo must be NotFound, got {bad_repo:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cascades_memberships_and_is_idempotent() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let group = group_create(&pool, "one", None).await.expect("group").id;
+        let repo = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
+        group_assign(&pool, repo, group).await.expect("assign");
+        assert_eq!(groups_for_repo(&pool, repo).await.unwrap(), vec![group]);
+
+        // Deleting the group cascades away the repo_groups membership.
+        group_delete(&pool, group).await.expect("delete");
+        assert!(
+            groups_for_repo(&pool, repo).await.unwrap().is_empty(),
+            "ON DELETE CASCADE must clear the repo's membership"
+        );
+        let membership_count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM repo_groups")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("c")
+            .unwrap();
+        assert_eq!(membership_count, 0, "no orphaned memberships remain");
+
+        // Deleting again (and deleting a never-existent id) is a no-op, not an error.
+        group_delete(&pool, group).await.expect("delete again");
+        group_delete(&pool, 9999).await.expect("delete missing");
+        assert!(groups_list(&pool).await.unwrap().is_empty());
     }
 }
