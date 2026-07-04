@@ -70,6 +70,14 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// The host's current UTC offset in whole minutes (e.g. `-480` for PST), or 0
+/// (UTC) if it cannot be determined. The core is timezone-free, so the edge
+/// supplies this to [`SystemClock::with_utc_offset_minutes`] so the scheduler
+/// evaluates quiet hours in the user's local time, not UTC.
+pub fn local_offset_minutes() -> i64 {
+    i64::from(local_offset().whole_minutes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

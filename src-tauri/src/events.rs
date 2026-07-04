@@ -127,3 +127,13 @@ pub fn emit_update_completed(app: &AppHandle, repo_id: i64, outcome: &str) {
     })
     .emit(app);
 }
+
+/// Emit the `scheduler:tick` event after each resident-loop cycle (edge-wiring).
+///
+/// `checked` and `due` both carry the count of repos the tick actually ran;
+/// `tick_once` runs exactly the due set, so the two counts coincide until the
+/// scheduler grows a distinct "due but skipped" return. Best-effort like the
+/// other emits: a missing webview must never tear down the scheduler loop.
+pub fn emit_scheduler_tick(app: &AppHandle, checked: i64, due: i64, at: i64) {
+    let _ = SchedulerTick(SchedulerTickPayload { checked, due, at }).emit(app);
+}

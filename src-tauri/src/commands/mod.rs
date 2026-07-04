@@ -44,6 +44,10 @@ pub async fn repo_check_now(
     id: i64,
 ) -> Result<CheckResult, AppError> {
     let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
+    // Serialize with any scheduled job on the same repo via the shared per-repo
+    // lock: hold it across the whole check so a manual and a scheduled git op
+    // never run two `git` processes in one working tree at once.
+    let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
     let result = reposync_core::repo::check_now(&state.pool, git, RepoId(id)).await?;
     emit_check_completed(&app, &result);
     Ok(result)
@@ -104,7 +108,12 @@ pub async fn repo_scan_parent(
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
-    reposync_core::store::repo_remove(&state.pool, RepoId(id)).await
+    // Hold the per-repo lock across the delete so a scheduled job on this repo
+    // cannot race the removal, then evict the now-dead lock entry.
+    let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
+    reposync_core::store::repo_remove(&state.pool, RepoId(id)).await?;
+    state.locks.remove(RepoId(id));
+    Ok(())
 }
 
 /// Enable or disable scheduled checks for a repo.
@@ -147,6 +156,9 @@ pub async fn repo_update_now(
     mode: UpdateMode,
 ) -> Result<UpdateResult, AppError> {
     let git = state.git.as_ref().ok_or(AppError::GitNotFound)?;
+    // Serialize with any scheduled job on the same repo via the shared per-repo
+    // lock, held across the entire update (started -> execute -> completed).
+    let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
     // The started event carries the requested mode label (snake_case wire form).
     emit_update_started(&app, id, update_mode_label(&mode));
     let result = reposync_core::repo::update_now(&state.pool, git, RepoId(id), mode).await?;

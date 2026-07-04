@@ -51,6 +51,11 @@ use events::{
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
     pub git: Option<reposync_core::git::SystemGitEngine>,
+    /// The per-repo lock map, SHARED with the resident scheduler (when git is
+    /// present it is the scheduler's own `RepoLocks`). Manual command handlers
+    /// acquire the same per-repo mutex the scheduler's jobs do, so a "check now"
+    /// and a scheduled check never run two `git` processes in one working tree.
+    pub locks: reposync_core::scheduler::RepoLocks,
     pub db_recovered: bool,
     pub db_backup_path: Option<std::path::PathBuf>,
 }
@@ -183,21 +188,98 @@ pub fn run() {
                 // scheduler's launch wiring when that lands.
                 reposync_core::activity::sweep_at_startup(&pool).await;
                 // Git absence must NOT block launch (E-03 degraded-state
-                // contract). Store None on GitNotFound and log a warning; the
-                // pool/migrations above stay fatal because the DB is essential.
-                let git = match reposync_core::git::SystemGitEngine::discover() {
-                    Ok(engine) => Some(engine),
-                    Err(_) => {
-                        eprintln!(
-                            "warning: git executable not found; git-dependent \
-                             actions will report GitNotFound until git is available"
-                        );
-                        None
-                    }
+                // contract). Honor the user's configured git path (Settings)
+                // before falling back to PATH discovery, so a user whose git is
+                // not on PATH can point RepoSync at it and recover on restart.
+                // Store None when git is unavailable so git-dependent commands
+                // report GitNotFound; the pool/migrations above stay fatal because
+                // the DB is essential.
+                let configured_git_path = reposync_core::store::settings_get(&pool)
+                    .await
+                    .ok()
+                    .and_then(|s| s.git_executable_path);
+                let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
+                let git = if engine.availability().is_unavailable() {
+                    eprintln!(
+                        "warning: git executable not found; git-dependent \
+                         actions will report GitNotFound until git is available"
+                    );
+                    None
+                } else {
+                    Some(engine)
                 };
+
+                // Edge-wiring: spawn the resident scheduler and build the shared
+                // per-repo lock map. The scheduler runs the jittered startup pass,
+                // then ticks every minute for the process lifetime - checking due
+                // repos and emitting `scheduler:tick` so the UI refreshes live off
+                // the same event the frontend already listens for. Only spawn when
+                // git is present: without it every job would return GitNotFound, so
+                // the degraded (git-absent) launch stays job-free. The tick loop is
+                // owned here (not `Scheduler::run`) because only the edge holds the
+                // `AppHandle` needed to emit the tick; the core scheduler is
+                // deliberately Tauri-free (E-08).
+                //
+                // `locks` is the scheduler's OWN `RepoLocks` (cloned; it is a shared
+                // Arc-backed map), handed to AppState so the manual command handlers
+                // contend the exact locks the scheduler's jobs do. When git is
+                // absent there is no scheduler, but manual commands still take a
+                // (then-uncontended) lock from a standalone map.
+                let locks = if let Some(engine) = &git {
+                    use reposync_core::scheduler::{
+                        DbDueQuery, DbOutcomeWriter, Scheduler, SystemClock, SystemJitter,
+                        UpdateNowJobRunner, DEFAULT_CONCURRENCY, ONE_MINUTE,
+                    };
+                    use std::sync::Arc;
+
+                    // pool/engine are cloned (both cheap: SqlitePool and the git
+                    // engine wrap shared handles) so the originals still move into
+                    // AppState below. The clock carries the host's local UTC offset
+                    // so quiet hours are evaluated in local time, not UTC.
+                    let scheduler = Scheduler::new(
+                        Arc::new(SystemClock::with_utc_offset_minutes(
+                            crate::localtime::local_offset_minutes(),
+                        )),
+                        Arc::new(SystemJitter::new()),
+                        DbDueQuery::new(pool.clone()),
+                        UpdateNowJobRunner::new(pool.clone(), Arc::new(engine.clone())),
+                        DbOutcomeWriter::new(pool.clone()),
+                        DEFAULT_CONCURRENCY,
+                    );
+                    let locks = scheduler.locks();
+                    let tick_handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        // Startup pass is best-effort; a failure must not kill the loop.
+                        if let Err(e) = scheduler.start().await {
+                            eprintln!("scheduler: startup pass failed: {e}");
+                        }
+                        let mut interval = tokio::time::interval(ONE_MINUTE);
+                        interval.tick().await; // consume the immediate first tick
+                        loop {
+                            interval.tick().await;
+                            match scheduler.tick_once().await {
+                                Ok(ran) => {
+                                    let ran = ran as i64;
+                                    crate::events::emit_scheduler_tick(
+                                        &tick_handle,
+                                        ran,
+                                        ran,
+                                        crate::localtime::now_unix(),
+                                    );
+                                }
+                                Err(e) => eprintln!("scheduler: tick failed: {e}"),
+                            }
+                        }
+                    });
+                    locks
+                } else {
+                    reposync_core::scheduler::RepoLocks::default()
+                };
+
                 handle.manage(AppState {
                     pool,
                     git,
+                    locks,
                     db_recovered,
                     db_backup_path,
                 });
