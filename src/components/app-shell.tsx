@@ -1,0 +1,87 @@
+import { useEffect, useState } from "react";
+import { Activity, LayoutDashboard, List, Moon, Settings, Sun } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { DashboardScreen } from "@/screens/dashboard";
+import { ReposScreen } from "@/screens/repos";
+import { ActivityScreen } from "@/screens/activity";
+import { SettingsScreen } from "@/screens/settings";
+
+type View = "dashboard" | "repos" | "activity" | "settings";
+
+const NAV: { id: View; label: string; Icon: typeof LayoutDashboard }[] = [
+  { id: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
+  { id: "repos", label: "Repos", Icon: List },
+  { id: "activity", label: "Activity", Icon: Activity },
+  { id: "settings", label: "Settings", Icon: Settings },
+];
+
+function useTheme() {
+  const [dark, setDark] = useState(false);
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", dark);
+  }, [dark]);
+  return { dark, toggle: () => setDark((d) => !d) };
+}
+
+export function AppShell() {
+  const [view, setView] = useState<View>("dashboard");
+  const { dark, toggle } = useTheme();
+  const active = NAV.find((n) => n.id === view);
+
+  return (
+    <div className="grid h-svh grid-cols-[232px_1fr] bg-background text-foreground">
+      <aside className="flex min-h-0 flex-col border-r border-border bg-sidebar">
+        <div className="flex items-center gap-2.5 px-4 py-4">
+          <div className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
+            R
+          </div>
+          <span className="font-semibold">
+            Repo<span className="text-primary">Sync</span>
+          </span>
+          <span className="ml-auto font-mono text-[11px] text-muted-foreground">0.9.0</span>
+        </div>
+        <nav className="flex flex-col gap-0.5 px-2.5 py-2">
+          {NAV.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              onClick={() => setView(id)}
+              className={cn(
+                "flex items-center gap-3 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
+                view === id
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              <Icon className="size-[17px]" />
+              {label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <main className="flex min-w-0 flex-col">
+        <header className="flex items-center gap-3 border-b border-border px-6 py-3">
+          <h1 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+            RepoSync / <span className="text-foreground">{active ? active.label : ""}</span>
+          </h1>
+          <Button
+            variant="outline"
+            size="icon"
+            className="ml-auto"
+            onClick={toggle}
+            title="Toggle light / dark"
+          >
+            {dark ? <Sun /> : <Moon />}
+          </Button>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto p-6">
+          {view === "dashboard" && <DashboardScreen onOpenRepos={() => setView("repos")} />}
+          {view === "repos" && <ReposScreen />}
+          {view === "activity" && <ActivityScreen />}
+          {view === "settings" && <SettingsScreen />}
+        </div>
+      </main>
+    </div>
+  );
+}
