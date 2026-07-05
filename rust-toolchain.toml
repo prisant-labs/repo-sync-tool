@@ -1,0 +1,9 @@
+# Pin the Rust toolchain channel for RepoSync (effort E-01 - Foundation).
+#
+# A stable channel keeps CI (Windows + macOS) and local builds on the same
+# compiler. clippy and rustfmt are required components so the CI lint gate
+# (cargo clippy --all -- -D warnings) and formatting checks always have them.
+
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

@@ -5,8 +5,8 @@ last_updated: 2026-05-08
 owner: jprisant
 audience: internal (founder, agentic dev contributors)
 source_inputs:
-  - _LOCAL/repo_updater_functionality_breakdown_gpt-5.4.md
-  - _LOCAL/ai-chat_gpt-5.4_Centralized Gihub Repo Management_2026-04-30_12-38-16.md
+  - _local/repo_updater_functionality_breakdown_gpt-5.4.md
+  - _local/ai-chat_gpt-5.4_Centralized Gihub Repo Management_2026-04-30_12-38-16.md
 tech_stack: Tauri v2, Rust, React, TypeScript, shadcn/ui, SQLite
 ---
 
@@ -240,7 +240,7 @@ The IPC boundary is the API. Treat it like any other API: stable, typed, version
 
 ```rust
 // Repo registry
-#[tauri::command] async fn repos_list(filter: RepoFilter) -> Result<Vec<RepoSummary>, AppError>;
+#[tauri::command] async fn repo_list(filter: RepoFilter) -> Result<Vec<RepoSummary>, AppError>;
 #[tauri::command] async fn repo_get(id: RepoId) -> Result<RepoDetail, AppError>;
 #[tauri::command] async fn repo_add_path(path: PathBuf) -> Result<RepoId, AppError>;
 #[tauri::command] async fn repo_scan_parent(path: PathBuf) -> Result<ScanResult, AppError>;
@@ -916,7 +916,7 @@ Each row below expands into description, desired outcome context, approach optio
 
 ### 9.1 Final brand name and `.com`
 
-**Description.** RepoSync is the working title. The chat in `_LOCAL/` flags that the term is crowded across GitHub projects, Google Cloud Config Sync docs, and Android tooling.
+**Description.** RepoSync is the working title. The chat in `_local/` flags that the term is crowded across GitHub projects, Google Cloud Config Sync docs, and Android tooling.
 
 **Desired outcome context.** A defensible, ownable name with clean `.com`, GitHub org, and reasonable trademark posture. Locking before V1 GA prevents post-launch rebrand churn.
 
@@ -933,7 +933,7 @@ Each row below expands into description, desired outcome context, approach optio
 
 ### 9.2 Open source or closed source
 
-**Description.** The repo is currently `_LOCAL` only. Decision: publish as OSS, keep closed, or split (open core + closed app shell).
+**Description.** The repo is currently `_local` only. Decision: publish as OSS, keep closed, or split (open core + closed app shell).
 
 **Desired outcome context.** Match the legal and distribution posture to the project's framing as a community contribution. Make adoption, forking, and contributing as frictionless as the chosen wedge deserves.
 
@@ -1123,7 +1123,7 @@ Each row below expands into description, desired outcome context, approach optio
 
 ## 10. Naming Status
 
-The chat in `_LOCAL/` lands on **RepoSync** as the preferred name, but flags that the `.com` and namespace are crowded. Until the brand decision is made:
+The chat in `_local/` lands on **RepoSync** as the preferred name, but flags that the `.com` and namespace are crowded. Until the brand decision is made:
 
 - Use **RepoSync** as the working title in code, docs, and UI.
 - Keep the package / crate names neutral where possible (`reposync-core`, `reposync-app`) so a rebrand is mostly a search-and-replace.
@@ -1178,7 +1178,7 @@ repo-sync-tool/
 ├── docs/
 │   ├── internal/                 # this document, decisions, plans
 │   └── (future) public/          # user-facing docs
-└── _LOCAL/                       # untracked workspace, raw notes
+└── _local/                       # untracked workspace, raw notes
 ```
 
 ### B. Rejected alternatives

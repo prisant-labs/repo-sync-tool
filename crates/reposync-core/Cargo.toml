@@ -1,0 +1,55 @@
+[package]
+name = "reposync-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# reposync-core is the Tauri-free logic crate. The load-bearing invariant (AC2)
+# is that this crate must NOT depend on tauri or any tauri-* crate, even
+# transitively. The week-1 tracer (E-02/E-03 first slices) adds the persistence,
+# git engine, IPC payload, and error taxonomy here.
+#
+# Dependency hygiene rules enforced in CI and verified by `cargo tree`:
+#   - git2 is vendored-libgit2 ONLY (no OpenSSL, no libssh2, no network
+#     transports); all network git goes through the git CLI in git::cli.
+#   - sqlx uses the RUNTIME query API (sqlx::query / query_as / bind), so no
+#     DATABASE_URL and no compile-time macros.
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+# `serde_json` feature gives serde_json::Value a specta::Type impl (used by the
+# frozen AppError wire shape); `derive` provides the #[derive(specta::Type)] macro.
+specta = { workspace = true, features = ["derive", "serde_json"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+git2 = { workspace = true, default-features = false, features = ["vendored-libgit2"] }
+# Clean canonicalization: dunce::canonicalize strips the Windows extended-length
+# (\\?\) prefix that std::fs::canonicalize adds, so the paths persisted here open
+# cleanly in explorer/editors/terminals at the edge. Tauri-free (zero deps).
+dunce = { workspace = true }
+# `macros` is required for the sqlx::migrate! macro (it lives in sqlx-macros);
+# the runtime query API itself does not need it, but migrate! does.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+# E-10: the GitHub metadata HTTP client, pinned to RUSTLS with bundled webpki roots
+# (NO OpenSSL, NO native-tls, no OS cert-store dependency) - matching git2's
+# vendored-libgit2 choice so the core carries no platform TLS. The HTTP boundary is
+# behind a transport seam, so tests never touch the network; this dep is exercised
+# only by the thin production impl. (Chose reqwest+rustls over octocrab: octocrab is
+# built on hyper, not reqwest, so the spec's "octocrab on reqwest" is contradictory;
+# reqwest+rustls satisfies AC2 + the no-OpenSSL hard rule with full control.)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+# `tempfile` is an OPTIONAL dependency, enabled only by the `test-support`
+# feature (and always present as a dev-dependency below). Keeping it optional
+# means a default `cargo build` of the library does not compile the E-04 fixture
+# harness; production builds never include it.
+tempfile = { version = "3", optional = true }
+
+[features]
+# `test-support` exposes the E-04 git fixture harness (git::fixtures) to
+# integration tests and downstream test trees (E-07 policy, E-08 scheduler).
+# It pulls `tempfile` into the build, so it is OFF by default and only enabled
+# for test builds - production builds never include the harness.
+test-support = ["dep:tempfile"]
+
+[dev-dependencies]
+tempfile = "3"

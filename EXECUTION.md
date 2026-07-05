@@ -53,4 +53,4 @@ Anything that spends money, asserts a legal identity, publishes to the world, or
 - `reposync-core` must never import `tauri`, even transitively.
 - Co-authored-by trailer on agent commits.
 - No force-push without an explicit human go-ahead.
-- Pre-committed **descope triggers** (see `AGENTS/efforts/README.md`) convert slippage into a deliberate, pre-agreed cut rather than a silent slide.
+- Pre-committed **descope triggers** (see `docs/internal/program-roadmap.md`) convert slippage into a deliberate, pre-agreed cut rather than a silent slide.

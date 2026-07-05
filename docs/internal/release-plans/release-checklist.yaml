@@ -1,0 +1,36 @@
+# Doc-update items to work through at RepoSync release time.
+#
+# This is the project's source list of docs that must be updated before a tag.
+# The release plan's Doc-Update Checklist and the cut runbook draw on it. It is a
+# plain convention worked through by hand - not tied to any skill, and not
+# canonical tooling. A release tool could consume it later if one is adopted.
+#
+# RepoSync is a desktop app, not an agent plugin, so plugin-only items
+# (plugin.json, SKILL.md, HISTORY.md, skills README) intentionally do NOT appear.
+#
+# Most rows apply to every tag. A few (winget manifest submission, the
+# updater endpoint's public reachability) only apply once the repo has gone
+# through the public flip; those rows say so explicitly rather than being
+# left out, since RepoSync's v0.9.0 ships PRIVATE with the rest of this
+# checklist already in force. See runbook_cut-tag-release.md's Public flip
+# checklist appendix for the full private-versus-public distinction.
+
+docs:
+  - doc: "scripts/bump-version.mjs"
+    update: "Run it so Cargo workspace + src-tauri/Cargo.toml + package.json + tauri.conf.json all carry the release version"
+  - doc: "CHANGELOG.md"
+    update: "Move [Unreleased] into a vX.Y.Z section with the date; open a fresh [Unreleased]"
+  - doc: "README.md"
+    update: "Bump version references; install instructions for the Windows artifact"
+  - doc: "docs/architecture.md, docs/explanation.md, docs/faq.md"
+    update: "Reflect the shipped state; remove not-built-yet hedges that no longer hold"
+  - doc: "docs/internal/program-roadmap.md"
+    update: "Mark shipped efforts; record descope-trigger outcomes"
+  - doc: "docs/backlog.md"
+    update: "Move resolved items out; confirm V1.1 items parked"
+  - doc: "GitHub Release"
+    update: "Draft from the CHANGELOG section; attach Windows + (if shipping) macOS artifacts, plus the latest.json updater manifest once E-18 (auto-update and distribution) has landed; state the macOS posture. While the repo is private, the agent may cut and publish this Release directly (EXECUTION.md's private/pre-public merge policy); once the repo is public, cutting a release tag/Release is human-only (EXECUTION.md's human-only list)."
+  - doc: "latest.json updater manifest"
+    update: "Verify the release workflow (.github/workflows/release.yml) generates and attaches a valid, signed latest.json alongside the installer, before the installer smoke test runs against the downloaded Release assets. Introduced by E-18 (auto-update and distribution, docs/internal/release-plans/plan_v0.9.0/E-18-auto-update/spec.md); the updater endpoint itself only needs to resolve publicly once the repo reaches the public flip (runbook_cut-tag-release.md, Public flip checklist appendix)."
+  - doc: "winget manifest"
+    update: "Prepare the manifest during v0.9.0 (E-18), but do NOT submit to microsoft/winget-pkgs while the repo is private; winget requires public artifact URLs that do not exist yet. Submission is a Public flip checklist item (runbook_cut-tag-release.md appendix), not a per-tag doc-update item."

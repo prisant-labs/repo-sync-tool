@@ -1,0 +1,68 @@
+# src-tauri - the thin Tauri v2 shell for RepoSync.
+#
+# Owning effort: E-01 (Foundation, Workspace, and CI).
+# This crate is the desktop binary. All product logic lives in the
+# Tauri-free `reposync-core` crate; this shell only wires the runtime,
+# IPC surface (E-06), events, tray, and windows on top of that core.
+#
+# Versions for shared crates are pinned in the root [workspace.dependencies]
+# table and referenced here with `workspace = true` so later efforts flip
+# them on consistently. The tauri* / specta / tauri-specta pins are EXACT
+# at the workspace root (AC7).
+
+[package]
+name = "reposync"
+version = "0.9.0"
+description = "RepoSync - a cross-platform repository sync tray utility"
+authors = ["RepoSync contributors"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/product-on-purpose/repo-sync-tool"
+default-run = "reposync"
+
+# Tauri v2 library pattern: the app entry point lives in the library
+# (`reposync_lib::run`) and `main.rs` just calls it. The library crate
+# types are required for the mobile entry point and desktop linking.
+[lib]
+name = "reposync_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+tauri = { workspace = true, features = ["tray-icon"] }
+tauri-specta = { workspace = true, features = ["derive", "typescript"] }
+# E-14 desktop notifications: OS-toast plugin. Registered in `lib.rs`; the
+# `notification:default` capability permission is granted in `capabilities/default.json`.
+tauri-plugin-notification = { workspace = true }
+# E-15 autostart (launch on login): OS launch-on-login plugin. Registered in `lib.rs`
+# (with a LaunchAgent macOS launcher and the `--autostart` launch argument); the
+# `autostart:default` capability permission is granted in `capabilities/default.json`.
+# The pure reconcile/detect decisions live in `reposync-core::autostart`; this shell
+# owns only the enable/disable/is_enabled actuation and the start-minimized behavior.
+tauri-plugin-autostart = { workspace = true }
+# E-18 auto-update: the self-update plugin (check/download/verify/install behind one
+# API) plus the process plugin for the post-install relaunch. Registered in `lib.rs`;
+# the `updater:default` + `process:default` capability permissions are granted in
+# `capabilities/default.json`. Signature verification against the committed
+# `plugins.updater.pubkey` is the integrity boundary. Edge-only - reposync-core never
+# depends on either; only the thin `app_check_for_update` / `app_install_update`
+# wrappers and the on-launch check live here.
+tauri-plugin-updater = { workspace = true }
+tauri-plugin-process = { workspace = true }
+specta = { workspace = true }
+specta-typescript = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reposync-core = { path = "../crates/reposync-core" }
+# E-12 tracer: the shell hosts the async runtime, the SQLite pool, and the
+# git engine that reposync-core operates on. tokio is the runtime tauri-specta
+# commands run under; sqlx provides the SqlitePool type held in AppState.
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tokio = { workspace = true }
+# Edge local-time (the edge-wiring effort): the timezone-free core cannot compute
+# the user's local day / minute, and the headless scheduler cannot ask the webview,
+# so the edge owns it via the `time` crate's local-offset (Win32 on Windows; a UTC
+# fallback elsewhere). Core stays time-free - this pin is edge-only.
+time = { workspace = true, features = ["local-offset"] }

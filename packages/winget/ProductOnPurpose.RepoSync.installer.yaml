@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+#
+# E-18 (auto-update and distribution) winget INSTALLER manifest.
+#
+# Targets the Tauri NSIS installer (`nullsoft`), which is the smooth per-user
+# auto-update path (E-18: NSIS is the updater artifact; MSI stays a manual download).
+# Per-user scope, no elevation, matching E-12's downloadBootstrapper install decision.
+#
+# PLACEHOLDERS while private (finalized at the public flip against the real public
+# release asset): InstallerUrl and InstallerSha256. The SHA256 below is a syntactically
+# valid 64-hex placeholder so `winget validate` passes offline; it is NOT the real hash.
+# At the flip: download the published NSIS installer, compute its SHA256, set both
+# fields, re-run `winget validate`, then `wingetcreate submit`.
+PackageIdentifier: ProductOnPurpose.RepoSync
+PackageVersion: 0.9.0
+InstallerType: nullsoft
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/product-on-purpose/repo-sync-tool/releases/download/v0.9.0/RepoSync_0.9.0_x64-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

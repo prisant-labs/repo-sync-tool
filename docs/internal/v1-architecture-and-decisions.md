@@ -6,13 +6,14 @@ owner: jprisant
 audience: internal, shareable (founder, agentic dev contributors)
 extends: docs/internal/strategy-and-roadmap.md
 related:
-  - docs/internal/mockups/
+  - DESIGN.md (canonical design system, Graphite direction)
+  - _local/gui/archived-mockups/ (draft mockups, archived 2026-07-03; superseded)
 tech_stack: Tauri v2, Rust, React, TypeScript, shadcn/ui, SQLite
 ---
 
 # RepoSync V1, Architecture and Decisions
 
-> A working architecture and decision record for the cross-platform V1. This document captures where a design collaboration between jp and an AI coding agent (Claude) landed: it synthesizes the existing `strategy-and-roadmap.md`, a multi-agent analysis of that plan, the four UI mockups under `docs/internal/mockups/`, and the decisions reached in conversation. It is written to be shared.
+> A working architecture and decision record for the cross-platform V1. This document captures where a design collaboration between jp and an AI coding agent (Claude) landed: it synthesizes the existing `strategy-and-roadmap.md`, a multi-agent analysis of that plan, the four UI mockups (now archived to `_local/gui/archived-mockups/`, superseded by the Graphite design language in `DESIGN.md`), and the decisions reached in conversation. It is written to be shared.
 
 ## 1. What this document is
 
@@ -37,7 +38,7 @@ This is the running record of where each decision stands. "Decided" means settle
 | Human/agent autonomy boundary | Needs ratification | jp | Human-only allowlist + tiered merges; capture in `EXECUTION.md` (Section 3) |
 | V1 scope line | Needs ratification | jp | Keep core loop + unauthenticated GitHub enrichment + daily summary; cut the tray popup window, keyring PAT, weekly summary, groups, saved filters, recipes, auto-updater to V1.1 (Section 3) |
 | Code signing | Needs decision (money) | jp | Decouple from GA: ship first public build unsigned, add Windows signing via Azure Trusted Signing as a fast-follow; binds at ship, not at start |
-| Go-public timing + first commit | Needs decision | jp | Go public at Phase 0 exit; quarantine `docs/internal/` and `_LOCAL/` out of public history; one-way door |
+| Go-public timing + first commit | Needs decision | jp | Go public at Phase 0 exit; quarantine `docs/internal/` and `_local/` out of public history; one-way door |
 | License | Needs decision | jp | MIT default (Apache 2.0 defensible); binds only at first public commit |
 | Brand name | Deferred to pre-GA | jp | Keep "RepoSync" working title; isolate the brand string to one constant |
 | sqlx macro posture | Agent default (confirm) | agent/jp | Runtime query API (no compile-time `DATABASE_URL`/offline-cache friction), or macros + committed `.sqlx` cache + CI check |
@@ -264,6 +265,8 @@ graph LR
 | **SHOULD (keep)** | Lightweight **unauthenticated** GitHub enrichment with ETag caching; daily summary | Cheap to build, high delight, and they anchor the tray's value (new releases, "what changed today") without the cross-platform secrets surface. |
 | **CUT to V1.1** | Tray popup window (keep the native right-click menu); keyring PAT; weekly summary; grouping/tags; saved filters; custom command recipes; auto-updater | Each is either heavy, optional, or unverifiable on Windows-only hardware. The native menu covers the essential tray interaction; the popup is polish. |
 
+> **Superseded 2026-06-30 (grouping/tags):** grouping/tags was later promoted out of this CUT set into the **v0.9.0** initial release (feature committed, schema ready, spec deferred until the GUI is finalized). This table (and the diagram above) preserve the original ratified proposal as the historical record; the live scope ledger and its dated amendment are in [program-roadmap.md](program-roadmap.md), and the product framing is in [release-plans/plan_v0.9.0/features-and-outcomes.md](release-plans/plan_v0.9.0/features-and-outcomes.md) Section 3.
+
 The key moves: **keep the native tray menu, cut the popup window to V1.1** (you get a working tray without the unverifiable geometry); **cut the keyring PAT to V1.1** but **keep unauthenticated enrichment** (you get the delight without the three-platform vault); and **explicitly treat macOS signed packaging as the most likely silent buffer-eater**, gated on Mac access per section A.
 
 #### Recommendation
@@ -476,7 +479,7 @@ The IPC boundary is the product's real API surface. For an agent-driven build by
 
 **Command surface (Phase 1), grouped:**
 
-- **Registry:** `repos_list(filter) -> Vec<RepoSummary>`, `repo_get(id) -> RepoDetail`, `repo_add_path(path) -> RepoId`, `repo_scan_parent(path) -> ScanResult`, `repo_remove(id)`, `repo_set_enabled(id, bool)`, `repo_set_policy(id, UpdatePolicy)`.
+- **Registry:** `repo_list(filter) -> Vec<RepoSummary>`, `repo_get(id) -> RepoDetail`, `repo_add_path(path) -> RepoId`, `repo_scan_parent(path) -> ScanResult`, `repo_remove(id)`, `repo_set_enabled(id, bool)`, `repo_set_policy(id, UpdatePolicy)`.
 - **Git ops:** `repo_check_now(id) -> CheckResult`, `repo_update_now(id, UpdateMode) -> UpdateResult`, `repo_refresh_metadata(id) -> RepoDetail`.
 - **Quick actions:** `repo_open_folder/terminal/editor/remote(id)`.
 - **Activity / summaries:** `activity_list(filter) -> Vec<ActivityRecord>`, `summary_today() -> DailySummary`, `summary_week() -> WeeklySummary`.
@@ -603,6 +606,12 @@ WebView2 is preinstalled on Windows 11 (jp's machine) and current Windows 10, so
 
 ## 5. UI and UX
 
+> **Superseded (2026-07-03).** The canonical design system is now `DESIGN.md` at the
+> repo root, reconciled to the SHIPPED React UI (the "Graphite" direction: oklch tokens
+> in `src/index.css`, shadcn/ui components). This section documents an earlier
+> "editorial" direction (Fraunces/Geist, hex tokens) grounded in the draft mockups, which
+> were archived to `_local/gui/archived-mockups/`. It is preserved as a historical
+> decision record, not a build target. Build to `DESIGN.md` and the implementation.
 
 This section is the visual and interaction contract for RepoSync V1. It is grounded entirely in the four mockup surfaces and their shared design system. Where a value is exact (a hex token, a font axis, a pixel metric), it is reproduced from the markup so engineering can build to it without guessing.
 
@@ -883,7 +892,7 @@ Every row depends on the frozen IPC contract at most, never on a finished UI. Th
 | CI | `cargo check`, `cargo clippy --all -- -D warnings`, `cargo test`, `pnpm typecheck`, `pnpm lint`; macOS + Windows runners building and bundling. Pinned git for fixtures. | No | Decision 8.10: CI is the substitute for code review on a one-dev project. Windows + macOS matrix from day one is what keeps the macOS port honest ("compiles + bundles in CI") while Windows is the real GA target. |
 | Packaging spike | Produce a signed-or-documented Windows artifact from CI *early* (MSI/NSIS via Tauri bundler, user-mode install). Document the macOS signing/notarization path even though it cannot be exercised on jp's hardware. | No | Front-loads the single riskiest cross-platform unknown for a Windows-first dev. A throwaway UI is enough to bundle; you are validating the toolchain, not the screens. |
 | `EXECUTION.md` autonomy contract | The written rules an agent follows to build autonomously: what it may change, the green-CI bar, the test-first expectation for core logic, the no-em-dash rule, scope guardrails. | No | Pure process artifact. Multiplies every other workstream's velocity and directly addresses bus-factor (8.10). |
-| Repo hygiene | `LICENSE` (MIT, 9.10), `.github/` templates (bug report, feature request, PR template, `FUNDING.yml`, per 9.11), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `.gitignore` quarantining `docs/internal/` and `_LOCAL/` so internal strategy and raw notes never reach the public repo. | No | Decisions 9.2 / 9.10 / 9.11. Must land before the first public commit. The `.gitignore` quarantine is load-bearing: this strategy doc and `_LOCAL/` are internal-only. |
+| Repo hygiene | `LICENSE` (MIT, 9.10), `.github/` templates (bug report, feature request, PR template, `FUNDING.yml`, per 9.11), `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `.gitignore` quarantining `docs/internal/` and `_local/` so internal strategy and raw notes never reach the public repo. | No | Decisions 9.2 / 9.10 / 9.11. Must land before the first public commit. The `.gitignore` quarantine is load-bearing: this strategy doc and `_local/` are internal-only. |
 
 ### The tracer-bullet recommendation
 
@@ -921,7 +930,7 @@ Being honest about the dividing line: the following cannot be finished without U
 - **Density and virtualization for large lists.** How the repo table behaves at 100+ repos - column set, row density, when TanStack Virtual kicks in, saved-view UX.
 - **The tray popup layout.** What sections appear, in what order, how compact, what one-tap actions live there versus in the main window.
 
-The crucial mitigation: every one of these can be *stubbed against the frozen IPC contract*. A placeholder Dashboard that renders mock `RepoSummary[]` of the real shape, a Repos table wired to the real `repos_list` command returning seed data, a tray popup with hardcoded sections - all let UI/UX exploration proceed on its own timeline while backend work proceeds on its own timeline. Neither blocks the other, because both are coding against the same typed seam. When a screen design lands, swapping mock data for the live command is a small, local change, not a re-architecture.
+The crucial mitigation: every one of these can be *stubbed against the frozen IPC contract*. A placeholder Dashboard that renders mock `RepoSummary[]` of the real shape, a Repos table wired to the real `repo_list` command returning seed data, a tray popup with hardcoded sections - all let UI/UX exploration proceed on its own timeline while backend work proceeds on its own timeline. Neither blocks the other, because both are coding against the same typed seam. When a screen design lands, swapping mock data for the live command is a small, local change, not a re-architecture.
 
 ### Suggested 2-3 week "Phase 0 + tracer bullet" sequence
 
@@ -980,10 +989,10 @@ Everything in Section 6: the `reposync-core` scaffold, the SQLite schema and mig
 ### Artifacts I can produce next, on your word
 
 - `EXECUTION.md` (the autonomy contract from Section 3, ready to drop in).
-- `LICENSE` + `.github/` templates + `.gitignore` quarantine for `docs/internal/` and `_LOCAL/`.
+- `LICENSE` + `.github/` templates + `.gitignore` quarantine for `docs/internal/` and `_local/`.
 - The Phase 0 scaffold itself, kicked off with the tracer bullet.
 - An updated `strategy-and-roadmap.md` with the platform-access risk row and per-platform acceptance criteria, so the canonical plan stops asserting macOS bars no human can verify.
 
 ### Provenance
 
-This document was assembled from: `strategy-and-roadmap.md`; a six-agent analysis that ranked the execution decisions and adversarially verified the ranking; the four mockups under `docs/internal/mockups/`; and the platform, autonomy, and scope decisions reached in conversation with jp on 2026-05-31. It extends, and does not replace, the strategy and roadmap.
+This document was assembled from: `strategy-and-roadmap.md`; a six-agent analysis that ranked the execution decisions and adversarially verified the ranking; the four mockups (now archived to `_local/gui/archived-mockups/`); and the platform, autonomy, and scope decisions reached in conversation with jp on 2026-05-31. It extends, and does not replace, the strategy and roadmap.

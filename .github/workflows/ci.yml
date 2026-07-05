@@ -1,0 +1,286 @@
+# RepoSync CI - effort E-01 (Foundation) owns this workflow.
+#
+# What the PR gate (`build` job) gates:
+#   - cargo fmt (check)                                          (formatting-drift guard)
+#   - cargo clippy --workspace --all-targets (-D warnings)       (E-01 AC: Rust type + lint gate; subsumes cargo check)
+#   - fast test tier: cargo test --workspace                     (E-01 AC: Rust tests as the PR gate; excludes the git-fixture tier)
+#   - pnpm build / typecheck / lint                              (E-01 AC: frontend gates; build also lands ../dist for generate_context!)
+#   - src/lib/bindings.ts is not stale                           (E-06 IPC contract, Windows-only)
+#   - reposync-core has NO tauri dependency, even transitively   (E-01 AC2: dependency hygiene)
+#   - both Windows and macOS runners build AND bundle            (E-01 AC4: matrix green)
+#   - git meets the >= 2.30 floor (exact pin deferred to E-04)   (E-01 AC8 / E-04 fixture harness)
+#
+# Two-tier test model (ci-plan.md Section 3):
+#   - FAST tier (this PR gate, the `build` job): `cargo test --workspace` runs every test that
+#     is NOT #[ignore]-marked - the pure-logic tests that never spawn git. Seconds, not minutes.
+#   - SLOW git-fixture tier (the separate `slow-tests` job, Windows-only): the #[ignore]-marked
+#     tests that build real git fixtures (each spawns many `git` subprocesses), plus the three
+#     E-04/E-07/E-08 integration tests, behind `--features test-support`. It runs under a
+#     wall-clock budget (job `timeout-minutes`) so a wedged `git` fails loudly instead of stalling
+#     the runner. The #[ignore] tiering itself lives in the core crate (owned by P0-C); this
+#     workflow only SELECTS the tiers by filter, it does not define them.
+#
+# macOS posture: macOS is "compiles + bundles in CI" only and is NOT a test-execution
+# target for the git-fixture suite (that suite runs on Windows, in `slow-tests`). macOS still
+# builds and bundles here because E-01 AC4 requires both runners green. macOS bundling is
+# UNSIGNED on purpose - code signing and notarization are human-only (see EXECUTION.md) and
+# arrive as a later job.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Documented EXACT git target for the future E-04 fixture harness (Windows-only), which
+  # will cross-check git2 reads against git CLI porcelain output and needs BYTE-STABLE
+  # output. E-04 does not exist yet, and pinning an exact git on the hosted runners proved
+  # unreliable (choco's installer conflicts; MinGit PATH ordering is finicky). So CI today
+  # VERIFIES the >= 2.30 floor (the E-03 engine requirement) instead of enforcing this exact
+  # value. The robust exact-pin mechanism is tracked in docs/backlog.md (BL-NI-03).
+  GIT_VERSION: "2.47.1"
+  # Faster, quieter cargo in CI.
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ------------------------------------------------------------------------------------------
+  # PR gate. Fast, and required on every push/PR. Runs the static gates, the FAST test tier,
+  # the two contract gates, and the build+bundle on both runners.
+  # ------------------------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Do not cancel the macOS leg if Windows fails (or vice versa); we want both signals.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- Verify git meets the E-03 floor (>= 2.30) -------------------------------------
+      # Both hosted runners ship a recent git well above the floor, so we VERIFY the floor
+      # rather than install an exact version. Pinning an exact git on the runner proved
+      # unreliable (choco's installer conflicts with the preinstalled git; MinGit's PATH
+      # ordering did not shadow it). The byte-stable EXACT pin is only needed by the E-04
+      # git fixture harness (Windows-only), which does not exist yet; GIT_VERSION above
+      # records the intended target and docs/backlog.md (BL-NI-03) tracks the mechanism.
+      - name: Verify git meets the >= 2.30 floor
+        shell: bash
+        run: |
+          installed="$(git --version)"
+          echo "Found: $installed (intended E-04 exact target: $GIT_VERSION)"
+          num="$(echo "$installed" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+          major="${num%.*}"; minor="${num#*.}"
+          if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 30 ]; }; then
+            echo "::error::git $num is below the required floor 2.30 (E-03 engine)."
+            exit 1
+          fi
+          echo "git $num satisfies the >= 2.30 floor."
+
+      # --- Toolchains ---------------------------------------------------------------------
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Only trunk and the active v0.9.0 release branch WRITE the shared cache; PR and
+          # feature branches READ it but never save, so a PR cannot poison or thrash the
+          # shared cache (ci-plan.md Section 2.7). The trade-off is that a PR which changes
+          # dependencies builds those cold, which is acceptable.
+          # NOTE: prune 'build/e-01-foundation' back to just 'main' once the v0.9.0 release
+          # branch merges - it is the active release branch only for the v0.9.0 push.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/build/e-01-foundation' }}
+          # Never persist a target dir from a failed run.
+          cache-on-failure: false
+
+      # pnpm version comes from the "packageManager" field in package.json (single source of
+      # truth). Do NOT also set a "version" input here - action-setup errors if both exist.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # The lockfile MUST be committed. --frozen-lockfile fails the build if pnpm-lock.yaml
+      # is missing or out of date, which keeps CI dependency resolution reproducible.
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --- Build the frontend BEFORE any cargo step (ci-plan.md Section 2.2) --------------
+      # `dist/` is gitignored, so a fresh checkout has no ../dist. Tauri v2's generate_context!
+      # embeds frontendDist at COMPILE time, so every cargo step that links the src-tauri shell
+      # crate (clippy --all-targets, the fast test tier, build+bundle) needs a real ../dist to
+      # exist first. Building it here also surfaces a frontend break early and on its own instead
+      # of buried inside `pnpm tauri build` at the end. `pnpm tauri build` still re-runs this via
+      # beforeBuildCommand; the ~28s redundant rebuild is acceptable and beforeBuildCommand stays
+      # (pnpm tauri dev and local builds rely on it).
+      - name: Build frontend
+        run: pnpm build
+
+      # --- Static gates -------------------------------------------------------------------
+      # Formatting is enforced here so drift cannot accumulate unnoticed (it did once, before
+      # this step existed). rustfmt is installed as a component above.
+      - name: cargo fmt (check)
+        run: cargo fmt --all -- --check
+
+      # Clippy is the type-check gate: `--all-targets` runs the compiler over lib, bins, tests,
+      # examples, and benches, so a standalone `cargo check` is redundant and was dropped
+      # (ci-plan.md Section 2.3). `--all-targets` also closes a real gap - the previous
+      # `cargo clippy --all` skipped test/example/bench code, so new warnings in test code went
+      # uncaught in CI. `--workspace` lints every member. `-D warnings` makes any lint fatal.
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # FAST test tier (the PR gate): plain `cargo test --workspace` runs only the tests that are
+      # NOT #[ignore]-marked - the pure-logic tests that never spawn git or build a fixture repo.
+      # The slow git-fixture tests are #[ignore]-marked in the core crate (owned by P0-C) and are
+      # therefore skipped here; they run in the `slow-tests` job below. The three integration
+      # tests are behind `--features test-support` (not enabled here), so they compile to nothing
+      # and never run in this lane. Keeping this tier fast is the whole point (ci-plan.md 3.2/3.6).
+      - name: cargo test (fast tier)
+        run: cargo test --workspace
+
+      # --- Stale-bindings gate (E-06 IPC contract) ----------------------------------------
+      # The committed src/lib/bindings.ts is generated from the live tauri-specta surface by
+      # the export_bindings test. Regenerate it here and fail if the working tree drifts: a
+      # contract change (new command/event/type) that was not re-exported and committed would
+      # otherwise ship a frontend type surface that lies about the backend. Windows-only
+      # because the export_bindings test (a Tauri-linked [[test]] target) needs the
+      # comctl32-v6 activation manifest that build.rs attaches only on Windows.
+      - name: Assert bindings.ts is up to date
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cargo test -p reposync --test export_bindings
+          if ! git diff --exit-code -- src/lib/bindings.ts; then
+            echo "::error::src/lib/bindings.ts is stale. Run the export_bindings test and commit the result."
+            exit 1
+          fi
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm lint
+        run: pnpm lint
+
+      # --- Dependency-hygiene gate (E-01 AC2) ---------------------------------------------
+      # reposync-core must never pull tauri, even transitively. This is the most load-bearing
+      # assertion in the foundation: it fails the build the instant anything drags tauri into
+      # the core crate. We grep the resolved dependency tree and exit 1 on any match.
+      - name: Assert reposync-core has no tauri dependency
+        shell: bash
+        run: |
+          echo "Resolving dependency tree for reposync-core..."
+          tree="$(cargo tree -p reposync-core)"
+          echo "$tree"
+          if echo "$tree" | grep -i 'tauri'; then
+            echo "::error::reposync-core depends on tauri (directly or transitively). The core crate must stay Tauri-free."
+            exit 1
+          fi
+          echo "OK: reposync-core has no tauri dependency."
+
+      # --- Build + bundle (E-01 AC4) ------------------------------------------------------
+      # Build + bundle on each runner with the PREBUILT @tauri-apps/cli (a pinned
+      # devDependency), via `pnpm tauri build`. This avoids `cargo install tauri-cli`,
+      # which compiles the CLI from source and added several minutes per run. The per-push
+      # release profile uses thin LTO (Cargo.toml [profile.release]) so the bundle stays
+      # fast; full-LTO distribution artifacts use [profile.dist]. macOS bundling is UNSIGNED
+      # (signing is human-only per EXECUTION.md). Artifacts are for inspection only; we do
+      # NOT upload to GitHub Releases.
+      - name: Build and bundle
+        run: pnpm tauri build
+        shell: bash
+
+  # ------------------------------------------------------------------------------------------
+  # SLOW git-fixture test tier (ci-plan.md Section 3). Its own job so it never blocks the fast
+  # PR gate above. Windows-only: per the macOS posture (E-01 AC4 header note and ci-plan.md
+  # 3.5), macOS compiles+bundles but is NOT a fixture-test-execution target. The entire slow
+  # tier lives in reposync-core (git/*, policy.rs, repo.rs, and the three integration tests),
+  # so this job scopes to `-p reposync-core` - which also means it never compiles the src-tauri
+  # shell and so needs no Node/pnpm/../dist setup.
+  #
+  # Wall-clock budget: `timeout-minutes` caps the whole job so a wedged `git` subprocess turns
+  # into a clear timeout failure instead of a multi-hour runner stall (this stands in for
+  # nextest's per-test --slow-timeout, which we do not have on plain `cargo test`). 30 minutes
+  # is deliberately generous for the FIRST measured run; tighten it once the real wall time on
+  # the runner is known (ci-plan.md 3.5/3.6 target the full suite well under that once parallel).
+  #
+  # Required-vs-scheduled: whether this job is a REQUIRED check is a branch-protection setting,
+  # not encoded here. It runs on every push/PR for now so PR #2's head gets a full-suite signal
+  # (the runbook's G0 needs the full suite green on the release commit). Decide required-vs-
+  # scheduled from the first measured run per ci-plan.md 3.5.
+  # ------------------------------------------------------------------------------------------
+  slow-tests:
+    name: slow git-fixture tests (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The fixture harness spawns real git subprocesses, so verify the floor here too - this is
+      # the job that actually exercises git heavily.
+      - name: Verify git meets the >= 2.30 floor
+        shell: bash
+        run: |
+          installed="$(git --version)"
+          echo "Found: $installed (intended E-04 exact target: $GIT_VERSION)"
+          num="$(echo "$installed" | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+          major="${num%.*}"; minor="${num#*.}"
+          if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 30 ]; }; then
+            echo "::error::git $num is below the required floor 2.30 (E-03 engine)."
+            exit 1
+          fi
+          echo "git $num satisfies the >= 2.30 floor."
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Same write policy as the build job: only main and the active v0.9.0 release branch
+          # save. rust-cache keys per job (and per OS), so this job keeps a cache distinct from
+          # the build job's and cannot clobber it. Prune 'build/e-01-foundation' to just 'main'
+          # once the release branch merges.
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/build/e-01-foundation' }}
+          cache-on-failure: false
+
+      # SLOW git-fixture unit tier: the #[ignore]-marked library unit tests in reposync-core -
+      # the git/policy/repo tests that build real fixture repos and spawn many git subprocesses.
+      # `--lib` scopes to the crate's unit tests (the integration binaries are run in the next
+      # step). `--features test-support` exposes the git::fixtures harness on the crate's public
+      # surface. `-- --ignored` runs ONLY the ignored tests, i.e. exactly this tier.
+      - name: cargo test (slow git-fixture unit tier)
+        run: cargo test -p reposync-core --features test-support --lib -- --ignored
+
+      # Integration tier + fixture-harness public-surface cross-check. Folds in the E-04 AC3
+      # cross-check that previously lived inline in the build job (ci-plan.md Section 2.8) and
+      # adds the E-07 policy matrix and E-08 scheduler integration tests. These three binaries
+      # are gated by `--features test-support` (so absent from the fast lane entirely).
+      # `--include-ignored` runs them whether or not their test fns are #[ignore]-marked, so the
+      # full suite is exercised here regardless of the exact tiering choices in the core crate.
+      - name: cargo test (integration + fixture-harness cross-check)
+        run: cargo test -p reposync-core --features test-support --test git_fixture_cross_check --test policy_fixture_matrix --test scheduler_integration -- --include-ignored

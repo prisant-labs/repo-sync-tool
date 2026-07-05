@@ -1,0 +1,96 @@
+# RepoSync Cargo workspace root (effort E-01 - Foundation).
+#
+# This is a virtual manifest: it builds no crate of its own. The two real
+# members are the Tauri-free logic crate (reposync-core) and the thin Tauri
+# shell (src-tauri). The load-bearing rule, set here and enforced in CI: the
+# core crate must never depend on tauri or any tauri-* crate, even transitively.
+#
+# [workspace.dependencies] declares EVERY pin the project will use so later
+# efforts can flip a dependency on with `workspace = true` instead of choosing
+# a version locally. In E-01 only a subset is actually consumed by a crate
+# (reposync-core: serde + thiserror + specta; src-tauri: tauri + tauri-build +
+# tauri-specta + serde + reposync-core). tokio, sqlx, and git2 are declared but
+# not yet consumed by any crate - they are reserved for E-02/E-03/E-08.
+
+[workspace]
+resolver = "2"
+members = ["crates/reposync-core", "src-tauri"]
+
+[workspace.package]
+edition = "2021"
+version = "0.9.0"
+license = "MIT"
+authors = ["RepoSync contributors"]
+repository = "https://github.com/product-on-purpose/repo-sync-tool"
+
+[workspace.dependencies]
+# Tauri stack. EXACT pins (= prefix) are load-bearing per AC7: tauri-specta v2
+# is a release candidate and a silent RC bump would break IPC codegen (E-06).
+tauri = "=2.11.3"
+tauri-build = "=2.6.3"
+specta = "=2.0.0-rc.25"
+specta-typescript = "=0.0.12"
+tauri-specta = "=2.0.0-rc.25"
+# E-14 desktop notifications: the OS-toast plugin (Windows toast / macOS
+# Notification Center behind one API). Edge-only - reposync-core never depends on
+# it; the firing DECISION is Tauri-free in the core, only the toast call is here.
+tauri-plugin-notification = "2"
+# E-15 autostart (launch on login): the OS launch-on-login plugin (Windows Run key /
+# macOS LaunchAgent behind one API). Edge-only, exactly like the notification plugin -
+# reposync-core never depends on it; the register/unregister DECISION (`reconcile`) and
+# the launch-detection (`is_autostart_launch`) are Tauri-free in the core, only the
+# enable/disable/is_enabled actuation lives at the edge.
+tauri-plugin-autostart = "2"
+# E-18 auto-update and distribution: the OS-agnostic in-app self-update plugin. The
+# integrity boundary is the minisign signature on each artifact, verified against the
+# public key baked into the binary (`plugins.updater.pubkey` in tauri.conf.json).
+# Edge-only, like the notification/autostart plugins - reposync-core never depends on
+# it; the check/download/install/verify all live at the edge. `tauri-plugin-process`
+# provides the post-install relaunch surface.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+# Shared logic-crate dependencies.
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+
+# Declared now, consumed by later efforts (E-02 persistence, E-03 git engine,
+# E-08 scheduler). Not yet a dependency of any crate in E-01.
+tokio = { version = "1.52.3", features = ["full"] }
+sqlx = { version = "0.9.0", default-features = false }
+# default-features = false here so the per-crate consumer can opt into ONLY
+# vendored-libgit2 (no OpenSSL, no libssh2, no network transports). Network git
+# goes through the git CLI, never git2. Required for the dependency-hygiene gate.
+git2 = { version = "0.21.0", default-features = false }
+# Windows extended-length ("verbatim", \\?\) path stripping. std::fs::canonicalize
+# yields \\?\C:\... paths on Windows, which explorer/editors/terminals choke on;
+# dunce::canonicalize resolves the same as std but returns a clean, non-verbatim
+# path when representable. Zero-dependency, no OS/TLS/tauri linkage (already in the
+# tree transitively via tauri/tauri-build), so it keeps the core Tauri-free.
+dunce = "1"
+
+# Edge-only (the edge-wiring effort): local-time math the timezone-free core
+# deliberately omits. Already in the tree via sqlx, so enabling `local-offset` on
+# the src-tauri side adds no new crate. NEVER a reposync-core dependency - the
+# dependency-hygiene gate keeps `time` out of the core tree.
+time = "0.3.49"
+
+# Per-push CI / default release profile. Tuned for a small bundle but with THIN LTO
+# and parallel codegen so per-push CI builds stay fast (a full-LTO single-codegen-unit
+# build took about 35 min on the Windows runner). Maximal-size public artifacts use the
+# [profile.dist] profile below. (brief Section 4.10a; docs/backlog.md BL-NI-09)
+[profile.release]
+opt-level = "z"
+lto = "thin"
+strip = true
+panic = "abort"
+codegen-units = 16
+
+# Distribution profile for public release-tag artifacts: maximal size optimization
+# (full LTO, single codegen unit), accepting the longer build time. The future release
+# workflow selects it (e.g. tauri build --profile dist); per-push CI does not use it.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+#
+# E-18 (auto-update and distribution) winget VERSION manifest.
+#
+# Prepared and validated OFFLINE only while the repo is private (`winget validate
+# --manifest packages/winget`). NOT submitted: winget requires public, unauthenticated
+# InstallerUrls that do not exist while the repo is private, so submission to
+# microsoft/winget-pkgs is a PUBLIC-FLIP checklist item (see the runbook appendix and
+# the E-18 implementation plan). PackageVersion tracks the first release target
+# (v0.9.0); finalize it against the actual released version at the flip.
+PackageIdentifier: ProductOnPurpose.RepoSync
+PackageVersion: 0.9.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0
