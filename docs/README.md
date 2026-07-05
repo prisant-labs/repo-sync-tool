@@ -13,6 +13,7 @@ Start here, then follow the links into whichever doc answers your question.
 
 | Doc | What it is | Read it when |
 |---|---|---|
+| [user-guide.md](user-guide.md) | The complete end-user guide: install, the core check/update loop, the status taxonomy, every feature explained with when to use it, the settings reference, and troubleshooting. | You are a user setting up RepoSync or want to understand a feature in depth. |
 | [faq.md](faq.md) | Plain-language answers about what RepoSync does today, in V1 scope. | You are a user or just curious about behavior, safety, platforms, and data. |
 | [architecture.md](architecture.md) | The system and its parts: component map, the IPC seam, persistence, tech stack, CI gates. | You want to know *what* the pieces are and how they fit. |
 | [explanation.md](explanation.md) | The design rationale: why RepoSync is shaped the way it is. | You want to know *why* a decision was made before you change it. |
