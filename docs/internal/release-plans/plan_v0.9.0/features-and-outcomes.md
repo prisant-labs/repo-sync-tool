@@ -144,7 +144,9 @@ The awareness half of the product: reading state at a glance, proving what happe
 
 ## 8. The repo status taxonomy
 
-"State at a glance" is the core value, so the state vocabulary is worth stating precisely. Every state is encoded as **color plus icon plus word** (never hue alone), so it survives grayscale and color blindness. The delta counts (`Δ`) are shown separately as `↑N` (ahead) and `↓N` (behind).
+"State at a glance" is the core value, so the state vocabulary is worth stating precisely. Every sync state is encoded as **color plus icon plus word** (never hue alone), so it survives grayscale and color blindness. The delta counts (`Δ`) are shown separately as `↑N` (ahead) and `↓N` (behind).
+
+**The six sync states** describe the repo's synchronization status with its remote:
 
 | State | Meaning | Encoding | Notes |
 |-------|---------|----------|-------|
@@ -154,7 +156,13 @@ The awareness half of the product: reading state at a glance, proving what happe
 | Dirty | The working tree has uncommitted changes; the pull was skipped. | Amber, warning icon, "dirty" | Untouched by design; the reason is stated, with "Review changes" / "Pull anyway". |
 | Failed | An operation errored: auth failure, missing path, or deleted upstream. | Red, alert icon, "failed" | Carries the specific error code and a remediation hint. |
 | Paused | Scheduled checks are off for this repo, either by the user or by three-strikes auto-pause. | First-class "paused" pill (`check_only` mode) | Distinct status, not a greyed-out row; its config survives. |
-| New release | A newer GitHub release than the local checkout was detected. | Plum accent, release tag | Surfaced on the row, the Dashboard, and (outside quiet hours) as a notification. |
+
+**Signals: branch and release intelligence** are separate from the sync-state taxonomy and are rendered in the signal register (magenta, status-release color) as distinct indicators layered on top of the status:
+
+| Signal | Meaning | Encoding | Notes |
+|--------|---------|----------|-------|
+| New release | A newer GitHub release than the local checkout was detected. | Magenta package icon, release tag | Surfaced as a chip on the row, the Dashboard, and (outside quiet hours) as a notification; never as a status color. |
+| Pull requests | Open pull requests on the repo (GitHub only). | Magenta PR icon, open count | Surfaced as a chip on the row; unavailable/unknown for non-GitHub repos or when unauthenticated access cannot reach the repo. |
 
 ---
 
