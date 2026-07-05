@@ -225,6 +225,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn ahead_behind_reports_behind_against_real_upstream() {
         if !git_resolvable() {
             eprintln!("skipping ahead_behind_reports_behind_against_real_upstream: git missing");
@@ -278,6 +279,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn ahead_behind_none_when_upstream_deleted() {
         if !git_resolvable() {
             eprintln!("skipping ahead_behind_none_when_upstream_deleted: git missing");

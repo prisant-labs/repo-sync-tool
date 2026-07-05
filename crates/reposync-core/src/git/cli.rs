@@ -825,6 +825,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn fetch_sees_remote_commit_as_behind() {
         if !git_resolvable() {
             eprintln!("skipping fetch_sees_remote_commit_as_behind: git not resolvable");
@@ -911,6 +912,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn pull_ff_only_fast_forwards_a_behind_clone() {
         // E-07 end-to-end: a clone one commit behind its upstream fast-forwards
         // cleanly. We fabricate the behind state inline (the fixtures live behind
@@ -999,6 +1001,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn pull_ff_only_refuses_to_fast_forward_a_diverged_clone() {
         // E-07 safety: --ff-only must REFUSE (non-zero, FfNotPossible) when the
         // branch has diverged, never creating a merge commit. The clone gets a

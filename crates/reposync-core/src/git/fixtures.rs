@@ -646,6 +646,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn clean_fixture_has_clean_branch_head() {
         let fx = build_fixture(FixtureState::Clean);
         assert!(!fx.expected.dirty);
@@ -714,11 +715,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn recipe_dirty_matches_engine() {
         assert_git2_agrees_with_declared(FixtureState::Dirty);
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn recipe_ahead_matches_engine() {
         assert_git2_agrees_with_declared(FixtureState::Ahead);
     }
@@ -729,16 +732,19 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn recipe_detached_head_matches_engine() {
         assert_git2_agrees_with_declared(FixtureState::DetachedHead);
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn recipe_deleted_upstream_matches_engine() {
         assert_git2_agrees_with_declared(FixtureState::DeletedUpstream);
     }
 
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn recipe_no_upstream_matches_engine() {
         assert_git2_agrees_with_declared(FixtureState::NoUpstream);
     }
@@ -750,6 +756,7 @@ mod tests {
     /// healing it. Before the fix the recipe deleted only the working clone's
     /// tracking ref (leaving the branch on the bare), so a fetch recreated it.
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn deleted_upstream_survives_fetch() {
         let fx = build_fixture(FixtureState::DeletedUpstream);
         let working = fx.working_path();
@@ -950,6 +957,7 @@ mod tests {
 
     /// AC3: the parameterized git2-vs-CLI cross-check over ALL seven states.
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn git2_and_cli_agree_across_all_states() {
         let engine = SystemGitEngine::discover().expect("git engine should discover on this host");
         for state in FixtureState::ALL {
@@ -961,6 +969,7 @@ mod tests {
     /// `None` (not a lie that points back at the working clone). Fixtures built
     /// from a bare + working pair must report `Some(bare)` inside the tempdir.
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn bare_path_is_none_only_for_no_upstream() {
         // no-upstream is standalone: there is no bare upstream.
         let no_up = build_fixture(FixtureState::NoUpstream);
@@ -1001,6 +1010,7 @@ mod tests {
     /// AC4: a fixture lives entirely inside its owned tempdir, and dropping it
     /// removes that directory. No path escapes the tempdir; nothing leaks.
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn fixture_is_isolated_and_cleans_up() {
         let root_path;
         {
@@ -1077,6 +1087,7 @@ mod tests {
     /// nice-to-have (`recipe_clean_sha_is_reproducible`); here we diff structure
     /// and relationships, with object ids dropped from the topology.
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn recipes_are_structurally_deterministic() {
         let engine = SystemGitEngine::discover().expect("git engine should discover on this host");
         for state in FixtureState::ALL {
@@ -1099,6 +1110,7 @@ mod tests {
     /// breaks reproducibility is caught, but the contract above only requires
     /// structural determinism.
     #[test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     fn recipe_clean_sha_is_reproducible() {
         let a = build_fixture(FixtureState::Clean);
         let b = build_fixture(FixtureState::Clean);

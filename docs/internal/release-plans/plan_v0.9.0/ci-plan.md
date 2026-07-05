@@ -153,6 +153,8 @@ Option C - `#[ignore]` plus `--ignored`. Mark the slow tests `#[ignore]`; the PR
 
 ### 3.4 Recommendation: adopt cargo-nextest as the primary lever; split by filter, not by source edits
 
+> **Decision (2026-07-04, Phase 0 implementation):** the program went with Option C (`#[ignore]` + plain `cargo test`) instead of this section's nextest recommendation, because the execution plan's gate protocol standardizes on `cargo test --workspace` (fast tier) / `-- --ignored` (slow tier) with no new runner tooling, and the fixture tests parallelize acceptably under cargo's default thread scheduler (they use per-Command env and per-fixture tempdirs, not process-global state). The slow lane's wedge protection comes from the job-level `timeout-minutes: 30` budget instead of nextest's per-test `--slow-timeout`. Nextest remains the fallback lever if the fast tier regresses past the Section 3.6 targets.
+
 Nextest attacks the actual bottleneck (single-threaded process spawning) directly and with zero source churn. Concretely:
 
 - Replace the two `cargo test` steps with nextest. The PR gate runs the fast tier by excluding the fixture-bearing paths with a filter expression (the exact expression is tuned during implementation; the point is it lives in the workflow, not in `#[cfg]` attributes sprinkled through the tree). The integration tests are their own binaries and are excluded from the PR gate by kind.

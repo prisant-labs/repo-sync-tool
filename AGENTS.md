@@ -45,11 +45,14 @@ cargo test -p reposync-core                 # prefer scoped runs; see below
 cargo test -p reposync-core <filter>        # narrow further while iterating
 ```
 
-`cargo test --workspace` currently exceeds 10 minutes and should not be run as a routine check;
-the git-fixture integration tests spawn many real git subprocesses and dominate the wall clock.
-Until the fast/slow test tiering lands (tracked in
-`docs/internal/release-plans/plan_v0.9.0/ci-plan.md`), scope test runs with `-p` and a filter, and
-reserve the full workspace run for pre-merge or pre-release gates, not inner-loop iteration.
+Tests are tiered (since 2026-07-04; see `docs/internal/release-plans/plan_v0.9.0/ci-plan.md`
+Section 3.4 decision note). The fast tier is the default: `cargo test --workspace` (or
+`-p reposync-core`) skips the 27 `#[ignore]`-marked git-CLI fixture tests and completes in a
+few minutes. The slow tier runs them: `cargo test -p reposync-core --features test-support
+--lib -- --ignored`, plus the three feature-gated integration binaries via
+`cargo test -p reposync-core --features test-support --test git_fixture_cross_check
+--test policy_fixture_matrix --test scheduler_integration -- --include-ignored`.
+Run the slow tier at phase gates, not inner-loop iteration; CI runs it as its own lane.
 
 ## Hard conventions
 

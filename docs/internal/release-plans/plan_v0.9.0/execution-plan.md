@@ -73,7 +73,7 @@ The gate-runner runs this whole list and reports pass/fail per command. Any red 
 2. `cargo clippy --workspace --all-targets -D warnings`
 3. `cargo clippy -p reposync-core --features test-support -D warnings`
 4. `cargo test --workspace` (fast tier; see 3.3)
-5. `cargo test --workspace -- --ignored` (slow git-fixture tier; see 3.3 - runs in the phase sweep and in CI, wall-clock budgeted)
+5. Slow tier, two commands mirroring CI's slow lane exactly (see 3.3; wall-clock budgeted): `cargo test -p reposync-core --features test-support --lib -- --ignored` (the 27 `#[ignore]`-marked git-fixture tests), then `cargo test -p reposync-core --features test-support --test git_fixture_cross_check --test policy_fixture_matrix --test scheduler_integration -- --include-ignored` (the three feature-gated integration binaries; a bare `--workspace -- --ignored` would run zero of them because they sit behind `--features test-support`)
 6. `cargo tree -p reposync-core` and assert the tree contains **no** `tauri`, `tauri-*`, `chrono`, or `openssl` (the core dependency-hygiene invariant)
 7. `pnpm typecheck`
 8. `pnpm lint`

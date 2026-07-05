@@ -1075,6 +1075,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn check_now_with_removed_upstream_yields_none_not_stale_comparison() {
         // H2 (end-to-end): a repo whose upstream is removed AFTER `add` (so the
         // DB has a stored upstream but a fresh inspect reports None) must yield
@@ -1210,6 +1211,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_fast_forwards_a_behind_repo() {
         // The one mutating cell end-to-end: a clean, behind repo under
         // pull_ff_only fast-forwards and reports `updated`.
@@ -1264,6 +1266,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_skips_a_dirty_repo_without_mutating() {
         // AC3 end-to-end: a dirty repo under pull_ff_only skips-dirty, never
         // mutating, and records the typed reason code.
@@ -1308,6 +1311,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_check_only_never_mutates_a_behind_repo() {
         // A behind repo under check_only reports up_to_date (no fetch decision to
         // act on beyond the refreshing fetch) and never fast-forwards.
@@ -1370,6 +1374,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_check_only_issues_no_fetch() {
         // M-1/M-2: check_only must never touch the network, even for a behind repo
         // (the grid's check_only column is report-no-action for every state). The
@@ -1394,6 +1399,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_dirty_pull_ff_issues_no_fetch() {
         // pull_ff_only on a dirty repo is a LOCAL skip (the grid says Skip(dirty)):
         // it must not fetch.
@@ -1419,6 +1425,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_no_upstream_fetch_only_issues_no_fetch() {
         // fetch_only on a no-upstream repo skips up front (nothing to fetch from):
         // it must not fetch.
@@ -1444,6 +1451,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn execute_action_rechecks_dirty_before_pull() {
         // H-1: even given a PullFastForward decision, execute_action re-inspects
         // the working tree immediately before the pull and SKIPS if dirty - our own
@@ -1531,6 +1539,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn successful_manual_update_clears_auto_pause() {
         let Ok(git) = SystemGitEngine::discover() else {
             eprintln!("skipping successful_manual_update_clears_auto_pause: git missing");
@@ -1560,6 +1569,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn successful_manual_check_clears_auto_pause() {
         let Ok(git) = SystemGitEngine::discover() else {
             eprintln!("skipping successful_manual_check_clears_auto_pause: git missing");
