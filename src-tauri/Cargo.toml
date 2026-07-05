@@ -36,6 +36,12 @@ tauri-specta = { workspace = true, features = ["derive", "typescript"] }
 # E-14 desktop notifications: OS-toast plugin. Registered in `lib.rs`; the
 # `notification:default` capability permission is granted in `capabilities/default.json`.
 tauri-plugin-notification = { workspace = true }
+# E-15 autostart (launch on login): OS launch-on-login plugin. Registered in `lib.rs`
+# (with a LaunchAgent macOS launcher and the `--autostart` launch argument); the
+# `autostart:default` capability permission is granted in `capabilities/default.json`.
+# The pure reconcile/detect decisions live in `reposync-core::autostart`; this shell
+# owns only the enable/disable/is_enabled actuation and the start-minimized behavior.
+tauri-plugin-autostart = { workspace = true }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
 serde = { workspace = true }

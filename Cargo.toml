@@ -35,6 +35,12 @@ tauri-specta = "=2.0.0-rc.25"
 # Notification Center behind one API). Edge-only - reposync-core never depends on
 # it; the firing DECISION is Tauri-free in the core, only the toast call is here.
 tauri-plugin-notification = "2"
+# E-15 autostart (launch on login): the OS launch-on-login plugin (Windows Run key /
+# macOS LaunchAgent behind one API). Edge-only, exactly like the notification plugin -
+# reposync-core never depends on it; the register/unregister DECISION (`reconcile`) and
+# the launch-detection (`is_autostart_launch`) are Tauri-free in the core, only the
+# enable/disable/is_enabled actuation lives at the edge.
+tauri-plugin-autostart = "2"
 
 # Shared logic-crate dependencies.
 serde = { version = "1.0.228", features = ["derive"] }

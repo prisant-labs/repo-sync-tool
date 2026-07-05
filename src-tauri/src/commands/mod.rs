@@ -390,18 +390,21 @@ pub async fn settings_get(state: tauri::State<'_, AppState>) -> Result<Settings,
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_set(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     settings: Settings,
 ) -> Result<(), AppError> {
     // Serialize the whole persist/reschedule/probe/swap sequence (BL-NI-35).
     let _write = state.settings_write_lock.lock().await;
 
-    // Read the prior global cadence BEFORE persisting so we can tell whether the
-    // global check interval actually changed (and only then re-cadence repos).
-    let previous_global = reposync_core::store::settings_get(&state.pool)
-        .await
-        .ok()
-        .map(|s| s.global_check_minutes);
+    // Read the prior settings BEFORE persisting so we can tell what actually
+    // changed and only reconcile the affected live subsystem: the global cadence
+    // (below, re-cadence repos) and the `autostart` setting (E-15, actuate the
+    // plugin). `app` is Tauri-injected, so it does NOT appear in the generated
+    // TypeScript binding (`settingsSet(settings)` is unchanged).
+    let previous = reposync_core::store::settings_get(&state.pool).await.ok();
+    let previous_global = previous.as_ref().map(|s| s.global_check_minutes);
+    let previous_autostart = previous.as_ref().map(|s| s.autostart);
 
     reposync_core::store::settings_set(&state.pool, &settings).await?;
 
@@ -442,6 +445,20 @@ pub async fn settings_set(
     // The new git is usable: swap it in live so the command path and the resident
     // scheduler (which reads this same shared handle each cycle) both pick it up.
     *state.git.write().await = Some(engine);
+
+    // E-15 AC1: when the `autostart` setting changed, actuate launch-on-login live
+    // via the plugin. Only on a real change (the previous read matched neither the
+    // Some(new) nor a first-time None), so an unrelated save never touches the OS
+    // registration. This runs AFTER the git swap on purpose: the git re-probe keeps
+    // its existing behavior and precedence (a bad git path still returns first, and
+    // the autostart value is already persisted above, so `reconcile_on_launch` will
+    // converge it on the next launch). On a plugin failure `apply` returns a
+    // structured `InvalidSetting { field: "autostart" }` - persist-then-apply, the
+    // same contract the git swap uses (commit 71a0f7b): the value stands, the UI
+    // toasts an honest failure, and startup reconciliation self-heals.
+    if previous_autostart != Some(settings.autostart) {
+        crate::autostart::apply(&app, settings.autostart)?;
+    }
     Ok(())
 }
 

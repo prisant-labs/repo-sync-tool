@@ -11,6 +11,7 @@
 //   - tray      -> system tray icon and menu (later GUI effort)
 //   - windows   -> window creation and management (later GUI effort)
 
+mod autostart;
 mod commands;
 mod events;
 mod localtime;
@@ -173,10 +174,34 @@ pub fn run() {
         // to the Windows toast vs macOS Notification Center). The firing DECISION is
         // in the Tauri-free core; this plugin is the only platform-specific piece.
         .plugin(tauri_plugin_notification::init())
+        // E-15 autostart: the OS launch-on-login plugin (Windows Run key / macOS
+        // LaunchAgent behind one API). The register/unregister DECISION (`reconcile`)
+        // is in the Tauri-free core; this plugin is the only platform-specific piece.
+        // The `--autostart` launch argument is baked into the registration so an
+        // autostart launch can be detected (AC3) and started minimized; `LaunchAgent`
+        // keeps the macOS registration per-user with no elevation (AC4).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![crate::autostart::AUTOSTART_LAUNCH_FLAG]),
+        ))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // Register the event registry so typed emit/listen resolve names.
             builder.mount_events(app);
+
+            // E-15 AC3: when this process was launched by autostart, start hidden to
+            // the tray (no focused window) so an autostart launch does not pop a
+            // window in the user's face. The main window is config-declared visible,
+            // so hide it as early as possible in setup; the tray icon + "Show
+            // RepoSync" item (built just below) is the restore path. Only the
+            // launch-argument HANDLING lives here - close-to-tray on the window's
+            // own close button is P3-C's (tray completion); see the handoff note on
+            // `autostart::AUTOSTART_LAUNCH_FLAG`.
+            if crate::autostart::launched_by_autostart() {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
             // Build the tray icon + menu (E-01 stub replaced by the GUI effort).
             tray::init(app)?;
@@ -236,10 +261,17 @@ pub fn run() {
                 // Store None when git is unavailable so git-dependent commands
                 // report GitNotFound; the pool/migrations above stay fatal because
                 // the DB is essential.
-                let configured_git_path = reposync_core::store::settings_get(&pool)
-                    .await
-                    .ok()
-                    .and_then(|s| s.git_executable_path);
+                // Read the persisted settings once for the two startup-config reads
+                // it feeds: the git path (below) and the `autostart` setting (the
+                // E-15 reconcile, further down).
+                let startup_settings = reposync_core::store::settings_get(&pool).await.ok();
+                let configured_git_path = startup_settings
+                    .as_ref()
+                    .and_then(|s| s.git_executable_path.clone());
+                let autostart_on = startup_settings
+                    .as_ref()
+                    .map(|s| s.autostart)
+                    .unwrap_or(false);
                 let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
                 let initial_git = if engine.availability().is_unavailable() {
                     eprintln!(
@@ -250,6 +282,16 @@ pub fn run() {
                 } else {
                     Some(engine)
                 };
+
+                // E-15 AC2: reconcile the OS launch-on-login registration against the
+                // persisted `autostart` setting now that settings are loaded. The
+                // core decides (over a tri-state OS read; a failed query is
+                // non-actuating); this call actuates via the plugin. Best-effort -
+                // any plugin query/actuation failure is logged, never fatal (see
+                // `autostart::reconcile_on_launch`). The plugin manages its
+                // AutoLaunchManager during its own setup, which runs before this
+                // app-level setup closure, so `autolaunch()` resolves here.
+                crate::autostart::reconcile_on_launch(&handle, autostart_on);
 
                 // The SHARED, swappable git handle. `settings_set` re-probes and
                 // swaps the inner engine when the user fixes a broken/missing git
