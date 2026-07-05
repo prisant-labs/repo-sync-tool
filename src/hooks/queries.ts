@@ -35,6 +35,16 @@ export function useSettings() {
   return useAsync(() => unwrap(commands.settingsGet()), []);
 }
 
+/**
+ * The one-time database-recovery notice (E-02 AC7 / BL-NI-33). Read once at
+ * launch; `data.recovered` is true only when the startup migration failed and the
+ * previous database was moved aside, in which case `data.backupPath` names where
+ * it was preserved. The app shell surfaces this as a dismissible banner.
+ */
+export function useDbRecoveryNotice() {
+  return useAsync(() => unwrap(commands.dbRecoveryNotice()), []);
+}
+
 /** Live list of repo groups (tags) with member counts, for the sidebar + management. */
 export function useGroups() {
   return useAsync(() => unwrap(commands.groupList()), []);

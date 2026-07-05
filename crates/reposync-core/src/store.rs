@@ -261,6 +261,41 @@ pub async fn repo_set_policy(
     Ok(())
 }
 
+/// Persist a repo's per-repo check cadence (BL-NI-30 / finding 15). The value is
+/// the inherit-model `check_frequency_min`: `0` means "inherit the global cadence"
+/// (`settings.global_check_minutes`), a POSITIVE value is an explicit per-repo
+/// override in minutes. A NEGATIVE value is rejected as [`AppError::InvalidSetting`]
+/// (a cadence can never schedule a check in the past); [`AppError::NotFound`] if
+/// the repo does not exist.
+///
+/// This writes ONLY the `repos.check_frequency_min` column. Recomputing the repo's
+/// `next_check_at` from the new cadence is the caller's next step - the edge
+/// `repo_set_cadence` command calls [`crate::scheduler::reschedule_one_repo`] right
+/// after - so switching to a shorter override (or back to inherit) takes effect
+/// immediately instead of waiting out the stale schedule.
+pub async fn repo_set_cadence(
+    pool: &SqlitePool,
+    id: RepoId,
+    check_frequency_min: i64,
+) -> Result<(), AppError> {
+    if check_frequency_min < 0 {
+        return Err(AppError::InvalidSetting {
+            field: "check_frequency_min".into(),
+        });
+    }
+    let res = sqlx::query("UPDATE repos SET check_frequency_min = ? WHERE id = ?")
+        .bind(check_frequency_min)
+        .bind(id.0)
+        .execute(pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: format!("repo {}", id.0),
+        });
+    }
+    Ok(())
+}
+
 /// The snake_case `update_mode` column value for an [`UpdateMode`] (matching the
 /// IPC enum's serde rename and the schema default `'fetch_only'`).
 fn update_mode_str(mode: &UpdateMode) -> &'static str {
@@ -1097,6 +1132,65 @@ mod tests {
         assert!(
             matches!(missing, Err(AppError::NotFound { .. })),
             "set_policy on a missing repo must be NotFound, got {missing:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_cadence_persists_inherit_override_and_validates() {
+        // BL-NI-30: the per-repo cadence write path. 0 = inherit the global cadence,
+        // a positive value is an explicit override; a negative value is rejected and
+        // a missing repo is NotFound. Uses the git-independent insert helper so this
+        // runs regardless of whether git is on PATH.
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        async fn cadence_of(pool: &SqlitePool, id: i64) -> i64 {
+            sqlx::query("SELECT check_frequency_min FROM repos WHERE id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("check_frequency_min")
+                .unwrap()
+        }
+
+        let id = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
+        // A freshly-inserted repo inherits (0) under the migration 0004 default.
+        assert_eq!(
+            cadence_of(&pool, id).await,
+            0,
+            "new repo inherits the global"
+        );
+
+        // A positive override persists verbatim.
+        repo_set_cadence(&pool, RepoId(id), 30)
+            .await
+            .expect("set override");
+        assert_eq!(cadence_of(&pool, id).await, 30);
+
+        // 0 switches back to inherit.
+        repo_set_cadence(&pool, RepoId(id), 0)
+            .await
+            .expect("set inherit");
+        assert_eq!(cadence_of(&pool, id).await, 0);
+
+        // A negative cadence is rejected and leaves the stored value untouched.
+        let rejected = repo_set_cadence(&pool, RepoId(id), -1).await;
+        assert!(
+            matches!(&rejected, Err(AppError::InvalidSetting { field }) if field == "check_frequency_min"),
+            "a negative cadence must be rejected as InvalidSetting, got {rejected:?}"
+        );
+        assert_eq!(
+            cadence_of(&pool, id).await,
+            0,
+            "a rejected write changes nothing"
+        );
+
+        // Setting the cadence of a missing repo is NotFound.
+        let missing = repo_set_cadence(&pool, RepoId(9999), 60).await;
+        assert!(
+            matches!(missing, Err(AppError::NotFound { .. })),
+            "set_cadence on a missing repo must be NotFound, got {missing:?}"
         );
     }
 

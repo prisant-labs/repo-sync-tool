@@ -257,6 +257,26 @@ pub struct RepoGroupMembership {
 }
 
 // =============================================================================
+// Startup-state payloads
+// =============================================================================
+
+/// The one-time database-recovery notice (E-02 AC7 / BL-NI-33).
+///
+/// When the startup migration failed and the old database had to be moved aside,
+/// `recovered` is true and `backup_path` is where the previous database was
+/// preserved (a display string). The frontend reads this once at launch (the
+/// `db_recovery_notice` command) to surface a dismissible banner. On a normal
+/// launch `recovered` is false and `backup_path` is `None`. Before this type
+/// existed the parked `db_recovered` / `db_backup_path` fields had no reader, so
+/// the AC7 notice could never reach the UI.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DbRecoveryNotice {
+    pub recovered: bool,
+    pub backup_path: Option<String>,
+}
+
+// =============================================================================
 // Filter payloads (command parameters)
 // =============================================================================
 
@@ -546,6 +566,17 @@ mod tests {
             group_ids: vec![1, 2, 5],
         };
         assert_round_trip(&membership);
+
+        // The db-recovery notice, in both its normal (no recovery) and recovered
+        // shapes, so the additive BL-NI-33 payload's wire form is guarded too.
+        assert_round_trip(&DbRecoveryNotice {
+            recovered: false,
+            backup_path: None,
+        });
+        assert_round_trip(&DbRecoveryNotice {
+            recovered: true,
+            backup_path: Some("C:/data/reposync.db.corrupt-1700000000".into()),
+        });
 
         // The error half of every fallible command: Result<RepoId, AppError>.
         // `AppError` serializes through its frozen `AppErrorPayload` wire shape

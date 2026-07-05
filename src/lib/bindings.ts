@@ -54,6 +54,21 @@ export const commands = {
 	 */
 	repoSetPolicy: (id: number, policy: UpdatePolicy) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_set_policy", { id, policy })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**
+	 *  Set a repo's per-repo check cadence (BL-NI-30 / finding 15).
+	 * 
+	 *  Additive E-06 amendment (a new command, not a change to `repo_set_policy`, which
+	 *  carries only mode + dirty-handling). `checkFrequencyMin` follows the inherit
+	 *  model: `0` inherits the global cadence (`settings.global_check_minutes`), a
+	 *  POSITIVE value is an explicit per-repo override in minutes. Persists the new
+	 *  cadence via the store, then recomputes this repo's `next_check_at` with the SAME
+	 *  anchored rule the global-cadence change uses
+	 *  ([`reposync_core::scheduler::reschedule_one_repo`]), so a shorter override - or a
+	 *  switch back to inherit - takes effect immediately instead of waiting out the
+	 *  stale schedule. A negative value is rejected (`InvalidSetting`); a missing repo
+	 *  is `NotFound`.
+	 */
+	repoSetCadence: (id: number, checkFrequencyMin: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_set_cadence", { id, checkFrequencyMin })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
 	 *  Run an "update now" for a repo in the given mode (E-07).
 	 * 
 	 *  Emits `repo:update-started` before the run, calls the shared
@@ -101,6 +116,16 @@ export const commands = {
 	settingsGet: () => typedError<Settings, AppErrorPayload>(__TAURI_INVOKE("settings_get")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Write the settings singleton. */
 	settingsSet: (settings: Settings) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("settings_set", { settings })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  Read the one-time database-recovery notice (E-02 AC7 / BL-NI-33).
+	 * 
+	 *  Additive E-06 amendment. Surfaces the `db_recovered` / `db_backup_path` fields
+	 *  parked in [`AppState`] after a startup migration-failure recovery, so the
+	 *  frontend can show the AC7 notice (a dismissible banner). Before this command,
+	 *  nothing read those fields, so the notice could never reach the UI. `Ok`-only:
+	 *  reading managed state never fails.
+	 */
+	dbRecoveryNotice: () => typedError<DbRecoveryNotice, AppErrorPayload>(__TAURI_INVOKE("db_recovery_notice")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  List every group with its member repo count (group-management view). */
 	groupList: () => typedError<GroupSummary[], AppErrorPayload>(__TAURI_INVOKE("group_list")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Create a group. A duplicate name is rejected as an invalid setting. */
@@ -238,6 +263,22 @@ export type DailySummary = {
 	updated: SummaryItem[],
 	newReleases: SummaryItem[],
 	attention: SummaryItem[],
+};
+
+/**
+ *  The one-time database-recovery notice (E-02 AC7 / BL-NI-33).
+ * 
+ *  When the startup migration failed and the old database had to be moved aside,
+ *  `recovered` is true and `backup_path` is where the previous database was
+ *  preserved (a display string). The frontend reads this once at launch (the
+ *  `db_recovery_notice` command) to surface a dismissible banner. On a normal
+ *  launch `recovered` is false and `backup_path` is `None`. Before this type
+ *  existed the parked `db_recovered` / `db_backup_path` fields had no reader, so
+ *  the AC7 notice could never reach the UI.
+ */
+export type DbRecoveryNotice = {
+	recovered: boolean,
+	backupPath: string | null,
 };
 
 /**  What to do when the working tree is dirty at update time. */

@@ -864,21 +864,99 @@ pub async fn reschedule_inherit_repos(
     new_global_minutes: i64,
 ) -> Result<u64, AppError> {
     // The global cadence is validated `>= 1` before it is persisted; clamp
-    // defensively so a bad value can never schedule a check in the past.
+    // defensively so a bad value can never schedule a check in the past. Every
+    // inherit repo shares the one new global frequency.
     let freq_secs = new_global_minutes.max(1) * 60;
-    let res = sqlx::query(
-        "UPDATE repo_local_state \
-         SET next_check_at = MAX(?, last_checked_at + ?) \
-         WHERE last_checked_at IS NOT NULL \
-           AND auto_paused = 0 \
+    // The SQL is composed ONLY from the compile-time `RESCHEDULE_SET_AND_GUARD`
+    // const and string literals - no runtime/user data is interpolated - so
+    // `AssertSqlSafe` over the composed string is sound (sqlx 0.9 reserves the bare
+    // `&'static str` path and wants dynamic strings audited, which this is).
+    let sql = format!(
+        "UPDATE repo_local_state {RESCHEDULE_SET_AND_GUARD} \
            AND repo_id IN ( \
                SELECT id FROM repos WHERE check_frequency_min = 0 AND enabled = 1 \
-           )",
-    )
-    .bind(now_unix)
-    .bind(freq_secs)
-    .execute(pool)
-    .await?;
+           )"
+    );
+    let res = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(now_unix)
+        .bind(freq_secs)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// The shared `SET` + skip-guard for BOTH cadence-change reschedule paths
+/// ([`reschedule_inherit_repos`] for a global change, [`reschedule_one_repo`] for a
+/// single repo). Factoring the rule into one string is what keeps the two paths
+/// from DIVERGING: they apply the IDENTICAL anchored rule - next check =
+/// `max(now, last_checked_at + freq_secs)` (the `MAX` clamps a lowered cadence that
+/// lands in the past to `now`, so a repo becomes due on the next tick rather than
+/// being scheduled retroactively) - and the IDENTICAL skips (a never-checked
+/// `last_checked_at IS NULL` repo is left as-is because it is already due, and an
+/// auto-paused repo is left alone because it is not being scheduled). The caller
+/// appends the scope predicate (all inherit repos, or one repo id, and in both
+/// cases an `enabled = 1` filter) and binds `now`, then `freq_secs`, then any
+/// scope binds in that order.
+const RESCHEDULE_SET_AND_GUARD: &str = "SET next_check_at = MAX(?, last_checked_at + ?) \
+     WHERE last_checked_at IS NOT NULL \
+       AND auto_paused = 0";
+
+/// Recompute `next_check_at` for ONE repo after its per-repo cadence changed
+/// (BL-NI-30 / finding 15), applying the SAME anchored rule
+/// [`reschedule_inherit_repos`] uses for a global-cadence change (via the shared
+/// [`RESCHEDULE_SET_AND_GUARD`]) - only scoped to a single repo and honoring
+/// whatever cadence MODE that repo now has. The edge calls this from the
+/// `repo_set_cadence` command immediately after the new `check_frequency_min` is
+/// persisted, so switching a repo to a shorter override (or back to inherit) takes
+/// effect at once instead of waiting out its stale `next_check_at`.
+///
+/// The effective frequency honors the inherit model exactly like the scheduler's
+/// own [`DbOutcomeWriter::record`]: a `check_frequency_min` of 0 resolves to the
+/// live `settings.global_check_minutes` via [`effective_frequency_min`], and a
+/// positive value is the explicit override. The next check becomes
+/// `max(now, last_checked_at + effective_freq * 60)`; a never-checked, auto-paused,
+/// or disabled repo is left as-is - the same skips the bulk reschedule makes.
+/// Returns the number of rows updated (0 or 1).
+pub async fn reschedule_one_repo(
+    pool: &SqlitePool,
+    repo_id: i64,
+    now_unix: i64,
+) -> Result<u64, AppError> {
+    // Read the live global cadence (seed the singleton the same idempotent way the
+    // due-query and DbOutcomeWriter do) and this repo's persisted cadence, then
+    // resolve the effective frequency honoring the inherit sentinel. A repo that
+    // vanished between the cadence write and here reads as inherit (0); the scoped
+    // UPDATE below then simply affects no rows.
+    sqlx::query("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+        .execute(pool)
+        .await?;
+    let global_default = sqlx::query("SELECT global_check_minutes FROM settings WHERE id = 1")
+        .fetch_one(pool)
+        .await?
+        .try_get::<i64, _>("global_check_minutes")?;
+    let repo_freq = sqlx::query("SELECT check_frequency_min FROM repos WHERE id = ?")
+        .bind(repo_id)
+        .fetch_optional(pool)
+        .await?
+        .map(|r| r.try_get::<i64, _>("check_frequency_min"))
+        .transpose()?
+        .unwrap_or(0);
+    // `effective_frequency_min` never returns a non-positive value, so `freq_secs`
+    // is always strictly positive and the next check is strictly in the future.
+    let freq_secs = effective_frequency_min(repo_freq, global_default) * 60;
+    // Composed only from the compile-time const + literals (see the note on
+    // `reschedule_inherit_repos`), so `AssertSqlSafe` is sound.
+    let sql = format!(
+        "UPDATE repo_local_state {RESCHEDULE_SET_AND_GUARD} \
+           AND repo_id = ? \
+           AND repo_id IN (SELECT id FROM repos WHERE enabled = 1)"
+    );
+    let res = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(now_unix)
+        .bind(freq_secs)
+        .bind(repo_id)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 
@@ -2244,6 +2322,116 @@ mod tests {
             Some(now + 560 * 60),
             "a raised cadence pushes the next check out from the last completed check"
         );
+    }
+
+    #[tokio::test]
+    async fn reschedule_one_repo_applies_inherit_and_override_transitions() {
+        // BL-NI-30 / finding 15: a per-repo cadence change recomputes THAT repo's
+        // next_check_at with the SAME anchored rule as the global reschedule, honoring
+        // the inherit model (0 = inherit the global, positive = override). Also proves
+        // the shared skips: a never-checked repo and a disabled repo are untouched.
+        async fn insert_repo(pool: &SqlitePool, name: &str, freq_min: i64, enabled: i64) -> i64 {
+            sqlx::query(
+                "INSERT INTO repos (local_name, local_path, created_at, check_frequency_min, enabled) \
+                 VALUES (?, ?, 0, ?, ?)",
+            )
+            .bind(name)
+            .bind(name)
+            .bind(freq_min)
+            .bind(enabled)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+        }
+        async fn set_state(pool: &SqlitePool, id: i64, last_checked_at: Option<i64>) {
+            sqlx::query(
+                "INSERT INTO repo_local_state \
+                 (repo_id, last_checked_at, next_check_at, auto_paused, consecutive_failures) \
+                 VALUES (?, ?, NULL, 0, 0)",
+            )
+            .bind(id)
+            .bind(last_checked_at)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        async fn set_cadence(pool: &SqlitePool, id: i64, freq_min: i64) {
+            sqlx::query("UPDATE repos SET check_frequency_min = ? WHERE id = ?")
+                .bind(freq_min)
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+        async fn next_of(pool: &SqlitePool, id: i64) -> Option<i64> {
+            sqlx::query("SELECT next_check_at FROM repo_local_state WHERE repo_id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("next_check_at")
+                .unwrap()
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = crate::db::open_pool(&tmp.path().join("resched-one.db"))
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+        // Global cadence 360 (the seeded default); the inherit branch resolves to it.
+        let now = 1_000_000i64;
+
+        // An enabled repo, last checked 40m ago, currently inheriting (0).
+        let repo = insert_repo(&pool, "repo", 0, 1).await;
+        set_state(&pool, repo, Some(now - 40 * 60)).await;
+
+        // While inheriting, reschedule anchors on the global 360: next = max(now,
+        // (now-40m)+360m) = now + 320m.
+        let n = reschedule_one_repo(&pool, repo, now).await.unwrap();
+        assert_eq!(n, 1, "the enabled, checked repo is rescheduled");
+        assert_eq!(
+            next_of(&pool, repo).await,
+            Some(now + 320 * 60),
+            "an inherit repo follows the global cadence (360m from the last check)"
+        );
+
+        // Switch to a 30m OVERRIDE and reschedule: (now-40m)+30m is in the past, so
+        // the MAX clamps to now and the repo is due on the next tick.
+        set_cadence(&pool, repo, 30).await;
+        reschedule_one_repo(&pool, repo, now).await.unwrap();
+        assert_eq!(
+            next_of(&pool, repo).await,
+            Some(now),
+            "a shorter override landing in the past clamps to now (due next tick)"
+        );
+
+        // Switch BACK to inherit (0): the global 360 applies again.
+        set_cadence(&pool, repo, 0).await;
+        reschedule_one_repo(&pool, repo, now).await.unwrap();
+        assert_eq!(
+            next_of(&pool, repo).await,
+            Some(now + 320 * 60),
+            "switching back to inherit re-anchors on the global cadence"
+        );
+
+        // A never-checked repo is left as-is (already due) even with an override set.
+        let fresh = insert_repo(&pool, "fresh", 45, 1).await;
+        set_state(&pool, fresh, None).await;
+        let nf = reschedule_one_repo(&pool, fresh, now).await.unwrap();
+        assert_eq!(nf, 0, "a never-checked repo is not rescheduled");
+        assert_eq!(
+            next_of(&pool, fresh).await,
+            None,
+            "a never-checked repo stays due (next_check_at untouched)"
+        );
+
+        // A DISABLED repo is skipped (the enabled filter), so a cadence change on a
+        // disabled repo does not pre-empt the enable path.
+        let disabled = insert_repo(&pool, "disabled", 15, 0).await;
+        set_state(&pool, disabled, Some(now - 40 * 60)).await;
+        let nd = reschedule_one_repo(&pool, disabled, now).await.unwrap();
+        assert_eq!(nd, 0, "a disabled repo is not rescheduled");
     }
 
     // =========================================================================

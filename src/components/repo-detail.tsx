@@ -17,12 +17,19 @@ import { commands } from "@/lib/bindings";
 import type { GroupSummary, RepoDetail as RepoDetailData, UpdateMode } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AsyncPanel } from "@/components/async-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
 import { useToast } from "@/hooks/use-toast";
-import { useGroups, useGroupsForRepo, useRepoBackendEvents, useRepoDetail } from "@/hooks/queries";
+import {
+  useGroups,
+  useGroupsForRepo,
+  useRepoBackendEvents,
+  useRepoDetail,
+  useSettings,
+} from "@/hooks/queries";
 import {
   deriveStatus,
   lagLabel,
@@ -73,6 +80,7 @@ export function RepoDetailPanel({
   const detail = useRepoDetail(id);
   const groupsState = useGroups();
   const memberships = useGroupsForRepo(id);
+  const settings = useSettings();
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [groupBusyId, setGroupBusyId] = useState<number | null>(null);
@@ -144,6 +152,7 @@ export function RepoDetailPanel({
               r={r}
               busy={busy}
               run={run}
+              globalMinutes={settings.data?.globalCheckMinutes ?? null}
               groups={groupsState.data ?? []}
               memberIds={memberships.data ?? []}
               groupBusyId={groupBusyId}
@@ -160,6 +169,7 @@ function DetailBody({
   r,
   busy,
   run,
+  globalMinutes,
   groups,
   memberIds,
   groupBusyId,
@@ -168,6 +178,7 @@ function DetailBody({
   r: RepoDetailData;
   busy: string | null;
   run: RunFn;
+  globalMinutes: number | null;
   groups: GroupSummary[];
   memberIds: number[];
   groupBusyId: number | null;
@@ -265,6 +276,8 @@ function DetailBody({
           )}
         </div>
       </section>
+
+      <CadenceSection key={r.id} r={r} globalMinutes={globalMinutes} busy={busy} run={run} />
 
       <section>
         <SectionLabel>Update policy</SectionLabel>
@@ -488,6 +501,125 @@ function GroupsSection({
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * Per-repo check cadence (BL-NI-30). Two mutually exclusive options in the same
+ * always-visible idiom as the update-policy cards: "Inherit global" (writes
+ * `checkFrequencyMin = 0`, the inherit sentinel) and "Custom interval" (a positive
+ * per-repo override in minutes). The effective cadence is shown outright so the
+ * consequence of each choice is never hidden.
+ */
+function CadenceSection({
+  r,
+  globalMinutes,
+  busy,
+  run,
+}: {
+  r: RepoDetailData;
+  globalMinutes: number | null;
+  busy: string | null;
+  run: RunFn;
+}) {
+  const isBusy = busy !== null;
+  const isInherit = r.checkFrequencyMin === 0;
+  const effective = isInherit ? globalMinutes : r.checkFrequencyMin;
+  // Draft minutes for the Custom option, seeded from the current override (or the
+  // global default while inheriting, so the field starts on a sensible value). The
+  // section is keyed on the repo id at the call site, so switching repos reseeds it.
+  const [draft, setDraft] = useState<number>(
+    r.checkFrequencyMin > 0 ? r.checkFrequencyMin : (globalMinutes ?? 360),
+  );
+  const draftInt = Math.trunc(draft);
+  const draftValid = Number.isFinite(draft) && draftInt >= 1;
+
+  return (
+    <section>
+      <SectionLabel>Check cadence</SectionLabel>
+      <div className="flex flex-col gap-1.5">
+        <button
+          type="button"
+          disabled={isBusy || isInherit}
+          onClick={() =>
+            run("cadence", () => unwrap(commands.repoSetCadence(r.id, 0)), "Cadence set to inherit global")
+          }
+          className={cn(
+            "flex items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed",
+            isInherit ? "border-primary bg-primary/10" : "border-border hover:bg-muted",
+          )}
+        >
+          <CadenceRadio active={isInherit} />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">Inherit global</span>
+            <span className="block text-xs text-muted-foreground">
+              {globalMinutes !== null
+                ? `Follows the global cadence (every ${globalMinutes} min). Changing the global setting re-cadences this repo.`
+                : "Follows the global cadence. Changing the global setting re-cadences this repo."}
+            </span>
+          </span>
+        </button>
+
+        <div
+          className={cn(
+            "flex flex-col gap-2 rounded-md border px-3 py-2 transition-colors",
+            !isInherit ? "border-primary bg-primary/10" : "border-border",
+          )}
+        >
+          <div className="flex items-start gap-3">
+            <CadenceRadio active={!isInherit} />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">Custom interval</span>
+              <span className="block text-xs text-muted-foreground">
+                Override the global default for just this repo.
+              </span>
+            </span>
+          </div>
+          <div className="flex items-center gap-2 pl-7">
+            <Input
+              type="number"
+              min={1}
+              className="w-24 text-right"
+              value={draft}
+              onChange={(e) => setDraft(Number(e.target.value))}
+            />
+            <span className="text-xs text-muted-foreground">min</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="ml-auto"
+              disabled={isBusy || !draftValid || draftInt === r.checkFrequencyMin}
+              onClick={() =>
+                run(
+                  "cadence",
+                  () => unwrap(commands.repoSetCadence(r.id, draftInt)),
+                  `Cadence set to every ${draftInt} min`,
+                )
+              }
+            >
+              Apply
+            </Button>
+          </div>
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-foreground/80">
+        Effective cadence: {effective !== null ? `every ${effective} min` : "loading..."}
+      </p>
+    </section>
+  );
+}
+
+/** The small filled/empty radio dot used by the cadence option cards. */
+function CadenceRadio({ active }: { active: boolean }) {
+  return (
+    <span
+      className={cn(
+        "mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border",
+        active ? "border-primary" : "border-muted-foreground/40",
+      )}
+    >
+      {active && <span className="size-2 rounded-full bg-primary" />}
+    </span>
   );
 }
 

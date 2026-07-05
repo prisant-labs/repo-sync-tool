@@ -24,11 +24,12 @@ use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
-    activity_list, group_assign, group_create, group_delete, group_list, group_rename,
-    group_unassign, groups_for_repo, repo_add_path, repo_check_all, repo_check_now, repo_get,
-    repo_group_memberships, repo_list, repo_open_editor, repo_open_folder, repo_open_remote,
-    repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_enabled,
-    repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
+    activity_list, db_recovery_notice, group_assign, group_create, group_delete, group_list,
+    group_rename, group_unassign, groups_for_repo, repo_add_path, repo_check_all, repo_check_now,
+    repo_get, repo_group_memberships, repo_list, repo_open_editor, repo_open_folder,
+    repo_open_remote, repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent,
+    repo_set_cadence, repo_set_enabled, repo_set_policy, repo_update_now, settings_get,
+    settings_set, summary_today, summary_week,
 };
 use events::{
     CheckCompleted, CheckStarted, ErrorRaised, NavigateRequested, NotificationFired, SchedulerTick,
@@ -116,6 +117,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             repo_remove,
             repo_set_enabled,
             repo_set_policy,
+            // per-repo cadence write path (BL-NI-30, additive)
+            repo_set_cadence,
             repo_update_now,
             repo_refresh_metadata,
             repo_open_folder,
@@ -127,6 +130,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             summary_week,
             settings_get,
             settings_set,
+            // db-recovery notice read (BL-NI-33 / E-02 AC7, additive)
+            db_recovery_notice,
             // groups / tags
             group_list,
             group_create,
@@ -366,6 +371,11 @@ pub fn run() {
                     // The firing site reads settings (the notify toggles + quiet
                     // hours) fresh per cycle from this pool clone.
                     let notes_pool = pool.clone();
+                    // BL-NI-32: the daily activity-retention sweep runs INSIDE the
+                    // resident tick loop (gated once per day) off this pool clone, so a
+                    // long-resident tray app prunes old activity rows instead of only
+                    // sweeping at startup.
+                    let sweep_pool = pool.clone();
                     tauri::async_runtime::spawn(async move {
                         // Startup pass is best-effort; a failure must not kill the loop.
                         if let Err(e) = scheduler.start().await {
@@ -379,6 +389,11 @@ pub fn run() {
                             &cycle_notes,
                         )
                         .await;
+                        // BL-NI-32: seed the once-per-day retention-sweep gate to
+                        // "just swept" - the startup sweep (above, before the pool
+                        // moved into AppState) already ran, so the first tick-driven
+                        // sweep happens ~24h later, not immediately.
+                        let mut last_sweep_unix: Option<i64> = Some(crate::localtime::now_unix());
                         let mut interval = tokio::time::interval(ONE_MINUTE);
                         interval.tick().await; // consume the immediate first tick
                         loop {
@@ -402,6 +417,26 @@ pub fn run() {
                                     .await;
                                 }
                                 Err(e) => eprintln!("scheduler: tick failed: {e}"),
+                            }
+                            // BL-NI-32: the daily activity-retention sweep, gated once
+                            // per day off the same edge clock the tick loop uses. Cheap
+                            // (one short DELETE) and it runs AFTER the tick's jobs have
+                            // joined, so it never blocks the check cycle. The gate is
+                            // advanced on every ATTEMPT (success or failure), so a
+                            // transient failure waits for the next day rather than
+                            // retrying - and spamming - every minute.
+                            let sweep_now = crate::localtime::now_unix();
+                            if reposync_core::activity::sweep_due(last_sweep_unix, sweep_now) {
+                                match reposync_core::activity::sweep(&sweep_pool, sweep_now).await {
+                                    Ok(n) if n > 0 => eprintln!(
+                                        "activity: daily retention sweep pruned {n} record(s)"
+                                    ),
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        eprintln!("activity: daily retention sweep failed: {e}")
+                                    }
+                                }
+                                last_sweep_unix = Some(sweep_now);
                             }
                         }
                     });

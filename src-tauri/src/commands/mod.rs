@@ -10,9 +10,9 @@
 
 use reposync_core::error::AppError;
 use reposync_core::ipc::{
-    ActivityFilter, ActivityRecord, CheckResult, DailySummary, GroupSummary, RepoDetail,
-    RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult, Settings, UpdateMode,
-    UpdatePolicy, UpdateResult, WeeklySummary,
+    ActivityFilter, ActivityRecord, CheckResult, DailySummary, DbRecoveryNotice, GroupSummary,
+    RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult, Settings,
+    UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
 };
 use reposync_core::notify::{NoteKind, NotifiableEvent};
 use reposync_core::scheduler::{RepoLocks, SharedGitEngine};
@@ -216,6 +216,34 @@ pub async fn repo_set_policy(
     policy: UpdatePolicy,
 ) -> Result<(), AppError> {
     reposync_core::store::repo_set_policy(&state.pool, RepoId(id), &policy).await
+}
+
+/// Set a repo's per-repo check cadence (BL-NI-30 / finding 15).
+///
+/// Additive E-06 amendment (a new command, not a change to `repo_set_policy`, which
+/// carries only mode + dirty-handling). `checkFrequencyMin` follows the inherit
+/// model: `0` inherits the global cadence (`settings.global_check_minutes`), a
+/// POSITIVE value is an explicit per-repo override in minutes. Persists the new
+/// cadence via the store, then recomputes this repo's `next_check_at` with the SAME
+/// anchored rule the global-cadence change uses
+/// ([`reposync_core::scheduler::reschedule_one_repo`]), so a shorter override - or a
+/// switch back to inherit - takes effect immediately instead of waiting out the
+/// stale schedule. A negative value is rejected (`InvalidSetting`); a missing repo
+/// is `NotFound`.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_set_cadence(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    check_frequency_min: i64,
+) -> Result<(), AppError> {
+    reposync_core::store::repo_set_cadence(&state.pool, RepoId(id), check_frequency_min).await?;
+    // The cadence is persisted; re-anchor next_check_at so the change is live. A
+    // reschedule failure after a successful write is surfaced (the cadence still
+    // stands; the next scheduler completion would re-anchor it anyway).
+    reposync_core::scheduler::reschedule_one_repo(&state.pool, id, crate::localtime::now_unix())
+        .await?;
+    Ok(())
 }
 
 /// Run an "update now" for a repo in the given mode (E-07).
@@ -545,6 +573,37 @@ fn git_swap_rejection(availability: &reposync_core::git::GitAvailability) -> Opt
     }
 }
 
+/// Read the one-time database-recovery notice (E-02 AC7 / BL-NI-33).
+///
+/// Additive E-06 amendment. Surfaces the `db_recovered` / `db_backup_path` fields
+/// parked in [`AppState`] after a startup migration-failure recovery, so the
+/// frontend can show the AC7 notice (a dismissible banner). Before this command,
+/// nothing read those fields, so the notice could never reach the UI. `Ok`-only:
+/// reading managed state never fails.
+#[tauri::command]
+#[specta::specta]
+pub async fn db_recovery_notice(
+    state: tauri::State<'_, AppState>,
+) -> Result<DbRecoveryNotice, AppError> {
+    Ok(build_recovery_notice(
+        state.db_recovered,
+        state.db_backup_path.as_deref(),
+    ))
+}
+
+/// Build the [`DbRecoveryNotice`] payload from the parked recovery fields (pure, so
+/// it is unit-tested without a Tauri harness, like [`git_swap_rejection`]). The
+/// backup path is rendered to a display string for the wire.
+fn build_recovery_notice(
+    recovered: bool,
+    backup_path: Option<&std::path::Path>,
+) -> DbRecoveryNotice {
+    DbRecoveryNotice {
+        recovered,
+        backup_path: backup_path.map(|p| p.display().to_string()),
+    }
+}
+
 // =============================================================================
 // Groups / tags (E-01 groups feature)
 //
@@ -723,5 +782,20 @@ mod tests {
             .is_none(),
             "a below-floor git is still usable, so the swap proceeds"
         );
+    }
+
+    #[test]
+    fn build_recovery_notice_maps_parked_recovery_fields() {
+        // BL-NI-33 / E-02 AC7: a normal launch reports no recovery and no path.
+        let normal = build_recovery_notice(false, None);
+        assert!(!normal.recovered);
+        assert!(normal.backup_path.is_none());
+
+        // A recovered launch reports the flag and the backup path as a display string,
+        // so the frontend can name where the previous database was preserved.
+        let path = std::path::Path::new("C:/data/reposync.db.corrupt-1700000000");
+        let notice = build_recovery_notice(true, Some(path));
+        assert!(notice.recovered);
+        assert_eq!(notice.backup_path, Some(path.display().to_string()));
     }
 }

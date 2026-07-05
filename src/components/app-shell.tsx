@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Activity, LayoutDashboard, List, Moon, Settings, Sun } from "lucide-react";
+import { Activity, AlertTriangle, LayoutDashboard, List, Moon, Settings, Sun, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { events } from "@/lib/bindings";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { GroupsNav } from "@/components/groups-nav";
-import { useGroups } from "@/hooks/queries";
+import { useDbRecoveryNotice, useGroups } from "@/hooks/queries";
 import { DashboardScreen } from "@/screens/dashboard";
 import { ReposScreen } from "@/screens/repos";
 import { ActivityScreen } from "@/screens/activity";
@@ -64,6 +64,13 @@ export function AppShell() {
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
   const toast = useToast();
+
+  // E-02 AC7 / BL-NI-33: the one-time database-recovery notice, read once at
+  // launch. It surfaces only when the startup migration failed and the old
+  // database was moved aside; the user can dismiss it for the session.
+  const recovery = useDbRecoveryNotice();
+  const [recoveryDismissed, setRecoveryDismissed] = useState(false);
+  const showRecovery = !recoveryDismissed && recovery.data?.recovered === true;
 
   // Backend-driven shell events (E-13 tray, BL-NI-31):
   //   - `navigate:requested` routes the shell to a named view (the tray "Settings"
@@ -144,6 +151,37 @@ export function AppShell() {
       </aside>
 
       <main className="flex min-w-0 flex-col">
+        {showRecovery && recovery.data && (
+          <div className="flex items-start gap-3 border-b border-status-dirty/40 bg-status-dirty/12 px-6 py-3">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-dirty" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-foreground">
+                Database was reset after a failed migration
+              </p>
+              <p className="mt-0.5 text-xs text-foreground/90">
+                RepoSync could not migrate your existing database, so it started a fresh one.
+                {recovery.data.backupPath ? (
+                  <>
+                    {" "}
+                    Your previous database was preserved at{" "}
+                    <span className="break-all font-mono">{recovery.data.backupPath}</span>.
+                  </>
+                ) : (
+                  " Your previous database was preserved alongside it."
+                )}
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="-mr-2 shrink-0"
+              onClick={() => setRecoveryDismissed(true)}
+              aria-label="Dismiss database recovery notice"
+            >
+              <X />
+            </Button>
+          </div>
+        )}
         <header className="flex items-center gap-3 border-b border-border px-6 py-3">
           <h1 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
             RepoSync / <span className="text-foreground">{active ? active.label : ""}</span>
