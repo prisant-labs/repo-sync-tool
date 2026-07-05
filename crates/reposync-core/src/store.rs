@@ -412,7 +412,10 @@ pub async fn repo_scan_parent(
 
     let mut discovered = Vec::with_capacity(found.len());
     for path in found {
-        let canonical = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        // `dunce::canonicalize` resolves like `std::fs::canonicalize` but yields a
+        // clean, non-verbatim path (no `\\?\` prefix) so the scanned `local_path`
+        // opens directly at the edge.
+        let canonical = dunce::canonicalize(&path).unwrap_or_else(|_| path.clone());
         let local_path = canonical.display().to_string();
         let local_name = canonical
             .file_name()

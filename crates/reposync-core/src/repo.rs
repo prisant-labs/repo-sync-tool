@@ -70,7 +70,10 @@ pub async fn add(
     //    UNIQUE(local_path) constraint catches duplicates. The path already
     //    passed the exists()/is_dir() checks above, so canonicalize() resolves.
     //    Fall back to the validated path on the rare canonicalize failure.
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    //    `dunce::canonicalize` resolves exactly like `std::fs::canonicalize` but
+    //    returns a clean, non-verbatim path (no `\\?\` extended-length prefix) so
+    //    the stored `local_path` opens directly in explorer/editors/terminals.
+    let canonical = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path = canonical.as_path();
 
     // 3. Inspect (maps non-repo to AppError::NotARepo).

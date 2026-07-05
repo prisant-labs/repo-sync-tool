@@ -45,6 +45,12 @@ sqlx = { version = "0.9.0", default-features = false }
 # vendored-libgit2 (no OpenSSL, no libssh2, no network transports). Network git
 # goes through the git CLI, never git2. Required for the dependency-hygiene gate.
 git2 = { version = "0.21.0", default-features = false }
+# Windows extended-length ("verbatim", \\?\) path stripping. std::fs::canonicalize
+# yields \\?\C:\... paths on Windows, which explorer/editors/terminals choke on;
+# dunce::canonicalize resolves the same as std but returns a clean, non-verbatim
+# path when representable. Zero-dependency, no OS/TLS/tauri linkage (already in the
+# tree transitively via tauri/tauri-build), so it keeps the core Tauri-free.
+dunce = "1"
 
 # Edge-only (the edge-wiring effort): local-time math the timezone-free core
 # deliberately omits. Already in the tree via sqlx, so enabling `local-offset` on

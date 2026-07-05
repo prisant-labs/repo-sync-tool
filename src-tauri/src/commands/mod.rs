@@ -292,7 +292,10 @@ pub async fn repo_open_remote(state: tauri::State<'_, AppState>, id: i64) -> Res
     let url = detail.remote_origin_url.ok_or_else(|| AppError::NotFound {
         entity: format!("remote origin URL for repo {id}"),
     })?;
-    crate::opener::open_url(&url)
+    // The raw `.git/config` URL is attacker-controlled, so `open_remote`
+    // validates/translates it (ssh -> https, reject file://, local/UNC paths)
+    // before it can reach the OS launcher (BL-NI-24 finding 2).
+    crate::opener::open_remote(&url)
 }
 
 /// List activity-log records, filtered (newest first).

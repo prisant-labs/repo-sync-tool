@@ -2856,6 +2856,7 @@ dependencies = [
 name = "reposync-core"
 version = "0.1.0"
 dependencies = [
+ "dunce",
  "git2",
  "reqwest 0.12.28",
  "serde",
