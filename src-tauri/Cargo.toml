@@ -33,6 +33,9 @@ tauri-build = { workspace = true }
 [dependencies]
 tauri = { workspace = true, features = ["tray-icon"] }
 tauri-specta = { workspace = true, features = ["derive", "typescript"] }
+# E-14 desktop notifications: OS-toast plugin. Registered in `lib.rs`; the
+# `notification:default` capability permission is granted in `capabilities/default.json`.
+tauri-plugin-notification = { workspace = true }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
 serde = { workspace = true }

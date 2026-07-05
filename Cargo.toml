@@ -31,6 +31,10 @@ tauri-build = "=2.6.3"
 specta = "=2.0.0-rc.25"
 specta-typescript = "=0.0.12"
 tauri-specta = "=2.0.0-rc.25"
+# E-14 desktop notifications: the OS-toast plugin (Windows toast / macOS
+# Notification Center behind one API). Edge-only - reposync-core never depends on
+# it; the firing DECISION is Tauri-free in the core, only the toast call is here.
+tauri-plugin-notification = "2"
 
 # Shared logic-crate dependencies.
 serde = { version = "1.0.228", features = ["derive"] }

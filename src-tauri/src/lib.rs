@@ -14,6 +14,7 @@
 mod commands;
 mod events;
 mod localtime;
+mod notify;
 mod opener;
 mod tray;
 mod windows;
@@ -168,6 +169,10 @@ pub fn run() {
     export_bindings("../src/lib/bindings.ts").expect("failed to export typescript bindings");
 
     tauri::Builder::default()
+        // E-14 desktop notifications: the OS-toast plugin (one API; the plugin maps
+        // to the Windows toast vs macOS Notification Center). The firing DECISION is
+        // in the Tauri-free core; this plugin is the only platform-specific piece.
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // Register the event registry so typed emit/listen resolve names.
@@ -175,6 +180,10 @@ pub fn run() {
 
             // Build the tray icon + menu (E-01 stub replaced by the GUI effort).
             tray::init(app)?;
+
+            // E-14: reconcile the notification permission once (Granted by default
+            // for an installed Windows app; a denial is logged, never fatal).
+            notify::ensure_permission(app.handle());
 
             // Initialize the pool + git engine synchronously during setup. The
             // tracer accepts a blocking init; later efforts can move this off
@@ -266,13 +275,22 @@ pub fn run() {
                 // manual command handlers contend the exact locks the jobs do.
                 let locks = {
                     use reposync_core::scheduler::{
-                        DbDueQuery, DbOutcomeWriter, Scheduler, SharedGitEngineSource, SystemClock,
-                        SystemJitter, UpdateNowJobRunner, DEFAULT_CONCURRENCY, ONE_MINUTE,
+                        DbDueQuery, Scheduler, SharedGitEngineSource, SystemClock, SystemJitter,
+                        UpdateNowJobRunner, DEFAULT_CONCURRENCY, ONE_MINUTE,
                     };
                     use std::sync::Arc;
 
+                    // E-14: the per-cycle notification buffer. The collecting outcome
+                    // writer fills it as each job records its outcome; the tick loop
+                    // drains + coalesces it after the cycle's jobs have all joined, so
+                    // a multi-repo cycle raises a BOUNDED set of toasts (AC4), not one
+                    // per repo. Cloned so the writer and the loop share one buffer.
+                    let cycle_notes = crate::notify::CycleNotifications::default();
+
                     // The clock carries the host's local UTC offset so quiet hours
-                    // are evaluated in local time, not UTC.
+                    // are evaluated in local time, not UTC. The SAME offset feeds the
+                    // notification firing site, so a toast's quiet-hours decision and
+                    // the scheduler's agree on "now" (E-14 LocalMinute contract).
                     let scheduler = Scheduler::new(
                         Arc::new(SystemClock::with_utc_offset_minutes(
                             crate::localtime::local_offset_minutes(),
@@ -281,16 +299,30 @@ pub fn run() {
                         Arc::new(SharedGitEngineSource::new(git_handle.clone())),
                         DbDueQuery::new(pool.clone()),
                         UpdateNowJobRunner::new(pool.clone()),
-                        DbOutcomeWriter::new(pool.clone()),
+                        crate::notify::CollectingOutcomeWriter::new(
+                            pool.clone(),
+                            cycle_notes.clone(),
+                        ),
                         DEFAULT_CONCURRENCY,
                     );
                     let locks = scheduler.locks();
                     let tick_handle = handle.clone();
+                    // The firing site reads settings (the notify toggles + quiet
+                    // hours) fresh per cycle from this pool clone.
+                    let notes_pool = pool.clone();
                     tauri::async_runtime::spawn(async move {
                         // Startup pass is best-effort; a failure must not kill the loop.
                         if let Err(e) = scheduler.start().await {
                             eprintln!("scheduler: startup pass failed: {e}");
                         }
+                        // Fire the startup pass's coalesced notifications too (its jobs
+                        // have all joined by the time `start()` returns).
+                        crate::notify::fire_cycle_from_collector(
+                            &tick_handle,
+                            &notes_pool,
+                            &cycle_notes,
+                        )
+                        .await;
                         let mut interval = tokio::time::interval(ONE_MINUTE);
                         interval.tick().await; // consume the immediate first tick
                         loop {
@@ -304,6 +336,14 @@ pub fn run() {
                                         ran,
                                         crate::localtime::now_unix(),
                                     );
+                                    // Coalesce + raise this cycle's notifications
+                                    // (E-14 AC4/AC5): the core decides, the edge fires.
+                                    crate::notify::fire_cycle_from_collector(
+                                        &tick_handle,
+                                        &notes_pool,
+                                        &cycle_notes,
+                                    )
+                                    .await;
                                 }
                                 Err(e) => eprintln!("scheduler: tick failed: {e}"),
                             }

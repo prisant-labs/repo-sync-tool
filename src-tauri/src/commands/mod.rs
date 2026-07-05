@@ -14,6 +14,7 @@ use reposync_core::ipc::{
     RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult, Settings, UpdateMode,
     UpdatePolicy, UpdateResult, WeeklySummary,
 };
+use reposync_core::notify::{NoteKind, NotifiableEvent};
 
 use crate::events::{emit_check_completed, emit_update_completed, emit_update_started};
 use crate::AppState;
@@ -228,12 +229,30 @@ fn refresh_report_error(
 /// (`NoToken`): fetch + persist, map any engine failure to an [`AppError`]
 /// ([`refresh_report_error`]), then re-read the [`RepoDetail`]. A MANUAL refresh fetches
 /// unconditionally, so the deferred release-cadence caveat (BL-NI-15b) does not apply.
+//
+// E-14: when the refresh brings in a genuinely NEW upstream release (the release tag is
+// now present and differs from what was cached), raise ONE release toast (gated by
+// notify_on_release + quiet hours inside the core's `decide`). This is the manual
+// release-notification trigger; background scheduled cycles notify only on failures
+// because the scheduled path is a git fetch/pull, not a GitHub release refresh. The
+// detailed rationale is a `//` (non-doc) comment on purpose - like `settings_set`'s - so
+// it does not bloat the tauri-specta-generated `repoRefreshMetadata` JSDoc; the injected
+// `app` is not part of the TypeScript surface, so the IPC binding shape is unchanged.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_refresh_metadata(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<RepoDetail, AppError> {
+    // Snapshot the cached release tag BEFORE the refresh so a genuinely new release
+    // can be told from an unchanged one (best-effort: a failed pre-read just means
+    // "unknown", and any newly-present tag is then treated as first-seen).
+    let before = reposync_core::store::repo_get(&state.pool, RepoId(id))
+        .await
+        .ok()
+        .and_then(|d| d.latest_release_tag);
+
     let transport = reposync_core::github::ReqwestTransport::new()?;
     let report = reposync_core::github::refresh_one(
         &state.pool,
@@ -246,7 +265,27 @@ pub async fn repo_refresh_metadata(
     if let Some(err) = refresh_report_error(&report, id) {
         return Err(err);
     }
-    reposync_core::store::repo_get(&state.pool, RepoId(id)).await
+    let detail = reposync_core::store::repo_get(&state.pool, RepoId(id)).await?;
+
+    // Fire a release toast only when the tag actually changed to a new value.
+    if let Some(new_tag) =
+        crate::notify::release_change(before.as_deref(), detail.latest_release_tag.as_deref())
+    {
+        if let Ok(settings) = reposync_core::store::settings_get(&state.pool).await {
+            crate::notify::fire_one(
+                &app,
+                &settings,
+                &NotifiableEvent {
+                    kind: NoteKind::Release,
+                    repo_id: id,
+                    repo_name: detail.local_name.clone(),
+                    detail: Some(new_tag.to_string()),
+                },
+            );
+        }
+    }
+
+    Ok(detail)
 }
 
 /// Open the repo's folder in the OS file manager.

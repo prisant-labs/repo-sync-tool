@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default capability for the RepoSync main window. E-01 skeleton: core defaults only. Later efforts add command/plugin permissions here.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "notification:default"]
 }
