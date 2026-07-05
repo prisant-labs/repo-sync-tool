@@ -11,8 +11,8 @@
 use reposync_core::error::AppError;
 use reposync_core::ipc::{
     ActivityFilter, ActivityRecord, CheckResult, DailySummary, GroupSummary, RepoDetail,
-    RepoFilter, RepoId, RepoSummary, ScanResult, Settings, UpdateMode, UpdatePolicy, UpdateResult,
-    WeeklySummary,
+    RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult, Settings, UpdateMode,
+    UpdatePolicy, UpdateResult, WeeklySummary,
 };
 
 use crate::events::{emit_check_completed, emit_update_completed, emit_update_started};
@@ -497,6 +497,17 @@ pub async fn groups_for_repo(
     repo_id: i64,
 ) -> Result<Vec<i64>, AppError> {
     reposync_core::store::groups_for_repo(&state.pool, repo_id).await
+}
+
+/// All repo-group memberships in ONE read (BL-NI-22): one entry per repo that
+/// belongs to at least one group, so the Repos screen builds its membership map in
+/// a single round-trip instead of fanning `groups_for_repo` out per visible repo.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_group_memberships(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<RepoGroupMembership>, AppError> {
+    reposync_core::store::repo_group_memberships(&state.pool).await
 }
 
 #[cfg(test)]

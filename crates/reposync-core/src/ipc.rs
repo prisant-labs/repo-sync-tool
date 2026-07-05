@@ -243,6 +243,19 @@ pub struct GroupSummary {
     pub repo_count: i64,
 }
 
+/// One repo's group memberships: the repo id and the ascending, de-duplicated ids
+/// of the groups it belongs to. The bulk read (`repo_group_memberships`) returns
+/// one of these per repo that has at least one membership, so the Repos screen can
+/// build its `repoId -> groupId[]` map in a SINGLE IPC round-trip instead of
+/// fanning `groups_for_repo` out per visible repo (BL-NI-22). A repo with no
+/// memberships is simply absent from the list.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoGroupMembership {
+    pub repo_id: i64,
+    pub group_ids: Vec<i64>,
+}
+
 // =============================================================================
 // Filter payloads (command parameters)
 // =============================================================================
@@ -516,6 +529,12 @@ mod tests {
             repo_count: 3,
         };
         assert_round_trip(&group);
+
+        let membership = RepoGroupMembership {
+            repo_id: 7,
+            group_ids: vec![1, 2, 5],
+        };
+        assert_round_trip(&membership);
 
         // The error half of every fallible command: Result<RepoId, AppError>.
         // `AppError` serializes through its frozen `AppErrorPayload` wire shape

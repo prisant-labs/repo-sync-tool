@@ -102,6 +102,18 @@ pub fn effective_frequency_min(repo_freq_min: i64, global_default: i64) -> i64 {
     }
 }
 
+/// Local minutes-of-day (`0..=1439`) for a UTC `now_unix` shifted by
+/// `utc_offset_minutes`. Pure and timezone-database-free: the offset is INJECTED
+/// by the edge (never read from the host's configured timezone here), so quiet
+/// hours are evaluated purely from the supplied offset and a fixed instant, and a
+/// test can pin both. `div_euclid`/`rem_euclid` keep a pre-epoch instant or a
+/// large negative offset in range (Rust's `%` would otherwise yield a negative
+/// minute for a negative `local_secs`).
+pub fn local_minutes_at(now_unix: i64, utc_offset_minutes: i64) -> i64 {
+    let local_secs = now_unix + utc_offset_minutes * 60;
+    local_secs.div_euclid(60).rem_euclid(1440)
+}
+
 /// The next check time (unix seconds) for a repo that just ran at `now_unix`,
 /// given its effective frequency in minutes. A non-positive frequency is clamped
 /// to [`DEFAULT_FREQUENCY_MIN`] so the next check is always strictly in the
@@ -208,8 +220,7 @@ impl Clock for SystemClock {
     }
 
     fn local_minutes_of_day(&self) -> i64 {
-        let local_secs = self.now_unix() + self.utc_offset_minutes * 60;
-        local_secs.div_euclid(60).rem_euclid(1440)
+        local_minutes_at(self.now_unix(), self.utc_offset_minutes)
     }
 }
 
@@ -885,6 +896,70 @@ mod tests {
         assert!(!in_quiet_hours(601, start, end));
     }
 
+    // --- local minute-of-day + non-UTC quiet-window gate (BL-NI-21c) ----------
+
+    #[test]
+    fn local_minutes_at_derives_from_injected_offset_only() {
+        // The local minute-of-day depends ONLY on the injected offset and the UTC
+        // instant, never on the host's configured timezone (there is no timezone
+        // read here). Pinned instants make the arithmetic exact and boundary-safe.
+        // Epoch (00:00 UTC) is minute 0 in UTC.
+        assert_eq!(local_minutes_at(0, 0), 0);
+        // 23:59 UTC (86340s) is minute 1439 - the top boundary.
+        assert_eq!(local_minutes_at(86_340, 0), 1439);
+        // A negative offset wraps backward across midnight without going negative:
+        // epoch at UTC-8 (PST, -480) is 16:00 the previous local day (minute 960).
+        assert_eq!(local_minutes_at(0, -480), 960);
+        // A whole-day offset is a no-op on the minute-of-day (rem_euclid keeps it
+        // in range even when local_secs goes negative).
+        assert_eq!(local_minutes_at(0, -1440), 0);
+        // A positive offset wraps forward past midnight: 23:59 UTC + 2h = 01:59.
+        assert_eq!(local_minutes_at(86_340, 120), 119);
+    }
+
+    #[test]
+    fn non_utc_quiet_window_gate_uses_local_time_not_utc() {
+        // A user in PST (UTC-8) with a 22:00..07:00 quiet window that spans
+        // midnight. Pick a single UTC instant that is 23:00 LOCAL (inside the quiet
+        // window) but 07:00 UTC (outside it). The gate must decide from the LOCAL
+        // minute, so the SAME instant is quiet in PST and active in UTC - proving
+        // the decision follows the injected offset, not the wall/UTC clock.
+        let (start, end) = (Some(1320), Some(420)); // 22:00 .. 07:00, wraps midnight
+        let pst = -480; // UTC-8
+                        // 111_600s = 1970-01-02 07:00:00 UTC. In PST that is 1970-01-01 23:00.
+        let now_unix = 111_600;
+        assert_eq!(local_minutes_at(now_unix, pst), 1380, "23:00 local (PST)");
+        assert_eq!(local_minutes_at(now_unix, 0), 420, "07:00 UTC");
+        assert!(
+            in_quiet_hours(local_minutes_at(now_unix, pst), start, end),
+            "23:00 PST is inside the 22:00..07:00 quiet window"
+        );
+        assert!(
+            !in_quiet_hours(local_minutes_at(now_unix, 0), start, end),
+            "the same instant read as 07:00 UTC is OUTSIDE the window (end is exclusive)"
+        );
+
+        // The production SystemClock derives its local minute the same way (offset
+        // injected via `with_utc_offset_minutes`), so it never reads the machine's
+        // timezone. Verify the clock delegates to the pure helper. Bracket the live
+        // read with two now_unix samples so a minute boundary crossing between reads
+        // cannot make this flaky: the live minute must equal the helper at one end.
+        let clock = SystemClock::with_utc_offset_minutes(pst);
+        let before = clock.now_unix();
+        let live = clock.local_minutes_of_day();
+        let after = clock.now_unix();
+        assert!(
+            live == local_minutes_at(before, pst) || live == local_minutes_at(after, pst),
+            "SystemClock's local minute is the injected-offset computation, not a tz read"
+        );
+
+        // A midnight boundary inside the wrap window: local minute 0 is quiet.
+        assert!(
+            in_quiet_hours(local_minutes_at(28_800, pst), start, end),
+            "00:00 local (PST) is inside 22:00..07:00"
+        );
+    }
+
     // --- effective frequency (per-repo override vs global default) ------------
 
     #[test]
@@ -1451,6 +1526,83 @@ mod tests {
         assert!(
             g1 <= d0,
             "the outcome-write txn must open only after the git call (git ..{g1}, db {d0}..{d1})"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn manual_op_and_scheduled_job_on_same_repo_serialize() {
+        // BL-NI-21(a): a manual `repo_check_now` / `repo_update_now` racing a
+        // scheduled check on the SAME repo must serialize on the shared per-repo
+        // mutex, so no two `git` processes ever run in one working tree.
+        //
+        // The manual command path holds `state.locks.lock_handle(id).lock_owned()`
+        // across its whole check (src-tauri `commands/mod.rs`: `repo_check_now`
+        // line 57, `repo_update_now` line 174). `state.locks` IS the value returned
+        // by `Scheduler::locks()` and handed to `AppState` in `lib.rs`. This test
+        // obtains the lock handle the SAME way AppState does (via `sched.locks()`),
+        // simulating the manual critical section, and proves a scheduled tick on
+        // that repo blocks until the manual op releases - then runs exactly once,
+        // never overlapping.
+        let inst = Instrument::default();
+        let runner = FakeJobRunner::new(inst.clone());
+        let dq = FakeDueQuery {
+            selection: selection(vec![due(7)]),
+        };
+        let sched = Arc::new(Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            dq,
+            runner,
+            FakeOutcomeWriter::new(),
+            4,
+        ));
+
+        // The manual command path's lock, obtained exactly as AppState obtains it.
+        let locks = sched.locks();
+        let manual = locks.lock_handle(RepoId(7));
+        let manual_guard = manual.lock_owned().await;
+
+        // Start a scheduled tick for repo 7 while the manual op holds the lock.
+        let tick = {
+            let sched = sched.clone();
+            tokio::spawn(async move { sched.tick_once().await })
+        };
+
+        // Let the scheduled job reach its per-repo mutex acquisition and block.
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            inst.max(),
+            0,
+            "the scheduled job must NOT enter git work while the manual op holds the repo lock"
+        );
+        assert!(
+            inst.events().is_empty(),
+            "no git entry/exit while blocked on the shared per-repo mutex, got {:?}",
+            inst.events()
+        );
+
+        // Release the manual op; the scheduled job now proceeds - exactly once.
+        drop(manual_guard);
+        let ran = tick
+            .await
+            .expect("tick task joins")
+            .expect("tick completes ok");
+        assert_eq!(
+            ran, 1,
+            "the scheduled tick runs the one due repo once the manual op releases"
+        );
+        assert_eq!(
+            inst.events(),
+            vec!["enter:7", "exit:7"],
+            "the scheduled job runs to completion once unblocked"
+        );
+        assert_eq!(
+            inst.max(),
+            1,
+            "manual and scheduled never run two git ops on one repo at once"
         );
     }
 

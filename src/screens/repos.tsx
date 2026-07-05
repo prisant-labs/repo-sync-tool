@@ -52,11 +52,10 @@ export function ReposScreen({
 
   const list = useMemo(() => repos.data ?? [], [repos.data]);
 
-  // Group memberships for every tracked repo, as Map<repoId, groupId[]>. This
-  // fans out one call per repo (see useRepoGroupMemberships); a `repos_in_group`
-  // query is the future optimization once repo counts grow.
-  const repoIds = useMemo(() => list.map((r) => r.id), [list]);
-  const memberships = useRepoGroupMemberships(repoIds);
+  // Group memberships for every tracked repo, as Map<repoId, groupId[]>, fetched
+  // in a single bulk call (see useRepoGroupMemberships; BL-NI-22). A repo with no
+  // groups is absent from the map; `null` means the read is loading or failed.
+  const memberships = useRepoGroupMemberships();
   const membershipMap = memberships.data;
   const refetchMemberships = memberships.refetch;
 
@@ -99,7 +98,7 @@ export function ReposScreen({
   }, [list]);
 
   // Repos in the active group (before the status / name filters narrow
-  // further). `null` means "not yet known" (membership fan-out still loading
+  // further). `null` means "not yet known" (the membership read is still loading
   // or failed), distinct from a genuine zero (finding 7 / BL-NI-27's sibling
   // defect in the E-16 spec: a null map must never read as "no members").
   const inGroupCount = useMemo(() => {
@@ -200,10 +199,10 @@ export function ReposScreen({
       >
         {() => {
           // With an active group filter, `filtered` depends on `membershipMap`
-          // (from the `groups_for_repo` fan-out). A `null` map means the fan-out
-          // is still loading or has failed, not that zero repos match (finding
-          // 7): show the shared loading/error presentation instead of the
-          // "no matches" empty state until membership is actually known.
+          // (from the bulk membership read). A `null` map means that read is still
+          // loading or has failed, not that zero repos match (finding 7): show the
+          // shared loading/error presentation instead of the "no matches" empty
+          // state until membership is actually known.
           if (activeGroupId !== null && membershipMap === null) {
             return (
               <AsyncPanel state={memberships}>

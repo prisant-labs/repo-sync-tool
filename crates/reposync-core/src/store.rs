@@ -16,8 +16,8 @@ use sqlx::{Row, SqlitePool};
 use crate::error::AppError;
 use crate::git::SystemGitEngine;
 use crate::ipc::{
-    GroupSummary, RepoDetail, RepoFilter, RepoId, RepoSummary, ScanCandidate, ScanResult, Settings,
-    UpdateMode, UpdatePolicy,
+    GroupSummary, RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanCandidate,
+    ScanResult, Settings, UpdateMode, UpdatePolicy,
 };
 
 /// The maximum directory depth a parent-folder scan descends (defense against a
@@ -643,6 +643,39 @@ pub async fn group_unassign(
     Ok(())
 }
 
+/// Every repo's group memberships in ONE read (BL-NI-22), returning one
+/// [`RepoGroupMembership`] per repo that belongs to at least one group. `repo_id`
+/// ascending; within each entry `group_ids` is ascending and de-duplicated by the
+/// join's composite primary key. A repo with no memberships is ABSENT (the caller
+/// treats an absent repo as "no groups", identical to `groups_for_repo` returning
+/// an empty list), so the result is empty when nothing is assigned. This collapses
+/// the Repos screen's per-repo `groups_for_repo` fan-out into a single query.
+pub async fn repo_group_memberships(
+    pool: &SqlitePool,
+) -> Result<Vec<RepoGroupMembership>, AppError> {
+    // ORDER BY repo_id groups each repo's rows contiguously, so a single pass with
+    // `last_mut` folds them into one entry per repo without a hash map; ORDER BY
+    // group_id gives the same ascending, de-duplicated ids `groups_for_repo` does.
+    let rows =
+        sqlx::query("SELECT repo_id, group_id FROM repo_groups ORDER BY repo_id ASC, group_id ASC")
+            .fetch_all(pool)
+            .await?;
+
+    let mut out: Vec<RepoGroupMembership> = Vec::new();
+    for r in &rows {
+        let repo_id: i64 = r.try_get("repo_id")?;
+        let group_id: i64 = r.try_get("group_id")?;
+        match out.last_mut() {
+            Some(last) if last.repo_id == repo_id => last.group_ids.push(group_id),
+            _ => out.push(RepoGroupMembership {
+                repo_id,
+                group_ids: vec![group_id],
+            }),
+        }
+    }
+    Ok(out)
+}
+
 /// The ids of every group a repo belongs to (ascending).
 pub async fn groups_for_repo(pool: &SqlitePool, repo_id: i64) -> Result<Vec<i64>, AppError> {
     let rows = sqlx::query("SELECT group_id FROM repo_groups WHERE repo_id = ? ORDER BY group_id")
@@ -1017,6 +1050,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quiet_hours_minute_of_day_survives_round_trip_at_boundaries() {
+        // BL-NI-21(b): the quiet-hours window is stored and read back as EXACT
+        // minute-of-day integers - no truncation or rounding through the SQLite
+        // INTEGER column - at the 0 and 1439 boundaries and for a wrap-around
+        // (start > end) window, and the round-tripped values feed `in_quiet_hours`
+        // correctly. The frontend's HH:MM <-> minute conversion (e.g. 22:00 <->
+        // 1320) has no JS test runner yet; this covers the persisted minute-of-day
+        // contract that conversion targets.
+        use crate::scheduler::in_quiet_hours;
+
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        let base = settings_get(&pool).await.expect("seed");
+
+        // Boundary same-day window [0, 1439): the extreme legal minute-of-day values.
+        let boundary = Settings {
+            quiet_hours_start: Some(0),
+            quiet_hours_end: Some(1439),
+            ..base.clone()
+        };
+        settings_set(&pool, &boundary).await.expect("set boundary");
+        let back = settings_get(&pool).await.expect("get boundary");
+        assert_eq!(
+            back.quiet_hours_start,
+            Some(0),
+            "minute 0 round-trips exactly"
+        );
+        assert_eq!(
+            back.quiet_hours_end,
+            Some(1439),
+            "minute 1439 round-trips exactly"
+        );
+        // The persisted bounds gate correctly: start inclusive, end exclusive.
+        assert!(
+            in_quiet_hours(0, back.quiet_hours_start, back.quiet_hours_end),
+            "start minute 0 is inside the window"
+        );
+        assert!(
+            !in_quiet_hours(1439, back.quiet_hours_start, back.quiet_hours_end),
+            "end minute 1439 is exclusive"
+        );
+
+        // Wrap-around window 22:00..07:00 (1320 > 420): must survive the round trip
+        // and gate correctly across midnight.
+        let wrap = Settings {
+            quiet_hours_start: Some(1320),
+            quiet_hours_end: Some(420),
+            ..base
+        };
+        settings_set(&pool, &wrap).await.expect("set wrap");
+        let back = settings_get(&pool).await.expect("get wrap");
+        assert_eq!(back.quiet_hours_start, Some(1320));
+        assert_eq!(back.quiet_hours_end, Some(420));
+        assert!(
+            in_quiet_hours(1320, back.quiet_hours_start, back.quiet_hours_end),
+            "22:00 (start) is inside, inclusive"
+        );
+        assert!(
+            in_quiet_hours(0, back.quiet_hours_start, back.quiet_hours_end),
+            "midnight is inside the wrap-around window"
+        );
+        assert!(
+            in_quiet_hours(1439, back.quiet_hours_start, back.quiet_hours_end),
+            "23:59 is inside the wrap-around window"
+        );
+        assert!(
+            !in_quiet_hours(420, back.quiet_hours_start, back.quiet_hours_end),
+            "07:00 (end) is exclusive"
+        );
+        assert!(
+            !in_quiet_hours(700, back.quiet_hours_start, back.quiet_hours_end),
+            "midday is active"
+        );
+    }
+
+    #[tokio::test]
     async fn scan_parent_finds_repos_and_marks_tracked() {
         let Ok(git) = SystemGitEngine::discover() else {
             eprintln!("skipping scan_parent_finds_repos_and_marks_tracked: git missing");
@@ -1263,5 +1372,58 @@ mod tests {
         group_delete(&pool, group).await.expect("delete again");
         group_delete(&pool, 9999).await.expect("delete missing");
         assert!(groups_list(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bulk_repo_group_memberships_groups_by_repo() {
+        // BL-NI-22: the single bulk read that replaces the Repos screen's per-repo
+        // `groups_for_repo` fan-out. It returns one entry per repo WITH memberships
+        // (repos with none are absent), repo_id ascending, group_ids ascending, and
+        // must agree with `groups_for_repo` repo-by-repo.
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        // Empty when nothing is assigned (not an error, just no rows).
+        assert!(
+            repo_group_memberships(&pool).await.unwrap().is_empty(),
+            "no memberships yields an empty list"
+        );
+
+        let g1 = group_create(&pool, "one", None).await.expect("g1").id;
+        let g2 = group_create(&pool, "two", None).await.expect("g2").id;
+        let r1 = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
+        let r2 = insert_repo(&pool, "beta", "C:/repos/beta").await;
+        // r3 belongs to NO group, so it must be absent from the bulk result.
+        let _r3 = insert_repo(&pool, "gamma", "C:/repos/gamma").await;
+
+        // Assign r1 to g2 then g1 (out of order) so the ascending sort is exercised;
+        // r2 to g2 only.
+        group_assign(&pool, r1, g2).await.expect("assign r1 g2");
+        group_assign(&pool, r1, g1).await.expect("assign r1 g1");
+        group_assign(&pool, r2, g2).await.expect("assign r2 g2");
+
+        let all = repo_group_memberships(&pool).await.expect("bulk read");
+        assert_eq!(all.len(), 2, "only repos with >=1 membership appear");
+        // repo_id ascending.
+        assert_eq!(all[0].repo_id, r1);
+        assert_eq!(all[1].repo_id, r2);
+        // group_ids ascending regardless of assignment order.
+        let mut expected_r1 = vec![g1, g2];
+        expected_r1.sort_unstable();
+        assert_eq!(
+            all[0].group_ids, expected_r1,
+            "r1's ids are sorted ascending"
+        );
+        assert_eq!(all[1].group_ids, vec![g2]);
+
+        // The bulk read must agree with the per-repo `groups_for_repo` it replaces.
+        for entry in &all {
+            assert_eq!(
+                entry.group_ids,
+                groups_for_repo(&pool, entry.repo_id).await.unwrap(),
+                "bulk membership must match groups_for_repo for repo {}",
+                entry.repo_id
+            );
+        }
     }
 }

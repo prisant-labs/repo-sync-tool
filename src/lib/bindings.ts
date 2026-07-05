@@ -101,6 +101,12 @@ export const commands = {
 	groupUnassign: (repoId: number, groupId: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_unassign", { repoId, groupId })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  List the ids of the groups a repo belongs to (ascending). */
 	groupsForRepo: (repoId: number) => typedError<number[], AppErrorPayload>(__TAURI_INVOKE("groups_for_repo", { repoId })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  All repo-group memberships in ONE read (BL-NI-22): one entry per repo that
+	 *  belongs to at least one group, so the Repos screen builds its membership map in
+	 *  a single round-trip instead of fanning `groups_for_repo` out per visible repo.
+	 */
+	repoGroupMemberships: () => typedError<RepoGroupMembership[], AppErrorPayload>(__TAURI_INVOKE("repo_group_memberships")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 };
 
 /** Events */
@@ -318,6 +324,19 @@ export type RepoFilter = {
 	enabledOnly: boolean | null,
 	hostType: string | null,
 	query: string | null,
+};
+
+/**
+ *  One repo's group memberships: the repo id and the ascending, de-duplicated ids
+ *  of the groups it belongs to. The bulk read (`repo_group_memberships`) returns
+ *  one of these per repo that has at least one membership, so the Repos screen can
+ *  build its `repoId -> groupId[]` map in a SINGLE IPC round-trip instead of
+ *  fanning `groups_for_repo` out per visible repo (BL-NI-22). A repo with no
+ *  memberships is simply absent from the list.
+ */
+export type RepoGroupMembership = {
+	repoId: number,
+	groupIds: number[],
 };
 
 /**  Stable identifier for a tracked repo (its `repos.id`). */

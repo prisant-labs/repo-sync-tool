@@ -23,10 +23,10 @@ use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
     activity_list, group_assign, group_create, group_delete, group_list, group_rename,
-    group_unassign, groups_for_repo, repo_add_path, repo_check_now, repo_get, repo_list,
-    repo_open_editor, repo_open_folder, repo_open_remote, repo_open_terminal,
-    repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_enabled, repo_set_policy,
-    repo_update_now, settings_get, settings_set, summary_today, summary_week,
+    group_unassign, groups_for_repo, repo_add_path, repo_check_now, repo_get,
+    repo_group_memberships, repo_list, repo_open_editor, repo_open_folder, repo_open_remote,
+    repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_enabled,
+    repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
 };
 use events::{
     CheckCompleted, CheckStarted, ErrorRaised, NotificationFired, SchedulerTick, StateChanged,
@@ -126,6 +126,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             group_assign,
             group_unassign,
             groups_for_repo,
+            repo_group_memberships,
         ])
         .events(collect_events![
             // tracer (E-12)

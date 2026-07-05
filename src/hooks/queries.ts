@@ -49,22 +49,22 @@ export function useGroupsForRepo(repoId: number | null) {
 }
 
 /**
- * Group memberships for many repos at once, as a `Map<repoId, groupId[]>`.
+ * Group memberships for every repo, as a `Map<repoId, groupId[]>`, in ONE IPC
+ * call (`repo_group_memberships`) instead of fanning `groups_for_repo` out per
+ * repo (BL-NI-22, was O(N) round-trips).
  *
- * This fans out one `groups_for_repo` call per repo (O(N) IPC round-trips),
- * which is fine for V1 repo counts. A dedicated `repos_in_group` query would
- * collapse the fan-out into a single call and is the natural future
- * optimization once repo counts grow.
+ * The bulk read returns one entry per repo that belongs to at least one group, so
+ * a repo with no memberships is simply ABSENT from the map. Every consumer reads
+ * through `?.get(id)` / `?? []` (see `screens/repos.tsx`), so an absent repo reads
+ * as "no groups", identical to the old per-repo empty array. `data` is still
+ * `Map | null` where `null` means loading-or-error, preserving the Repos screen's
+ * AsyncPanel loading/error presentation.
  */
-export function useRepoGroupMemberships(repoIds: number[]) {
-  const key = repoIds.join(",");
+export function useRepoGroupMemberships() {
   return useAsync(async () => {
-    const lists = await Promise.all(repoIds.map((id) => unwrap(commands.groupsForRepo(id))));
-    const map = new Map<number, number[]>();
-    repoIds.forEach((id, i) => map.set(id, lists[i]));
-    return map;
-    // Re-run only when the set of repo ids changes (keyed by their join above).
-  }, [key]);
+    const rows = await unwrap(commands.repoGroupMemberships());
+    return new Map<number, number[]>(rows.map((r) => [r.repoId, r.groupIds]));
+  }, []);
 }
 
 /**
