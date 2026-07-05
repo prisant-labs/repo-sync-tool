@@ -19,6 +19,16 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   `repos.check_frequency_min` to `0`, the INHERIT sentinel, so existing repos
   follow the global cadence (`settings.global_check_minutes`). Additive and
   data-only.
+- `0004_default_cadence_inherit.sql` - aligns the `repos.check_frequency_min`
+  schema DEFAULT with the inherit model (BL-NI-34): `0`, not the old `360`, so a
+  future INSERT relying on the column default inherits the global cadence instead
+  of silently creating a 6-hour override. SQLite cannot alter a column default in
+  place, so this is a table rebuild (create-copy-drop-rename); it carries the
+  `-- no-transaction` directive because the rebuild disables foreign keys (only
+  legal outside a transaction) so `DROP TABLE repos` does not cascade-delete the
+  child rows, and wraps the rebuild in its own `BEGIN`/`COMMIT` for atomicity.
+  Additive and non-destructive: every column and row is preserved with the same
+  id, so all inbound foreign keys stay valid.
 
 ## Migration policy
 

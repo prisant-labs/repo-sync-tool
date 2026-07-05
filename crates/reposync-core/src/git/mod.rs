@@ -323,6 +323,23 @@ impl SystemGitEngine {
         availability
     }
 
+    /// A fabricated engine for tests that need an engine VALUE without spawning a
+    /// real `git --version` probe or depending on the host having git installed.
+    /// The state is a dummy `Available` at the supported floor with a placeholder
+    /// exe; it is never actually executed (callers - e.g. the scheduler's git-gate
+    /// tests - drive git through fakes and only need "an engine is present"). Gated
+    /// to test / `test-support` builds so production never sees it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fabricated_for_test() -> SystemGitEngine {
+        SystemGitEngine {
+            git_exe: Some(PathBuf::from("git")),
+            explicit: None,
+            availability: GitAvailability::Available {
+                version: MIN_GIT_VERSION,
+            },
+        }
+    }
+
     /// The current availability state (AC8).
     pub fn availability(&self) -> &GitAvailability {
         &self.availability

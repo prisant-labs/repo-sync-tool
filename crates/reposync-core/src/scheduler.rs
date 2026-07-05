@@ -20,12 +20,14 @@
 //! clock and zero real-time sleeps.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sqlx::{Row, SqlitePool};
-use tokio::sync::{Mutex as TokioMutex, Semaphore};
+use tokio::sync::{Mutex as TokioMutex, RwLock, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::error::AppError;
@@ -347,8 +349,17 @@ pub trait DueQuery: Send + Sync {
 /// Faked in unit tests; the production impl calls
 /// [`crate::repo::update_now_scheduled`] so the safety rules and the git
 /// execution live in exactly one place.
+///
+/// The engine is passed IN per job (not owned by the runner) so every job in a
+/// tick uses the engine the scheduler resolved from the live handle at tick
+/// start (BL-NI-23 / finding 6): a re-probe that swaps a new git in is picked up
+/// on the next tick without a restart, and the runner never holds a stale clone.
 pub trait JobRunner: Send + Sync {
-    fn run(&self, id: RepoId) -> impl std::future::Future<Output = RunOutcome> + Send;
+    fn run(
+        &self,
+        id: RepoId,
+        git: SystemGitEngine,
+    ) -> impl std::future::Future<Output = RunOutcome> + Send;
 }
 
 /// The outcome-writer seam: persist `next_check_at` + the failure-counter /
@@ -364,6 +375,54 @@ pub trait OutcomeWriter: Send + Sync {
 }
 
 // =============================================================================
+// The live git-engine seam (BL-NI-23 / finding 6).
+// =============================================================================
+
+/// The shared, swappable git-engine handle. The edge owns ONE of these in its
+/// managed state; when the user fixes a broken/missing git path in Settings it
+/// re-probes and swaps the inner engine (BL-NI-19 / BL-NI-26). The resident
+/// scheduler reads the CURRENT engine through the SAME handle each cycle, so a
+/// live re-probe is picked up by the background loop WITHOUT a restart. `None`
+/// means "no usable git right now" (git absent at startup, or an explicit
+/// override that does not resolve).
+pub type SharedGitEngine = Arc<RwLock<Option<SystemGitEngine>>>;
+
+/// A source of the currently-live git engine, read fresh at the START of each
+/// scheduler cycle. Returning `None` makes the scheduler SKIP the whole cycle
+/// (no due query, no jobs, no writes), so an absent git never advances
+/// `next_check_at` or accrues per-repo failures - the moment git appears, every
+/// due repo is checked on the next tick. This seam is what keeps the core
+/// Tauri-free: the edge injects the live handle; the core never names Tauri.
+pub trait GitEngineSource: Send + Sync {
+    /// The engine currently in effect, or `None` when no usable git is available.
+    /// Boxed (not RPITIT) so the scheduler can hold `Arc<dyn GitEngineSource>`
+    /// without a fourth generic parameter.
+    fn current(&self) -> Pin<Box<dyn Future<Output = Option<SystemGitEngine>> + Send>>;
+}
+
+/// The production [`GitEngineSource`]: reads the current engine out of the shared,
+/// swappable [`SharedGitEngine`] handle. Cloning the engine out under a short read
+/// guard (the engine is cheap to clone - it wraps a path + availability state)
+/// means the loop never holds the lock across git work and always sees the latest
+/// swapped-in engine.
+pub struct SharedGitEngineSource {
+    handle: SharedGitEngine,
+}
+
+impl SharedGitEngineSource {
+    pub fn new(handle: SharedGitEngine) -> SharedGitEngineSource {
+        SharedGitEngineSource { handle }
+    }
+}
+
+impl GitEngineSource for SharedGitEngineSource {
+    fn current(&self) -> Pin<Box<dyn Future<Output = Option<SystemGitEngine>> + Send>> {
+        let handle = self.handle.clone();
+        Box::pin(async move { handle.read().await.clone() })
+    }
+}
+
+// =============================================================================
 // The scheduler.
 // =============================================================================
 
@@ -373,11 +432,17 @@ pub trait OutcomeWriter: Send + Sync {
 pub struct Scheduler<Q, J, W> {
     clock: Arc<dyn Clock>,
     jitter: Arc<dyn Jitter>,
+    /// The live git-engine source, read at the start of each cycle so the loop
+    /// picks up a re-probe and skips cleanly when git is absent (BL-NI-23).
+    git_source: Arc<dyn GitEngineSource>,
     due_query: Q,
     job_runner: Arc<J>,
     outcome_writer: Arc<W>,
     semaphore: Arc<Semaphore>,
     locks: RepoLocks,
+    /// Deduplicates the "no git engine" skip log so a long-resident git-less
+    /// session emits one clear line per absence episode, not one every minute.
+    git_absent_logged: AtomicBool,
 }
 
 impl<Q, J, W> Scheduler<Q, J, W>
@@ -391,6 +456,7 @@ where
     pub fn new(
         clock: Arc<dyn Clock>,
         jitter: Arc<dyn Jitter>,
+        git_source: Arc<dyn GitEngineSource>,
         due_query: Q,
         job_runner: J,
         outcome_writer: W,
@@ -399,11 +465,13 @@ where
         Scheduler {
             clock,
             jitter,
+            git_source,
             due_query,
             job_runner: Arc::new(job_runner),
             outcome_writer: Arc::new(outcome_writer),
             semaphore: Arc::new(Semaphore::new(concurrency.max(1))),
             locks: RepoLocks::default(),
+            git_absent_logged: AtomicBool::new(false),
         }
     }
 
@@ -430,6 +498,26 @@ where
     }
 
     async fn run_due(&self, startup: bool) -> Result<usize, AppError> {
+        // Live git gate (BL-NI-23 / finding 6): read the CURRENT engine from the
+        // shared handle each cycle. If no usable git is available right now, skip
+        // the WHOLE cycle - no due query, no jobs, no `next_check_at` writes - so
+        // an absent git never advances a repo's schedule or accrues failures. The
+        // instant git appears (a settings re-probe swaps in an engine), the next
+        // tick runs the still-due repos. One clear log line per absence episode
+        // (deduped so a long-resident git-less session does not spam every tick).
+        let Some(engine) = self.git_source.current().await else {
+            if !self.git_absent_logged.swap(true, Ordering::SeqCst) {
+                eprintln!(
+                    "scheduler: no usable git engine; skipping scheduled checks \
+                     until git is available (set a valid git path in Settings)"
+                );
+            }
+            return Ok(0);
+        };
+        // Git is back (or was always present): clear the dedup flag so the next
+        // absence logs afresh.
+        self.git_absent_logged.store(false, Ordering::SeqCst);
+
         let now = self.clock.now_unix();
         let now_min = self.clock.local_minutes_of_day();
         let selection = self.due_query.select_due(now).await?;
@@ -443,11 +531,11 @@ where
         }
         let due = selection.candidates;
         let count = due.len();
-        self.spawn_and_join(due, startup).await;
+        self.spawn_and_join(due, startup, engine).await;
         Ok(count)
     }
 
-    async fn spawn_and_join(&self, due: Vec<DueRepo>, startup: bool) {
+    async fn spawn_and_join(&self, due: Vec<DueRepo>, startup: bool, engine: SystemGitEngine) {
         let mut set = JoinSet::new();
         for repo in due {
             let offset = if startup {
@@ -462,6 +550,10 @@ where
             let sem = self.semaphore.clone();
             let jr = self.job_runner.clone();
             let ow = self.outcome_writer.clone();
+            // Every job in this tick runs against the engine resolved from the live
+            // handle at tick start (cheap to clone), so a mid-tick swap can never
+            // leave one job on a stale engine and another on a new one.
+            let git = engine.clone();
             // Each job reads its OWN completion time from the clock (AC6: next_check_at
             // "after each job"), so a slow/queued job does not inherit the stale
             // tick-start time.
@@ -472,7 +564,7 @@ where
                 if offset > 0 {
                     tokio::time::sleep(Duration::from_secs(offset as u64)).await;
                 }
-                run_job(repo, clock, locks, sem, jr, ow).await;
+                run_job(repo, clock, locks, sem, jr, ow, git).await;
             });
         }
         while set.join_next().await.is_some() {}
@@ -511,6 +603,7 @@ async fn run_job<J, W>(
     semaphore: Arc<Semaphore>,
     job_runner: Arc<J>,
     outcome_writer: Arc<W>,
+    git: SystemGitEngine,
 ) where
     J: JobRunner,
     W: OutcomeWriter,
@@ -527,8 +620,9 @@ async fn run_job<J, W>(
         .await
         .expect("scheduler semaphore is never closed");
     // 3. The git work, through the SHARED E-07 decide -> execute path, with NO DB
-    //    transaction open across it.
-    let outcome = job_runner.run(repo.id).await;
+    //    transaction open across it. The engine is the one resolved from the live
+    //    handle at tick start (BL-NI-23), so it is always the current git.
+    let outcome = job_runner.run(repo.id, git).await;
     // Release the global permit as soon as the git work is done - the DB write
     // below needs no git slot. Releasing the permit before the mutex is the
     // reverse of the acquisition order.
@@ -662,25 +756,78 @@ impl OutcomeWriter for DbOutcomeWriter {
     }
 }
 
+/// Recompute `next_check_at` for every INHERIT-mode repo after the global cadence
+/// changed, so a lowered or raised `settings.global_check_minutes` takes effect on
+/// already-scheduled repos WITHOUT waiting out their stale timestamps
+/// (BL-NI-25 / finding 4). Called by the edge's `settings_set` handler when (and
+/// only when) the global cadence actually changed.
+///
+/// Invariant: for each ENABLED, non-auto-paused repo whose `check_frequency_min`
+/// is `0` (the inherit sentinel) that has completed at least one check
+/// (`last_checked_at IS NOT NULL`), the next check becomes
+/// `max(now, last_checked_at + new_global_minutes * 60)`:
+///   - a LOWERED cadence can put that time in the past, which `max(now, ..)`
+///     clamps to `now` so the repo becomes due on the very NEXT tick (never
+///     scheduled retroactively in the past, which would busy-loop it);
+///   - a RAISED cadence pushes the next check further out from the last check, so
+///     the longer interval takes effect immediately.
+///
+/// A repo with a POSITIVE per-repo override is untouched (its cadence did not
+/// change). A never-checked repo (`last_checked_at IS NULL`) is left as-is: it is
+/// already due now, so there is nothing to bring forward. Disabled and
+/// auto-paused repos are left alone - they are not being scheduled, so
+/// rescheduling them would only pre-empt the enable/unpause path. This mirrors
+/// [`next_check_at`]'s minute->second cadence and future-clamp, anchored on the
+/// last completed check instead of a fresh completion time.
+///
+/// Returns the number of repo rows rescheduled.
+pub async fn reschedule_inherit_repos(
+    pool: &SqlitePool,
+    now_unix: i64,
+    new_global_minutes: i64,
+) -> Result<u64, AppError> {
+    // The global cadence is validated `>= 1` before it is persisted; clamp
+    // defensively so a bad value can never schedule a check in the past.
+    let freq_secs = new_global_minutes.max(1) * 60;
+    let res = sqlx::query(
+        "UPDATE repo_local_state \
+         SET next_check_at = MAX(?, last_checked_at + ?) \
+         WHERE last_checked_at IS NOT NULL \
+           AND auto_paused = 0 \
+           AND repo_id IN ( \
+               SELECT id FROM repos WHERE check_frequency_min = 0 AND enabled = 1 \
+           )",
+    )
+    .bind(now_unix)
+    .bind(freq_secs)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected())
+}
+
 /// The production [`JobRunner`]: runs each repo through the SHARED
 /// [`crate::repo::update_now_scheduled`] path (decide via E-07, execute via E-03),
 /// returning the classified [`RunOutcome`]. A hard error maps to a transient
 /// network failure (the retry path), except an auth error which pauses - the same
-/// auth-vs-transient split the in-Ok-path classification makes.
+/// auth-vs-transient split the in-Ok-path classification makes. The git engine is
+/// supplied per job by the scheduler (read from the live handle each cycle), not
+/// owned here, so a re-probe is honored without a restart (BL-NI-23).
 pub struct UpdateNowJobRunner {
     pool: SqlitePool,
-    git: Arc<SystemGitEngine>,
 }
 
 impl UpdateNowJobRunner {
-    pub fn new(pool: SqlitePool, git: Arc<SystemGitEngine>) -> UpdateNowJobRunner {
-        UpdateNowJobRunner { pool, git }
+    pub fn new(pool: SqlitePool) -> UpdateNowJobRunner {
+        UpdateNowJobRunner { pool }
     }
 }
 
 impl JobRunner for UpdateNowJobRunner {
-    async fn run(&self, id: RepoId) -> RunOutcome {
-        match repo::update_now_scheduled(&self.pool, &self.git, id).await {
+    async fn run(&self, id: RepoId, git: SystemGitEngine) -> RunOutcome {
+        // `git` is the engine the scheduler read from the live handle this cycle,
+        // so a re-probe (settings fixing the git path) is honored without a
+        // restart - the runner never holds a stale clone (BL-NI-23).
+        match repo::update_now_scheduled(&self.pool, &git, id).await {
             Ok(scheduled) => scheduled.run_outcome,
             Err(AppError::AuthFailed) => RunOutcome::AuthFailure,
             Err(_) => RunOutcome::NetworkFailure,
@@ -977,7 +1124,10 @@ mod tests {
         }
     }
     impl JobRunner for FakeJobRunner {
-        async fn run(&self, id: RepoId) -> RunOutcome {
+        async fn run(&self, id: RepoId, _git: SystemGitEngine) -> RunOutcome {
+            // The fake drives git through the instrument, not the real engine, so
+            // the injected engine is ignored - it only exists to prove the
+            // scheduler passes the live one through (BL-NI-23).
             let start = self.inst.enter_git(id.0);
             if let Some(b) = &self.gate {
                 b.wait().await;
@@ -989,6 +1139,24 @@ mod tests {
                 .unwrap_or(RunOutcome::Success);
             self.inst.exit_git(id.0, start);
             outcome
+        }
+    }
+
+    /// A [`GitEngineSource`] that always reports git PRESENT via a fabricated
+    /// engine (no `git --version` subprocess, no host-git dependency), so the tick
+    /// gate passes for the orchestration tests whose fake job runner never touches
+    /// the real engine. The absent/re-probe path is covered separately through the
+    /// production [`SharedGitEngineSource`] seam
+    /// (`scheduler_skips_when_git_absent_then_runs_after_live_swap`).
+    struct FakeEngineSource;
+    impl FakeEngineSource {
+        fn present() -> Arc<FakeEngineSource> {
+            Arc::new(FakeEngineSource)
+        }
+    }
+    impl GitEngineSource for FakeEngineSource {
+        fn current(&self) -> Pin<Box<dyn Future<Output = Option<SystemGitEngine>> + Send>> {
+            Box::pin(async move { Some(SystemGitEngine::fabricated_for_test()) })
         }
     }
 
@@ -1109,6 +1277,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1136,6 +1305,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1161,6 +1331,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1209,6 +1380,7 @@ mod tests {
                     sem,
                     runner,
                     writer,
+                    SystemGitEngine::fabricated_for_test(),
                 )
                 .await;
             })
@@ -1255,6 +1427,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             writer,
@@ -1299,6 +1472,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 1380),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1323,6 +1497,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1346,6 +1521,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             Arc::new(PanicJitter),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1369,6 +1545,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             jitter.clone(),
+            FakeEngineSource::present(),
             dq,
             runner,
             FakeOutcomeWriter::new(),
@@ -1411,6 +1588,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             writer,
@@ -1446,6 +1624,7 @@ mod tests {
         let sched = Scheduler::new(
             FakeClock::new(1000, 600),
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             runner,
             writer,
@@ -1475,6 +1654,7 @@ mod tests {
         let sched = Scheduler::new(
             clock,
             FakeJitter::new(0),
+            FakeEngineSource::present(),
             dq,
             FakeJobRunner::new(Instrument::default()),
             writer,
@@ -1662,6 +1842,188 @@ mod tests {
             read_next_check_at(&pool, overridden).await,
             Some(now + 45 * 60),
             "a positive per-repo override wins over the global cadence"
+        );
+    }
+
+    // =========================================================================
+    // Reschedule on global-cadence change (BL-NI-25 / finding 4): lowering or
+    // raising settings.global_check_minutes re-cadences already-scheduled INHERIT
+    // repos immediately; explicit-override, paused, disabled, and never-checked
+    // repos are left untouched.
+    // =========================================================================
+
+    #[tokio::test]
+    async fn reschedule_recomputes_only_inherit_repos_on_cadence_change() {
+        async fn insert_repo(pool: &SqlitePool, name: &str, freq_min: i64, enabled: i64) -> i64 {
+            sqlx::query(
+                "INSERT INTO repos (local_name, local_path, created_at, check_frequency_min, enabled) \
+                 VALUES (?, ?, 0, ?, ?)",
+            )
+            .bind(name)
+            .bind(name)
+            .bind(freq_min)
+            .bind(enabled)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid()
+        }
+        async fn set_state(
+            pool: &SqlitePool,
+            id: i64,
+            last_checked_at: Option<i64>,
+            next_check_at: Option<i64>,
+            auto_paused: i64,
+        ) {
+            sqlx::query(
+                "INSERT INTO repo_local_state \
+                 (repo_id, last_checked_at, next_check_at, auto_paused, consecutive_failures) \
+                 VALUES (?, ?, ?, ?, 0)",
+            )
+            .bind(id)
+            .bind(last_checked_at)
+            .bind(next_check_at)
+            .bind(auto_paused)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        async fn next_of(pool: &SqlitePool, id: i64) -> Option<i64> {
+            sqlx::query("SELECT next_check_at FROM repo_local_state WHERE repo_id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("next_check_at")
+                .unwrap()
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = crate::db::open_pool(&tmp.path().join("resched.db"))
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let now = 1_000_000i64;
+        let old_next = now + 320 * 60; // scheduled under the old 360m cadence
+                                       // Enabled, inherit, last checked 40m ago: the ONLY repo that reschedules.
+        let inherit = insert_repo(&pool, "inherit", 0, 1).await;
+        set_state(&pool, inherit, Some(now - 40 * 60), Some(old_next), 0).await;
+        // Positive per-repo override: its cadence did not change, so untouched.
+        let overridden = insert_repo(&pool, "override", 90, 1).await;
+        set_state(
+            &pool,
+            overridden,
+            Some(now - 40 * 60),
+            Some(now + 50 * 60),
+            0,
+        )
+        .await;
+        // Auto-paused inherit repo: not being scheduled, so untouched.
+        let paused = insert_repo(&pool, "paused", 0, 1).await;
+        set_state(&pool, paused, Some(now - 40 * 60), Some(old_next), 1).await;
+        // Disabled inherit repo: not being scheduled, so untouched.
+        let disabled = insert_repo(&pool, "disabled", 0, 0).await;
+        set_state(&pool, disabled, Some(now - 40 * 60), Some(old_next), 0).await;
+        // Never-checked inherit repo: already due, so left as-is (not pushed out).
+        let fresh = insert_repo(&pool, "fresh", 0, 1).await;
+        set_state(&pool, fresh, None, None, 0).await;
+
+        // LOWER the global cadence to 30m: inherit's next = max(now, (now-40m)+30m)
+        // = max(now, now-10m) = now, so it becomes due on the next tick.
+        let n = reschedule_inherit_repos(&pool, now, 30).await.unwrap();
+        assert_eq!(
+            n, 1,
+            "only the enabled, non-paused, checked, inherit repo is rescheduled"
+        );
+        assert_eq!(
+            next_of(&pool, inherit).await,
+            Some(now),
+            "a lowered cadence landing in the past clamps to now (due next tick)"
+        );
+        assert_eq!(
+            next_of(&pool, overridden).await,
+            Some(now + 50 * 60),
+            "a positive per-repo override is untouched"
+        );
+        assert_eq!(
+            next_of(&pool, paused).await,
+            Some(old_next),
+            "an auto-paused repo is untouched"
+        );
+        assert_eq!(
+            next_of(&pool, disabled).await,
+            Some(old_next),
+            "a disabled repo is untouched"
+        );
+        assert_eq!(
+            next_of(&pool, fresh).await,
+            None,
+            "a never-checked repo stays due (unchanged)"
+        );
+
+        // RAISE the global cadence to 600m: recomputed from the last check, so
+        // inherit's next = max(now, (now-40m)+600m) = now + 560m.
+        let n2 = reschedule_inherit_repos(&pool, now, 600).await.unwrap();
+        assert_eq!(n2, 1);
+        assert_eq!(
+            next_of(&pool, inherit).await,
+            Some(now + 560 * 60),
+            "a raised cadence pushes the next check out from the last completed check"
+        );
+    }
+
+    // =========================================================================
+    // Live git gate (BL-NI-23 / finding 6): with no git the whole cycle skips
+    // (no jobs, no next_check_at writes); a re-probe that swaps an engine into the
+    // SAME shared handle is picked up on the very next tick with no restart. Runs
+    // through the REAL SharedGitEngineSource seam, so this is the production path.
+    // =========================================================================
+
+    #[tokio::test]
+    async fn scheduler_skips_when_git_absent_then_runs_after_live_swap() {
+        // The shared, swappable handle starts EMPTY: git absent at startup.
+        let handle: SharedGitEngine = Arc::new(RwLock::new(None));
+        let inst = Instrument::default();
+        let runner = FakeJobRunner::new(inst.clone());
+        let writer = FakeOutcomeWriter::new();
+        let writer_handle = writer.clone();
+        let dq = FakeDueQuery {
+            selection: selection(vec![due(1), due(2)]),
+        };
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            Arc::new(SharedGitEngineSource::new(handle.clone())),
+            dq,
+            runner,
+            writer,
+            4,
+        );
+
+        // Git absent: the tick skips the WHOLE cycle - no jobs, no outcome writes,
+        // so no repo's next_check_at is advanced while git is missing.
+        let ran = sched.tick_once().await.expect("tick with no git");
+        assert_eq!(ran, 0, "with no git, the tick selects and runs nothing");
+        assert_eq!(inst.max(), 0, "no git work starts when git is absent");
+        assert!(
+            writer_handle.recorded().is_empty(),
+            "a skipped cycle writes no next_check_at (repos stay due)"
+        );
+
+        // A settings re-probe swaps a live engine into the SAME handle (no restart).
+        *handle.write().await = Some(SystemGitEngine::fabricated_for_test());
+
+        // The very next tick picks up the swapped-in engine and runs the due repos.
+        let ran2 = sched.tick_once().await.expect("tick after swap");
+        assert_eq!(
+            ran2, 2,
+            "once git is available, the still-due repos run on the next tick"
+        );
+        assert_eq!(
+            writer_handle.recorded().len(),
+            2,
+            "both repos' outcomes are recorded once git is live"
         );
     }
 }

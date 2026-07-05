@@ -14,13 +14,16 @@
 
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
+
 use reposync_core::db;
 use reposync_core::git::fixtures::{build_fixture, FixtureState};
 use reposync_core::git::SystemGitEngine;
 use reposync_core::ipc::{BranchPolicy, DirtyHandling, UpdateMode, UpdatePolicy};
 use reposync_core::repo;
 use reposync_core::scheduler::{
-    DbDueQuery, DbOutcomeWriter, Scheduler, SystemClock, SystemJitter, UpdateNowJobRunner,
+    DbDueQuery, DbOutcomeWriter, Scheduler, SharedGitEngineSource, SystemClock, SystemJitter,
+    UpdateNowJobRunner,
 };
 use reposync_core::store;
 
@@ -72,12 +75,18 @@ async fn one_tick_checks_due_repos_then_next_check_gating_holds() {
         .await
         .expect("add no-upstream");
 
-    // Both repos have next_check_at = NULL after `add`, so both are due now.
+    // Both repos have next_check_at = NULL after `add`, so both are due now. The
+    // engine is supplied through the live shared-handle source (BL-NI-23), so the
+    // scheduler reads the current git each cycle instead of owning a clone.
+    let git_source = Arc::new(SharedGitEngineSource::new(Arc::new(RwLock::new(Some(
+        (*git).clone(),
+    )))));
     let scheduler = Scheduler::new(
         Arc::new(SystemClock::new()),
         Arc::new(SystemJitter::new()),
+        git_source,
         DbDueQuery::new(pool.clone()),
-        UpdateNowJobRunner::new(pool.clone(), git.clone()),
+        UpdateNowJobRunner::new(pool.clone()),
         DbOutcomeWriter::new(pool.clone()),
         4,
     );

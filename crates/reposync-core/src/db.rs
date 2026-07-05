@@ -311,6 +311,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repos_default_cadence_is_inherit_after_0004() {
+        // BL-NI-34: migration 0004 changes the repos.check_frequency_min schema
+        // DEFAULT from 360 to 0, so an INSERT that omits the column inherits the
+        // global cadence instead of silently creating a 6-hour per-repo override.
+        let (_dir, pool) = fresh_pool().await;
+        sqlx::query(
+            "INSERT INTO repos (local_name, local_path, created_at) VALUES ('x', 'C:/x', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert repo relying on the column default");
+        let freq: i64 =
+            sqlx::query("SELECT check_frequency_min FROM repos WHERE local_path = 'C:/x'")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("check_frequency_min")
+                .unwrap();
+        assert_eq!(
+            freq, 0,
+            "the schema default must be 0 (inherit), not 360 (a silent 6-hour override)"
+        );
+    }
+
+    #[tokio::test]
+    async fn repos_fk_cascade_survives_0004_rebuild() {
+        // The 0004 table rebuild (create-copy-drop-rename with foreign keys off)
+        // must preserve the inbound ON DELETE CASCADE foreign keys: deleting a repo
+        // still clears its repo_local_state row.
+        let (_dir, pool) = fresh_pool().await;
+        let id = sqlx::query(
+            "INSERT INTO repos (local_name, local_path, created_at) VALUES ('x', 'C:/x', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        sqlx::query("INSERT INTO repo_local_state (repo_id) VALUES (?)")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("insert child local-state row");
+
+        sqlx::query("DELETE FROM repos WHERE id = ?")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .expect("delete the repo");
+
+        let remaining: i64 =
+            sqlx::query("SELECT COUNT(*) AS c FROM repo_local_state WHERE repo_id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("c")
+                .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "ON DELETE CASCADE to repos must still fire after the 0004 table rebuild"
+        );
+    }
+
+    #[tokio::test]
     async fn activity_indexes_present() {
         // AC3: the two activity_records query indexes.
         let (_dir, pool) = fresh_pool().await;

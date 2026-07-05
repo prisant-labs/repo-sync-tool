@@ -340,34 +340,87 @@ pub async fn settings_get(state: tauri::State<'_, AppState>) -> Result<Settings,
 }
 
 /// Write the settings singleton.
+//
+// After persisting, reconcile the live scheduler cadence and git engine to the
+// new settings. The whole sequence (persist -> reschedule -> re-probe -> swap)
+// runs under the `settings_write_lock` single-flight guard (BL-NI-35) so two
+// overlapping saves cannot interleave and leave the live engine reflecting older
+// settings than the database. (The one-line `///` doc above is intentional: it is
+// what tauri-specta emits as the `settingsSet` JSDoc, and the IPC contract - name,
+// args, return - is unchanged by this behavior, so `bindings.ts` does not drift.)
 #[tauri::command]
 #[specta::specta]
 pub async fn settings_set(
     state: tauri::State<'_, AppState>,
     settings: Settings,
 ) -> Result<(), AppError> {
+    // Serialize the whole persist/reschedule/probe/swap sequence (BL-NI-35).
+    let _write = state.settings_write_lock.lock().await;
+
+    // Read the prior global cadence BEFORE persisting so we can tell whether the
+    // global check interval actually changed (and only then re-cadence repos).
+    let previous_global = reposync_core::store::settings_get(&state.pool)
+        .await
+        .ok()
+        .map(|s| s.global_check_minutes);
+
     reposync_core::store::settings_set(&state.pool, &settings).await?;
 
-    // Live git re-probe (BL-NI-19): once the new settings are persisted, rebuild
-    // the git engine from the newly-saved `git_executable_path` and swap the
-    // shared engine, so a user who fixes a broken/missing git path recovers
-    // WITHOUT restarting - the command path picks up the new engine immediately.
-    // Re-read the persisted settings so this mirrors the startup construction
-    // EXACTLY (same source, same infallible `new`, same unavailable-check). The
-    // resident scheduler keeps its own initial engine and only picks up the
-    // re-probe on restart - a known limitation (see `AppState` / setup notes).
+    // BL-NI-25 / finding 4: a changed global cadence takes effect on already-
+    // scheduled INHERIT repos immediately, without waiting out their stale
+    // `next_check_at`. Only recompute when the value actually changed, so saving
+    // an unrelated setting never disturbs every repo's schedule.
+    if previous_global != Some(settings.global_check_minutes) {
+        reposync_core::scheduler::reschedule_inherit_repos(
+            &state.pool,
+            crate::localtime::now_unix(),
+            settings.global_check_minutes,
+        )
+        .await?;
+    }
+
+    // Live git re-probe (BL-NI-19): rebuild the engine from the newly-saved
+    // `git_executable_path`. Re-read the persisted settings so this mirrors the
+    // startup construction EXACTLY (same source, same infallible `new`).
     let configured_git_path = reposync_core::store::settings_get(&state.pool)
         .await
         .ok()
         .and_then(|s| s.git_executable_path);
     let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
-    let next = if engine.availability().is_unavailable() {
-        None
-    } else {
-        Some(engine)
-    };
-    *state.git.write().await = next;
+
+    // BL-NI-26 / finding 5: if the new git path resolves to no usable git (the bad
+    // explicit path ALSO fails the PATH and well-known fallbacks), DO NOT swap the
+    // working engine to None. Keep the last-known-working engine so git-dependent
+    // actions keep functioning, and surface the failure as a structured error so
+    // the UI can toast it honestly instead of falsely reporting "Settings saved".
+    // The other settings ARE already persisted, so unrelated changes in the same
+    // save are not lost; only activating this git path is reported as failed. The
+    // early return leaves `state.git` untouched, which IS "keep last-known-working".
+    if let Some(err) = git_swap_rejection(engine.availability()) {
+        return Err(err);
+    }
+
+    // The new git is usable: swap it in live so the command path and the resident
+    // scheduler (which reads this same shared handle each cycle) both pick it up.
+    *state.git.write().await = Some(engine);
     Ok(())
+}
+
+/// The BL-NI-26 / finding-5 git-swap contract, as a pure decision over the probed
+/// [`GitAvailability`] (so it is unit-testable without a Tauri harness): a probe
+/// that resolved to a usable git (`Available` or `BelowFloor` - still usable, just
+/// flagged) is accepted for the live swap (`None`); an `Unavailable` probe is
+/// REJECTED with a structured `InvalidSetting` on the git-path field, so the
+/// caller keeps the last-known-working engine instead of silently swapping to
+/// None and falsely toasting success.
+fn git_swap_rejection(availability: &reposync_core::git::GitAvailability) -> Option<AppError> {
+    if availability.is_unavailable() {
+        Some(AppError::InvalidSetting {
+            field: "git_executable_path".into(),
+        })
+    } else {
+        None
+    }
 }
 
 // =============================================================================
@@ -496,5 +549,46 @@ mod tests {
                 reset_at: 1_700_000_000
             })
         ));
+    }
+
+    #[test]
+    fn git_swap_rejects_unavailable_and_accepts_usable() {
+        // BL-NI-26 / finding 5: a probe that resolved to no usable git is rejected
+        // with InvalidSetting on the git-path field, so `settings_set` keeps the
+        // last-known-working engine (the early return leaves `state.git` untouched)
+        // instead of silently swapping to None and toasting a false success.
+        use reposync_core::git::discover::GitVersion;
+        use reposync_core::git::GitAvailability;
+
+        let rejected = git_swap_rejection(&GitAvailability::Unavailable);
+        assert!(
+            matches!(&rejected, Some(AppError::InvalidSetting { field }) if field == "git_executable_path"),
+            "an unavailable probe must be rejected as InvalidSetting on git_executable_path, got {rejected:?}"
+        );
+
+        // A usable probe (Available, or the still-usable BelowFloor state) is
+        // accepted: no rejection, so the live swap proceeds.
+        assert!(
+            git_swap_rejection(&GitAvailability::Available {
+                version: GitVersion {
+                    major: 2,
+                    minor: 40,
+                    patch: 0,
+                },
+            })
+            .is_none(),
+            "an available probe must be accepted for the live swap"
+        );
+        assert!(
+            git_swap_rejection(&GitAvailability::BelowFloor {
+                version: GitVersion {
+                    major: 2,
+                    minor: 20,
+                    patch: 0,
+                },
+            })
+            .is_none(),
+            "a below-floor git is still usable, so the swap proceeds"
+        );
     }
 }

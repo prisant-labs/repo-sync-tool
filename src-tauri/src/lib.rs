@@ -42,11 +42,16 @@ use events::{
 /// `git` holds `None` when git could not be discovered. Git absence must NOT
 /// prevent launch (E-03 degraded-state contract): the app still opens and
 /// git-dependent commands return [`AppError::GitNotFound`]. The engine sits
-/// behind an `RwLock` so `settings_set` can re-probe from the newly-saved
-/// `git_executable_path` and swap it live (BL-NI-19), letting a user who fixes a
-/// broken git path recover without restarting - the command path picks up the
-/// new engine immediately. (The resident scheduler keeps its own initial engine
-/// and only picks up a re-probe on restart; see the setup note below.)
+/// behind a SHARED `RwLock` handle ([`SharedGitEngine`]) so `settings_set` can
+/// re-probe from the newly-saved `git_executable_path` and swap it live
+/// (BL-NI-19), AND the resident scheduler reads the CURRENT engine through the
+/// SAME handle each cycle (BL-NI-23): a user who fixes a broken git path recovers
+/// with no restart on both the command path and the background loop.
+///
+/// `settings_write_lock` serializes the whole `settings_set` persist -> reschedule
+/// -> re-read -> probe -> swap sequence (BL-NI-35), so two overlapping saves
+/// cannot interleave and leave the live engine reflecting older settings than the
+/// database.
 ///
 /// `db_recovered` / `db_backup_path` carry the E-02 AC7 migration-recovery notice
 /// produced by `init_pool_with_recovery`: `db_recovered` is true exactly when the
@@ -56,17 +61,22 @@ use events::{
 /// and dropped, so the notice could never reach the UI.
 pub struct AppState {
     pub pool: sqlx::SqlitePool,
-    /// The discovered git engine, behind an `RwLock` so `settings_set` can
-    /// re-probe and swap it LIVE when the user fixes a broken/missing git path
-    /// (BL-NI-19). Readers clone the engine out under a read guard (they never
-    /// block each other); only the settings writer takes the write guard. No
-    /// `Arc` is needed - `AppState` is already behind Tauri's managed `Arc`.
-    pub git: tokio::sync::RwLock<Option<reposync_core::git::SystemGitEngine>>,
-    /// The per-repo lock map, SHARED with the resident scheduler (when git is
-    /// present it is the scheduler's own `RepoLocks`). Manual command handlers
-    /// acquire the same per-repo mutex the scheduler's jobs do, so a "check now"
-    /// and a scheduled check never run two `git` processes in one working tree.
+    /// The discovered git engine behind the SHARED, swappable handle. Readers
+    /// clone the engine out under a read guard (they never block each other); the
+    /// settings writer takes the write guard to swap it. The resident scheduler
+    /// holds a clone of this same `Arc` handle and reads the current engine each
+    /// cycle, so a live re-probe is picked up by the background loop too
+    /// (BL-NI-19 / BL-NI-23).
+    pub git: reposync_core::scheduler::SharedGitEngine,
+    /// The per-repo lock map, SHARED with the resident scheduler (it is the
+    /// scheduler's own `RepoLocks`). Manual command handlers acquire the same
+    /// per-repo mutex the scheduler's jobs do, so a "check now" and a scheduled
+    /// check never run two `git` processes in one working tree.
     pub locks: reposync_core::scheduler::RepoLocks,
+    /// Single-flight guard serializing the `settings_set` persist/reschedule/
+    /// probe/swap sequence (BL-NI-35), so overlapping saves cannot race on which
+    /// probe result wins the final engine swap.
+    pub settings_write_lock: tokio::sync::Mutex<()>,
     pub db_recovered: bool,
     pub db_backup_path: Option<std::path::PathBuf>,
 }
@@ -221,7 +231,7 @@ pub fn run() {
                     .ok()
                     .and_then(|s| s.git_executable_path);
                 let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
-                let git = if engine.availability().is_unavailable() {
+                let initial_git = if engine.availability().is_unavailable() {
                     eprintln!(
                         "warning: git executable not found; git-dependent \
                          actions will report GitNotFound until git is available"
@@ -231,40 +241,45 @@ pub fn run() {
                     Some(engine)
                 };
 
-                // Edge-wiring: spawn the resident scheduler and build the shared
-                // per-repo lock map. The scheduler runs the jittered startup pass,
-                // then ticks every minute for the process lifetime - checking due
-                // repos and emitting `scheduler:tick` so the UI refreshes live off
-                // the same event the frontend already listens for. Only spawn when
-                // git is present: without it every job would return GitNotFound, so
-                // the degraded (git-absent) launch stays job-free. The tick loop is
-                // owned here (not `Scheduler::run`) because only the edge holds the
-                // `AppHandle` needed to emit the tick; the core scheduler is
-                // deliberately Tauri-free (E-08).
-                //
-                // `locks` is the scheduler's OWN `RepoLocks` (cloned; it is a shared
-                // Arc-backed map), handed to AppState so the manual command handlers
-                // contend the exact locks the scheduler's jobs do. When git is
-                // absent there is no scheduler, but manual commands still take a
-                // (then-uncontended) lock from a standalone map.
-                let locks = if let Some(engine) = &git {
+                // The SHARED, swappable git handle. `settings_set` re-probes and
+                // swaps the inner engine when the user fixes a broken/missing git
+                // path (BL-NI-19/BL-NI-26), and the resident scheduler reads the
+                // CURRENT engine through this SAME handle each cycle (BL-NI-23), so
+                // both the command path and the background loop recover with no
+                // restart.
+                let git_handle: reposync_core::scheduler::SharedGitEngine =
+                    std::sync::Arc::new(tokio::sync::RwLock::new(initial_git));
+
+                // Edge-wiring: spawn the resident scheduler UNCONDITIONALLY
+                // (finding 6 / BL-NI-23) and build the shared per-repo lock map.
+                // Even when git is absent at startup, the loop runs and its live
+                // git-gate skips each cycle cleanly until a settings re-probe swaps
+                // an engine into `git_handle` - so "installed without git, add it
+                // later, fix the path in Settings" recovers with NO restart. The
+                // scheduler reads the current engine through the shared handle each
+                // cycle instead of owning a clone. The tick loop is owned here (not
+                // `Scheduler::run`) because only the edge holds the `AppHandle`
+                // needed to emit `scheduler:tick`; the core scheduler is
+                // deliberately Tauri-free (E-08). `locks` is the scheduler's OWN
+                // `RepoLocks` (a shared Arc-backed map), handed to AppState so the
+                // manual command handlers contend the exact locks the jobs do.
+                let locks = {
                     use reposync_core::scheduler::{
-                        DbDueQuery, DbOutcomeWriter, Scheduler, SystemClock, SystemJitter,
-                        UpdateNowJobRunner, DEFAULT_CONCURRENCY, ONE_MINUTE,
+                        DbDueQuery, DbOutcomeWriter, Scheduler, SharedGitEngineSource, SystemClock,
+                        SystemJitter, UpdateNowJobRunner, DEFAULT_CONCURRENCY, ONE_MINUTE,
                     };
                     use std::sync::Arc;
 
-                    // pool/engine are cloned (both cheap: SqlitePool and the git
-                    // engine wrap shared handles) so the originals still move into
-                    // AppState below. The clock carries the host's local UTC offset
-                    // so quiet hours are evaluated in local time, not UTC.
+                    // The clock carries the host's local UTC offset so quiet hours
+                    // are evaluated in local time, not UTC.
                     let scheduler = Scheduler::new(
                         Arc::new(SystemClock::with_utc_offset_minutes(
                             crate::localtime::local_offset_minutes(),
                         )),
                         Arc::new(SystemJitter::new()),
+                        Arc::new(SharedGitEngineSource::new(git_handle.clone())),
                         DbDueQuery::new(pool.clone()),
-                        UpdateNowJobRunner::new(pool.clone(), Arc::new(engine.clone())),
+                        UpdateNowJobRunner::new(pool.clone()),
                         DbOutcomeWriter::new(pool.clone()),
                         DEFAULT_CONCURRENCY,
                     );
@@ -294,21 +309,13 @@ pub fn run() {
                         }
                     });
                     locks
-                } else {
-                    reposync_core::scheduler::RepoLocks::default()
                 };
 
-                // Wrap the initial engine in an RwLock so `settings_set` can
-                // re-probe and swap it live (BL-NI-19). NOTE: the scheduler
-                // spawned above captured its OWN clone of the initial `git`
-                // engine (a local, not `AppState.git`); the running scheduler
-                // therefore keeps that initial engine and only picks up a
-                // re-probe on the NEXT restart. This pass makes the command path
-                // live, not the scheduler loop - a known limitation.
                 handle.manage(AppState {
                     pool,
-                    git: tokio::sync::RwLock::new(git),
+                    git: git_handle,
                     locks,
+                    settings_write_lock: tokio::sync::Mutex::new(()),
                     db_recovered,
                     db_backup_path,
                 });
