@@ -336,7 +336,7 @@ pub async fn settings_get(pool: &SqlitePool) -> Result<Settings, AppError> {
         "SELECT global_check_minutes, quiet_hours_start, quiet_hours_end, \
             notify_on_release, notify_on_failure, git_executable_path, \
             editor_command, terminal_command, autostart, activity_retention_d, \
-            github_token_present \
+            github_token_present, auto_update_check \
          FROM settings WHERE id = 1",
     )
     .fetch_one(pool)
@@ -354,6 +354,7 @@ pub async fn settings_get(pool: &SqlitePool) -> Result<Settings, AppError> {
         autostart: int_to_bool(r.try_get("autostart")?),
         activity_retention_d: r.try_get("activity_retention_d")?,
         github_token_present: int_to_bool(r.try_get("github_token_present")?),
+        auto_update_check: int_to_bool(r.try_get("auto_update_check")?),
     })
 }
 
@@ -367,8 +368,9 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
         "INSERT INTO settings ( \
             id, global_check_minutes, quiet_hours_start, quiet_hours_end, \
             notify_on_release, notify_on_failure, git_executable_path, \
-            editor_command, terminal_command, autostart, activity_retention_d) \
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            editor_command, terminal_command, autostart, activity_retention_d, \
+            auto_update_check) \
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET \
             global_check_minutes = excluded.global_check_minutes, \
             quiet_hours_start = excluded.quiet_hours_start, \
@@ -379,7 +381,8 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
             editor_command = excluded.editor_command, \
             terminal_command = excluded.terminal_command, \
             autostart = excluded.autostart, \
-            activity_retention_d = excluded.activity_retention_d",
+            activity_retention_d = excluded.activity_retention_d, \
+            auto_update_check = excluded.auto_update_check",
     )
     .bind(settings.global_check_minutes)
     .bind(settings.quiet_hours_start)
@@ -391,6 +394,7 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
     .bind(&settings.terminal_command)
     .bind(bool_to_int(settings.autostart))
     .bind(settings.activity_retention_d)
+    .bind(bool_to_int(settings.auto_update_check))
     .execute(pool)
     .await?;
 
@@ -1216,6 +1220,8 @@ mod tests {
         assert!(defaults.notify_on_release);
         assert!(!defaults.autostart);
         assert!(!defaults.github_token_present);
+        // E-18: the auto-update check defaults ON (migration 0006 default 1).
+        assert!(defaults.auto_update_check);
 
         // Write a modified copy and read it back unchanged.
         let updated = Settings {
@@ -1230,6 +1236,7 @@ mod tests {
             autostart: true,
             activity_retention_d: 30,
             github_token_present: false,
+            auto_update_check: false,
         };
         settings_set(&pool, &updated).await.expect("set");
         let back = settings_get(&pool).await.expect("get");
@@ -1238,6 +1245,8 @@ mod tests {
         assert_eq!(back.activity_retention_d, 30);
         assert!(back.autostart);
         assert_eq!(back.editor_command.as_deref(), Some("code"));
+        // E-18: the toggle round-trips (default-on flipped to off and persisted).
+        assert!(!back.auto_update_check);
 
         // Still exactly one settings row (singleton upsert, not insert).
         let count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM settings")

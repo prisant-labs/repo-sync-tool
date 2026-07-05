@@ -41,6 +41,14 @@ tauri-plugin-notification = "2"
 # the launch-detection (`is_autostart_launch`) are Tauri-free in the core, only the
 # enable/disable/is_enabled actuation lives at the edge.
 tauri-plugin-autostart = "2"
+# E-18 auto-update and distribution: the OS-agnostic in-app self-update plugin. The
+# integrity boundary is the minisign signature on each artifact, verified against the
+# public key baked into the binary (`plugins.updater.pubkey` in tauri.conf.json).
+# Edge-only, like the notification/autostart plugins - reposync-core never depends on
+# it; the check/download/install/verify all live at the edge. `tauri-plugin-process`
+# provides the post-install relaunch surface.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # Shared logic-crate dependencies.
 serde = { version = "1.0.228", features = ["derive"] }

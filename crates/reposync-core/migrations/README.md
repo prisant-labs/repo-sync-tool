@@ -29,6 +29,14 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   child rows, and wraps the rebuild in its own `BEGIN`/`COMMIT` for atomicity.
   Additive and non-destructive: every column and row is preserved with the same
   id, so all inbound foreign keys stay valid.
+- `0005_branch_intel.sql` - additive branch/PR-intelligence columns on
+  `repo_remote_meta` (E-17): the open-PR counts, their own ETag + last-checked
+  staleness marker, and the decoupled release ETag + last-checked (BL-NI-15b).
+  Every column is NULLable, so existing rows backfill to NULL ("unknown", never a
+  fabricated zero); a plain `ALTER TABLE ADD COLUMN`, no rebuild.
+- `0006_auto_update.sql` - additive `settings.auto_update_check` column (E-18):
+  the on-launch app-update-check toggle, `NOT NULL DEFAULT 1` (on). `settings` has
+  no inbound foreign keys, so a plain `ALTER TABLE ADD COLUMN` is safe.
 
 ## Migration policy
 

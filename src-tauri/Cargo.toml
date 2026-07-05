@@ -42,6 +42,15 @@ tauri-plugin-notification = { workspace = true }
 # The pure reconcile/detect decisions live in `reposync-core::autostart`; this shell
 # owns only the enable/disable/is_enabled actuation and the start-minimized behavior.
 tauri-plugin-autostart = { workspace = true }
+# E-18 auto-update: the self-update plugin (check/download/verify/install behind one
+# API) plus the process plugin for the post-install relaunch. Registered in `lib.rs`;
+# the `updater:default` + `process:default` capability permissions are granted in
+# `capabilities/default.json`. Signature verification against the committed
+# `plugins.updater.pubkey` is the integrity boundary. Edge-only - reposync-core never
+# depends on either; only the thin `app_check_for_update` / `app_install_update`
+# wrappers and the on-launch check live here.
+tauri-plugin-updater = { workspace = true }
+tauri-plugin-process = { workspace = true }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
 serde = { workspace = true }

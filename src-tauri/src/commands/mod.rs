@@ -12,7 +12,7 @@ use reposync_core::error::AppError;
 use reposync_core::ipc::{
     ActivityFilter, ActivityRecord, CheckResult, DailySummary, DbRecoveryNotice, GroupSummary,
     RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult, Settings,
-    UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
+    UpdateAvailability, UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
 };
 use reposync_core::notify::{NoteKind, NotifiableEvent};
 use reposync_core::scheduler::{RepoLocks, SharedGitEngine};
@@ -677,6 +677,38 @@ fn build_recovery_notice(
         recovered,
         backup_path: backup_path.map(|p| p.display().to_string()),
     }
+}
+
+// =============================================================================
+// App self-update (E-18 auto-update and distribution)
+//
+// Two thin wrappers over the `tauri-plugin-updater` edge (`crate::updates`), so the
+// on-launch check and the Settings "Check for updates" button share one typed path
+// and the ship-dark + toggle gates live in one place. reposync-core stays Tauri-free;
+// the plugin call lives only in `crate::updates`.
+// =============================================================================
+
+/// Check for an app update (E-18). Runs the plugin check and returns a typed
+/// [`UpdateAvailability`] distinguishing "update available" / "up to date" /
+/// "couldn't reach the update server" WITHOUT throwing (the manual button and the
+/// on-launch check share this path). Never installs; every install is user-confirmed
+/// via [`app_install_update`]. Infallible by design: an unreachable server (offline,
+/// the inert private-repo endpoint, or ship-dark) is a payload state, not an error.
+#[tauri::command]
+#[specta::specta]
+pub async fn app_check_for_update(app: tauri::AppHandle) -> UpdateAvailability {
+    crate::updates::check(&app).await
+}
+
+/// Download, verify, and install the pending app update, then relaunch (E-18).
+/// Called ONLY after the user confirms. The plugin verifies the minisign signature
+/// before replacing the running binary; a verification/download failure returns a
+/// typed [`AppError`] and leaves the current version intact. On success the process
+/// relaunches into the new version (so this normally does not return `Ok`).
+#[tauri::command]
+#[specta::specta]
+pub async fn app_install_update(app: tauri::AppHandle) -> Result<(), AppError> {
+    crate::updates::install(&app).await
 }
 
 // =============================================================================

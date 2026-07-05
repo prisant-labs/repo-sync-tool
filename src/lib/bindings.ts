@@ -126,6 +126,23 @@ export const commands = {
 	 *  reading managed state never fails.
 	 */
 	dbRecoveryNotice: () => typedError<DbRecoveryNotice, AppErrorPayload>(__TAURI_INVOKE("db_recovery_notice")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  Check for an app update (E-18). Runs the plugin check and returns a typed
+	 *  [`UpdateAvailability`] distinguishing "update available" / "up to date" /
+	 *  "couldn't reach the update server" WITHOUT throwing (the manual button and the
+	 *  on-launch check share this path). Never installs; every install is user-confirmed
+	 *  via [`app_install_update`]. Infallible by design: an unreachable server (offline,
+	 *  the inert private-repo endpoint, or ship-dark) is a payload state, not an error.
+	 */
+	appCheckForUpdate: () => __TAURI_INVOKE<UpdateAvailability>("app_check_for_update").then((v) => (({...v,error:v.error==null?v.error:({...v.error,context:v.error.context==null?v.error.context:v.error.context})}) as typeof v)),
+	/**
+	 *  Download, verify, and install the pending app update, then relaunch (E-18).
+	 *  Called ONLY after the user confirms. The plugin verifies the minisign signature
+	 *  before replacing the running binary; a verification/download failure returns a
+	 *  typed [`AppError`] and leaves the current version intact. On success the process
+	 *  relaunches into the new version (so this normally does not return `Ok`).
+	 */
+	appInstallUpdate: () => typedError<null, AppErrorPayload>(__TAURI_INVOKE("app_install_update")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  List every group with its member repo count (group-management view). */
 	groupList: () => typedError<GroupSummary[], AppErrorPayload>(__TAURI_INVOKE("group_list")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Create a group. A duplicate name is rejected as an invalid setting. */
@@ -500,6 +517,14 @@ export type Settings = {
 	autostart: boolean,
 	activityRetentionD: number,
 	githubTokenPresent: boolean,
+	/**
+	 *  Whether RepoSync checks for an app update on launch (E-18). Default `true`.
+	 *  This gates ONLY the on-launch check; the manual "Check for updates" action
+	 *  runs regardless, and no update ever installs without the user confirming.
+	 *  Provisional-additive per E-06's additive-revision rule; mirrors the
+	 *  `settings.auto_update_check` column added in migration `0006_auto_update.sql`.
+	 */
+	autoUpdateCheck: boolean,
 };
 
 /**  Typed `repo:state-changed` event (a repo's cached state was updated). */
@@ -516,6 +541,29 @@ export type SummaryItem = {
 	repoId: number,
 	localName: string,
 	detail: string | null,
+};
+
+/**
+ *  The result of an app self-update availability check (E-18 auto-update).
+ * 
+ *  Returned by the `app_check_for_update` command (a thin wrapper over the Tauri
+ *  updater plugin, so the on-launch check and the Settings button share one typed
+ *  path). The three UI states are distinguished WITHOUT throwing: an update is
+ *  available (`available == true`, `new_version`/`notes` set), the app is up to
+ *  date (`available == false`, `error == None`), or the update server could not be
+ *  reached (`available == false`, `error == Some`) - the last case also covers the
+ *  inert private-repo endpoint (a 404 while the repo is private) and the ship-dark
+ *  state (no production signing key configured yet), both rendered as "could not
+ *  reach the update server." `current_version` is always the running app version,
+ *  so the Settings "Updates" section can show it. Tauri-free: `error` reuses the
+ *  frozen [`AppErrorPayload`] wire shape, never a `tauri` type.
+ */
+export type UpdateAvailability = {
+	currentVersion: string,
+	available: boolean,
+	newVersion: string | null,
+	notes: string | null,
+	error: AppErrorPayload | null,
 };
 
 /**  Typed `repo:update-completed` event (an update finished for a repo). */

@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::AppErrorPayload;
+
 /// Stable identifier for a tracked repo (its `repos.id`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
 pub struct RepoId(pub i64);
@@ -82,6 +84,12 @@ pub struct Settings {
     pub autostart: bool,
     pub activity_retention_d: i64,
     pub github_token_present: bool,
+    /// Whether RepoSync checks for an app update on launch (E-18). Default `true`.
+    /// This gates ONLY the on-launch check; the manual "Check for updates" action
+    /// runs regardless, and no update ever installs without the user confirming.
+    /// Provisional-additive per E-06's additive-revision rule; mirrors the
+    /// `settings.auto_update_check` column added in migration `0006_auto_update.sql`.
+    pub auto_update_check: bool,
 }
 
 /// The at-a-glance form of a tracked repo (list view). A flattened join of
@@ -190,6 +198,29 @@ pub struct ScanResult {
 // =============================================================================
 // Update payloads
 // =============================================================================
+
+/// The result of an app self-update availability check (E-18 auto-update).
+///
+/// Returned by the `app_check_for_update` command (a thin wrapper over the Tauri
+/// updater plugin, so the on-launch check and the Settings button share one typed
+/// path). The three UI states are distinguished WITHOUT throwing: an update is
+/// available (`available == true`, `new_version`/`notes` set), the app is up to
+/// date (`available == false`, `error == None`), or the update server could not be
+/// reached (`available == false`, `error == Some`) - the last case also covers the
+/// inert private-repo endpoint (a 404 while the repo is private) and the ship-dark
+/// state (no production signing key configured yet), both rendered as "could not
+/// reach the update server." `current_version` is always the running app version,
+/// so the Settings "Updates" section can show it. Tauri-free: `error` reuses the
+/// frozen [`AppErrorPayload`] wire shape, never a `tauri` type.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAvailability {
+    pub current_version: String,
+    pub available: bool,
+    pub new_version: Option<String>,
+    pub notes: Option<String>,
+    pub error: Option<AppErrorPayload>,
+}
 
 /// The outcome of an "update now" run for a single repo.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -526,6 +557,7 @@ mod tests {
             autostart: false,
             activity_retention_d: 90,
             github_token_present: false,
+            auto_update_check: true,
         };
         assert_round_trip(&settings);
 
@@ -596,6 +628,31 @@ mod tests {
         assert_round_trip(&DbRecoveryNotice {
             recovered: true,
             backup_path: Some("C:/data/reposync.db.corrupt-1700000000".into()),
+        });
+
+        // The app-update availability payload (E-18), in all three UI shapes: an
+        // update is available, the app is up to date, and the update server could
+        // not be reached (the error half carries the frozen AppErrorPayload).
+        assert_round_trip(&UpdateAvailability {
+            current_version: "0.9.0".into(),
+            available: true,
+            new_version: Some("0.9.1".into()),
+            notes: Some("Bug fixes.".into()),
+            error: None,
+        });
+        assert_round_trip(&UpdateAvailability {
+            current_version: "0.9.0".into(),
+            available: false,
+            new_version: None,
+            notes: None,
+            error: None,
+        });
+        assert_round_trip(&UpdateAvailability {
+            current_version: "0.9.0".into(),
+            available: false,
+            new_version: None,
+            notes: None,
+            error: Some(crate::error::AppError::Offline.to_payload()),
         });
 
         // The error half of every fallible command: Result<RepoId, AppError>.

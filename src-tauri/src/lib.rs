@@ -18,18 +18,19 @@ mod localtime;
 mod notify;
 mod opener;
 mod tray;
+mod updates;
 mod windows;
 
 use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
-    activity_list, db_recovery_notice, group_assign, group_create, group_delete, group_list,
-    group_rename, group_unassign, groups_for_repo, repo_add_path, repo_check_all, repo_check_now,
-    repo_get, repo_group_memberships, repo_list, repo_open_editor, repo_open_folder,
-    repo_open_remote, repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent,
-    repo_set_cadence, repo_set_enabled, repo_set_policy, repo_update_now, settings_get,
-    settings_set, summary_today, summary_week,
+    activity_list, app_check_for_update, app_install_update, db_recovery_notice, group_assign,
+    group_create, group_delete, group_list, group_rename, group_unassign, groups_for_repo,
+    repo_add_path, repo_check_all, repo_check_now, repo_get, repo_group_memberships, repo_list,
+    repo_open_editor, repo_open_folder, repo_open_remote, repo_open_terminal,
+    repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_cadence, repo_set_enabled,
+    repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
 };
 use events::{
     CheckCompleted, CheckStarted, ErrorRaised, NavigateRequested, NotificationFired, SchedulerTick,
@@ -132,6 +133,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             settings_set,
             // db-recovery notice read (BL-NI-33 / E-02 AC7, additive)
             db_recovery_notice,
+            // app self-update (E-18, additive): one typed path for the launch check
+            // and the Settings button; the ship-dark + toggle gates live in one place.
+            app_check_for_update,
+            app_install_update,
             // groups / tags
             group_list,
             group_create,
@@ -198,6 +203,13 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec![crate::autostart::AUTOSTART_LAUNCH_FLAG]),
         ))
+        // E-18 auto-update: the self-update plugin (check/download/verify/install)
+        // and the process plugin for the post-install relaunch. The check/install
+        // DECISIONS and the ship-dark gate live in `crate::updates`; these plugins are
+        // the only platform-specific pieces. Signature verification against the
+        // committed `plugins.updater.pubkey` is the integrity boundary.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // Register the event registry so typed emit/listen resolve names.
@@ -275,6 +287,12 @@ pub fn run() {
                     .as_ref()
                     .map(|s| s.autostart)
                     .unwrap_or(false);
+                // E-18: the on-launch update-check toggle (default ON). Gates the
+                // background launch check spawned after the tray/windows are up.
+                let auto_update_on = startup_settings
+                    .as_ref()
+                    .map(|s| s.auto_update_check)
+                    .unwrap_or(true);
                 let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
                 let initial_git = if engine.availability().is_unavailable() {
                     eprintln!(
@@ -530,6 +548,23 @@ pub fn run() {
                 // (finding 2). The window is config-declared `visible: false`, so it
                 // stays hidden until this shows it, avoiding a startup flash.
                 windows::init(&handle, tray_available);
+
+                // E-18 auto-update: spawn the on-launch update check in the
+                // background, gated by the `auto_update_check` toggle AND the
+                // ship-dark state (a build with no production signing key does not
+                // check). If an update is available it surfaces a non-blocking OS
+                // toast; it never auto-installs. Detached so a slow network never
+                // delays startup, and best-effort so a check failure (the common
+                // inert private-repo 404) is log-only, not an error toast.
+                if updates::should_run_launch_check(
+                    auto_update_on,
+                    updates::updater_is_live(&updates::configured_pubkey(&handle)),
+                ) {
+                    let update_handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        updates::run_launch_check(&update_handle).await;
+                    });
+                }
             });
 
             Ok(())

@@ -41,5 +41,16 @@
     "macOS": {
       "minimumSystemVersion": "10.15"
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "SHIP_DARK__no_production_updater_key_yet__see_E-18_public_flip",
+      "endpoints": [
+        "https://github.com/product-on-purpose/repo-sync-tool/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

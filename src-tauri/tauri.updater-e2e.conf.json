@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "//": "E-18 TEST-ONLY updater E2E overlay. Deep-merged via the Tauri CLI --config flag by the local E2E script (scripts/updater-e2e.md) and NEVER merged into the committed production tauri.conf.json. It (1) opts into plain-http transport via dangerousInsecureTransportProtocol (Tauri v2 production builds enforce TLS on updater endpoints, so a http://localhost channel needs this test-only opt-in), (2) points the endpoint at a local file server, and (3) carries a DISPOSABLE test pubkey sentinel that the E2E script replaces at runtime with a freshly generated throwaway public key (the disposable key never ships). It also flips createUpdaterArtifacts on so the local build produces the updater artifact + .sig. This file is committed but INERT unless explicitly passed. The production config must contain NONE of these markers - enforced by the config-hygiene gate (src-tauri/src/updates.rs config_is_production_clean + the pre-tag runbook grep). The live GitHub Releases endpoint CANNOT be exercised while the repo is private; that is a public-flip checklist item.",
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "DISPOSABLE_TEST_UPDATER_PUBKEY_E2E_ONLY",
+      "endpoints": ["http://localhost:8787/latest.json"],
+      "dangerousInsecureTransportProtocol": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

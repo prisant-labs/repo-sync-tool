@@ -1,0 +1,22 @@
+-- 0006_auto_update.sql - the on-launch auto-update-check toggle (E-18).
+--
+-- Adds one additive column to the settings singleton: auto_update_check, the
+-- toggle that gates the on-launch app-update check (E-18 auto-update and
+-- distribution). It defaults to 1 (on), matching the no-telemetry OSS posture:
+-- RepoSync CHECKS for an update on launch by default, but never installs without
+-- the user confirming. The manual "Check for updates" action in Settings runs
+-- regardless of this flag; only the launch check is gated by it.
+--
+-- The column is NOT NULL with a DEFAULT, so the existing settings row (and any
+-- future INSERT that omits it) backfills to 1. settings is a singleton with no
+-- inbound foreign keys, so a plain ALTER TABLE ADD COLUMN is safe and needs no
+-- table rebuild.
+--
+-- Migration discipline (see migrations/README.md): additive-only. 0001-0005 are
+-- FROZEN; this is the only new file. The migration sequence coordinated across
+-- sibling efforts is 0004 (P1-C cadence default, BL-NI-34), 0005 (E-17 branch and
+-- PR intelligence), 0006 (this effort, E-18). The 2026-07-04 Codex adversarial
+-- review caught an earlier 0004 collision for this toggle; it is resolved by this
+-- fixed sequence, with E-18 owning 0006 as the single owner of the number.
+
+ALTER TABLE settings ADD COLUMN auto_update_check INTEGER NOT NULL DEFAULT 1;

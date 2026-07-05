@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+#
+# E-18 (auto-update and distribution) winget DEFAULT-LOCALE manifest (en-US).
+#
+# Prepared and validated OFFLINE only while the repo is private; submission is a
+# public-flip checklist item. Publisher/PackageName are the working identity
+# (ProductOnPurpose / RepoSync); confirm against the final brand at the flip.
+PackageIdentifier: ProductOnPurpose.RepoSync
+PackageVersion: 0.9.0
+PackageLocale: en-US
+Publisher: Product on Purpose
+PublisherUrl: https://github.com/product-on-purpose
+PackageName: RepoSync
+PackageUrl: https://github.com/product-on-purpose/repo-sync-tool
+License: MIT
+LicenseUrl: https://github.com/product-on-purpose/repo-sync-tool/blob/main/LICENSE
+ShortDescription: A Windows-first tray utility that keeps a personal library of cloned Git repositories fresh and visible.
+Moniker: reposync
+Tags:
+  - git
+  - developer-tools
+  - tray
+  - utility
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

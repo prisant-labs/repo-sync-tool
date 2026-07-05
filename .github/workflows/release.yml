@@ -1,4 +1,4 @@
-# RepoSync release workflow - STUB (not yet exercised).
+# RepoSync release workflow.
 #
 # Fires ONLY on version tags (v*), so it never runs on a normal push. On a tag it
 # builds Windows + macOS with the full-LTO `dist` profile and creates a DRAFT
@@ -9,12 +9,30 @@
 # src-tauri/tauri.conf.json (set by scripts/bump-version.mjs). The platform lives
 # in the artifact filename, not the version.
 #
+# E-18 AUTO-UPDATE (auto-update and distribution):
+#   - The updater is SIGNED IN CI ONLY. The production private key + password live
+#     ONLY in the GitHub Actions secrets TAURI_SIGNING_PRIVATE_KEY [+ _PASSWORD];
+#     no agent ever holds them (EXECUTION.md human-only). The public key is committed
+#     in src-tauri/tauri.conf.json (plugins.updater.pubkey).
+#   - SHIP-DARK-SAFE: the committed tauri.conf.json keeps bundle.createUpdaterArtifacts
+#     OFF, so keyless builds (per-push CI's `pnpm tauri build`, and this workflow when
+#     the signing secret is absent) never hit the "signing key required" bundle
+#     failure. When TAURI_SIGNING_PRIVATE_KEY is present, the "Compute updater build
+#     args" step below merges the release overlay (src-tauri/tauri.updater-prod.conf.json)
+#     via --config, which flips createUpdaterArtifacts ON so the bundler produces the
+#     signed updater artifacts (.sig files) and tauri-action generates + attaches
+#     latest.json (Tauri v2 format). Absent the secret, the updater ships DARK and this
+#     workflow still produces the plain installers.
+#   - Verify the exact tauri-action updater inputs (how it emits + attaches latest.json,
+#     and that the manifest references the NSIS artifact) against the action's current
+#     README before the first real cut. The runbook's G3 checks for latest.json on the
+#     draft's assets; G4 smoke-tests the update check.
+#
 # NOT WIRED YET (intentional):
 #   - macOS code signing + notarization (human-only per EXECUTION.md). macOS
-#     artifacts here are UNSIGNED. Say so in the Release notes.
-#   - Verify tauri-apps/tauri-action inputs and how `--profile dist` is threaded
-#     (tauri CLI vs cargo passthrough) against the action's current README before
-#     the first real cut. This file is a starting point, not a validated pipeline.
+#     artifacts here are UNSIGNED (Apple codesign). Say so in the Release notes. The
+#     updater's minisign signature is SEPARATE and IS applied to the macOS updater
+#     artifact when the signing secret is present (it is not Apple signing).
 
 name: Release
 
@@ -57,14 +75,39 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # E-18 ship-dark-safe updater signing. Only merge the release overlay (which
+      # flips bundle.createUpdaterArtifacts on) when the production signing secret is
+      # present; otherwise build the plain installers so a keyless tag still cuts a
+      # Release (the updater ships dark). Testing `secrets.X != ''` in an env
+      # expression evaluates to 'true'/'false' WITHOUT exposing the secret value.
+      - name: Compute updater build args
+        id: updater
+        shell: bash
+        env:
+          HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_SIGNING_KEY" = "true" ]; then
+            echo "args=--profile dist --config src-tauri/tauri.updater-prod.conf.json" >> "$GITHUB_OUTPUT"
+            echo "updater: signing key present - updater artifacts + latest.json will be produced"
+          else
+            echo "args=--profile dist" >> "$GITHUB_OUTPUT"
+            echo "updater: no signing key - shipping DARK (plain installers only, no latest.json)"
+          fi
+
       - name: Build and draft release (tauri-action)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # E-18: the production updater signing material, CI-secret-only. Absent ->
+          # ship dark (the compute step above leaves createUpdaterArtifacts off).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          # Full-LTO distribution artifacts. Confirm how this flag is passed
-          # (see the header note) before relying on it.
-          args: --profile dist
+          # Full-LTO distribution artifacts, plus the updater overlay when signing is
+          # available (see the compute step). Confirm how args are threaded (tauri CLI
+          # vs cargo passthrough) and the updater/latest.json inputs against the
+          # action's current README before relying on this for a real cut.
+          args: ${{ steps.updater.outputs.args }}
           tagName: ${{ github.ref_name }}
           releaseName: RepoSync ${{ github.ref_name }}
           releaseDraft: true

@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { RotateCcw, Save } from "lucide-react";
+import { getVersion } from "@tauri-apps/api/app";
+import { Loader2, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { commands } from "@/lib/bindings";
-import type { Settings } from "@/lib/bindings";
+import type { Settings, UpdateAvailability } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -132,6 +133,11 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
         </CardContent>
       </Card>
 
+      <UpdatesCard
+        autoUpdateCheck={draft.autoUpdateCheck}
+        onToggle={(v) => set("autoUpdateCheck", v)}
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>Integrations</CardTitle>
@@ -169,6 +175,150 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The "Updates" section (E-18 auto-update). Shows the running version, the
+ * default-on `auto_update_check` toggle (which gates ONLY the on-launch check; the
+ * manual button below always works and nothing ever installs without confirming),
+ * and a "Check for updates" button with an inline outcome. No telemetry / account
+ * surface - checks-and-install only, matching the no-telemetry OSS posture.
+ */
+function UpdatesCard({
+  autoUpdateCheck,
+  onToggle,
+}: {
+  autoUpdateCheck: boolean;
+  onToggle: (value: boolean) => void;
+}) {
+  const toast = useToast();
+  const [version, setVersion] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState<UpdateAvailability | null>(null);
+  const [installing, setInstalling] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void getVersion()
+      .then((v) => active && setVersion(v))
+      .catch(() => active && setVersion(null));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function check() {
+    setChecking(true);
+    setResult(null);
+    try {
+      // appCheckForUpdate is infallible by design (unreachable is a payload state,
+      // not a thrown error), so it resolves to the value directly, not a Result.
+      const availability = await commands.appCheckForUpdate();
+      setResult(availability);
+      if (availability.currentVersion) setVersion(availability.currentVersion);
+    } catch (e) {
+      toast("error", "Could not check for updates", String(e));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  async function install() {
+    setInstalling(true);
+    try {
+      await unwrap(commands.appInstallUpdate());
+      // On success the app relaunches into the new version, so this rarely returns.
+    } catch (e) {
+      toast(
+        "error",
+        "Update could not be verified",
+        e instanceof IpcError ? e.message : String(e),
+      );
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Updates</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Field label="RepoSync version" hint="The version you are running now.">
+          <span className="font-mono text-xs font-semibold text-foreground">{version ?? "unknown"}</span>
+        </Field>
+        <Field
+          label="Check for updates on launch"
+          hint="RepoSync looks for a new version when it starts. You always confirm before anything installs - nothing updates silently."
+        >
+          <Switch checked={autoUpdateCheck} onCheckedChange={onToggle} />
+        </Field>
+        <div className="flex flex-col gap-3 border-t border-border px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-sm font-medium">Check for updates</div>
+              <div className="text-xs text-muted-foreground">Look for a newer version right now.</div>
+            </div>
+            <Button variant="secondary" size="sm" disabled={checking} onClick={() => void check()}>
+              {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              {checking ? "Checking..." : "Check for updates"}
+            </Button>
+          </div>
+          {result && (
+            <UpdateOutcome result={result} installing={installing} onInstall={() => void install()} />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** The inline result of a manual update check: available / up to date / unreachable. */
+function UpdateOutcome({
+  result,
+  installing,
+  onInstall,
+}: {
+  result: UpdateAvailability;
+  installing: boolean;
+  onInstall: () => void;
+}) {
+  // Unreachable (offline, the inert private-repo endpoint, or a not-yet-enabled
+  // updater) is reported gently off `error != null`, not as an alarm.
+  if (result.error) {
+    return (
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-foreground">
+        Could not reach the update server. RepoSync is still working on your current version; it will
+        try again later.
+      </div>
+    );
+  }
+
+  if (result.available && result.newVersion) {
+    return (
+      <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
+        <div className="text-sm font-medium text-foreground">
+          Version {result.newVersion} is available.
+        </div>
+        {result.notes && <div className="text-xs text-muted-foreground">{result.notes}</div>}
+        <div className="flex items-center gap-2">
+          <Button size="sm" disabled={installing} onClick={onInstall}>
+            {installing ? <Loader2 className="animate-spin" /> : null}
+            {installing ? "Installing..." : "Install and restart"}
+          </Button>
+          <span className="text-xs text-muted-foreground">
+            RepoSync will verify, install, and relaunch.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm font-medium text-status-sync">
+      You are on the latest version.
     </div>
   );
 }
