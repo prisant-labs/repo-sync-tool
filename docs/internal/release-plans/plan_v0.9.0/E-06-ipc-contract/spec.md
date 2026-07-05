@@ -15,7 +15,7 @@ source: docs/internal/v1-architecture-and-decisions.md (Section 4.4); docs/inter
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started.
+- **State:** not started. **2026-07-05 note (doc-sync pass):** this line is stale relative to the actual tree - the contract has long since been frozen and built (`src/lib/bindings.ts` is generated and committed) and has since taken multiple additive amendments; see Amendments below. Left uncorrected beyond this note since a full Task Summary rewrite is outside this pass's scope (docs-only sync of Phase 1 findings), not because the original claim is believed accurate.
 - **Next:** define the payload structs and `AppError` reference in `crates/reposync-core/src/ipc.rs` (Tauri-free, serde + `specta::Type`), declare the command and event SIGNATURES in `src-tauri` (`commands/`, `events.rs`), then wire `tauri-specta` codegen in `src-tauri/main.rs` to emit `src/lib/bindings.ts`.
 - **Blockers:** none beyond E-05 (Error taxonomy), which owns `AppError` - the error half of every command return.
 
@@ -98,6 +98,14 @@ The payload field sets are enumerated here against the authoritative DDL in `str
 
 - **Resolved (commit vs generate `bindings.ts`): commit it, with a stale-check CI gate.** `src/lib/bindings.ts` is committed to the repo so the frontend builds without first running the Rust exporter, and the regenerate-and-diff CI gate (AC6) fails the build on any drift. This keeps the frontend unblocked while drift stays loud. This was previously an open question; it is recorded here as a decision consistent with the existing AC6 gate, not left open.
 - **Resolved (`RepoSummary` vs `RepoDetail` split):** the concrete field split is enumerated in the "Enumerated payload fields" section above, derived from `repos` + `repo_local_state` + `repo_remote_meta`: Summary is the list-row essentials, Detail is Summary plus the full local/remote/state fields and notes. Remaining boundary tweaks are additive and caught by the stale-bindings check.
+
+## Amendments
+
+The contract is frozen at the signatures/types this spec defines; the "additive contract revision" rule in V1.1 extension points above permits new commands, new events, and new optional payload fields without reopening the freeze. This section is the durable log of every such amendment landed since the freeze - the spec itself has no other place that tracks this (Task Summary is a point-in-time status block, not a log), so entries accumulate here as they land. Every entry below is additive only: no existing command, event, or field was renamed or removed.
+
+- **2026-07-03, E-16 (groups, repo tags) command set.** Added `GroupSummary` to `crates/reposync-core/src/ipc.rs`, and seven `#[tauri::command] #[specta::specta]` functions to `src-tauri/src/commands/mod.rs` - `group_list`, `group_create`, `group_rename`, `group_delete`, `group_assign`, `group_unassign`, `groups_for_repo` - registered in `collect_commands![...]` (`src-tauri/src/lib.rs`) and regenerated into `src/lib/bindings.ts` (backend commit `a85e0fc`, frontend commit `51daaa7`). Motivation: BL-V11-04 (grouping/tags) promoted from V1.1 into v0.9.0 scope. This is the precedent the subsequent E-17 and E-18 specs cite for their own contract amendments. See [E-16 (groups, repo tags) spec](../E-16-groups/spec.md).
+- **2026-07-05, `repo_group_memberships` command.** Added `RepoGroupMembership` (payload shape `{ repoId: number, groupIds: number[] }`, one entry per repo that belongs to at least one group) to `crates/reposync-core/src/ipc.rs`, and a `repo_group_memberships() -> Vec<RepoGroupMembership>` command backed by a new `store::repo_group_memberships` bulk query, following the E-16 precedent above exactly. Regenerated into `src/lib/bindings.ts`; `src/hooks/queries.ts`'s `useRepoGroupMemberships` swapped from a per-repo `groups_for_repo` fan-out to this one call. Motivation: BL-NI-22 (the O(N) per-repo group-membership fan-out powering both the Repos-screen group filter and its per-row chips). Landed in commit `261a689`.
+- Both amendments above post-date the freeze this spec records; neither changes an existing command, event, or field shape, so both satisfy the additive-only rule without a fresh AC pass.
 
 ## Open questions
 

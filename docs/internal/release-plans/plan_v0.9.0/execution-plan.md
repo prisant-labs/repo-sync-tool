@@ -156,6 +156,10 @@ The IPC contract (E-06, the typed seam) is frozen. Several work items below need
 - Every audit code finding has either a Phase 1/3/4 work item in this plan or a backlog entry (no orphans).
 - Full-suite sweep (Section 3.2) green. Doc-update protocol satisfied.
 
+### 0.5 Phase record
+
+- **Completed 2026-07-04.** Commits `ddd3fee` (doc-set commit, P0-A), `51a8395` (rustfmt the tree, clears the red fmt gate), `50b6717` (two-tier test model + PR-gate rework, P0-B/P0-C). CI green on both runners per the phase gate (not independently re-verified in this doc-sync pass - this workstream is docs-only and has no CI access; flagged, not re-run).
+
 ---
 
 ## Phase 1 - Correctness (audit findings)
@@ -199,9 +203,9 @@ Findings 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 (all HIGH and MEDIUM-code except
 - The subscribed-to events actually fire; the drawer refreshes on background completion.
 - Full-suite sweep green (including the slow tier). Codex adversarial review run; HIGH findings fixed-now, others backlogged with IDs. Doc-update protocol satisfied (feature-inventory, backlog, CHANGELOG, E-16 Task Summary, edge-wiring inventory for the new commands).
 
----
+### 1.5 Phase record
 
-## Phase 2 - Dogfood
+- **Build work completed 2026-07-05.** Commits `187ed2a` (P1-A opener hardening), `4ab54bf` (P1-D frontend correctness + a11y), `71a0f7b` (P1-B/P1-C scheduler core + shell wiring, migration 0004), plus `261a689` (P1-E bulk `repo_group_memberships` + P1-F BL-NI-21 regression tests). Gate record: `_LOCAL/gates/2026-07-05_phase-1-gate.md` (all 9 gates green, 315 tests, 22m37s).
 
 **Goal:** run the real app the way a user would, on both the dev harness and a packaged build, walk every flow, and fix what falls out. This is the only place launch-only behavior (tray, real windows, OS shell-out, packaged-install paths) is confirmed; the audit's central lesson is that "all static gates pass" did not mean "the app works" (open-in shipped broken on the primary platform).
 

@@ -48,19 +48,19 @@ This is an **as-built record**, written after the fact from the shipped code and
 
 ## Remaining work
 
-Each Known defect in `spec.md` maps to one of two places: the v0.9.0 ship plan's Phase 1 (audit findings, per `execution-plan.md`) or a standalone backlog entry, for the one item that already has one.
+**All six Known defects are fixed as of 2026-07-05.** Five landed in commit `4ab54bf`; the sixth (BL-NI-22) landed in commit `261a689` (core store fn + unit test, additive IPC command, bindings regen, frontend swap). Table kept for the historical record of where each was scheduled and what actually fixed it (the original plan called all six "Phase 1 (audit findings)"; that held).
 
-| Defect (spec.md Known defects #) | Description | Where it is scheduled |
-|---|---|---|
-| 1 | Group filter false-empties during membership load or on failure (audit finding 7) | Phase 1 (audit findings), frontend fixes bucket, per `execution-plan.md`; a small `useRepoGroupMemberships` consumer fix (distinguish "loading/unknown" from "not a member" in `repos.tsx`'s filter). |
-| 2 | BL-NI-22 (O(N) group filter fan-out) | Already tracked as its own backlog entry, `docs/backlog.md` BL-NI-22 (cross-references this spec; do not duplicate). Not scheduled to a specific phase yet; a natural fit for Phase 1 alongside the other audit-derived frontend/backend fixes if repo counts warrant it before ship, otherwise a post-ship follow-up. |
-| 3 | Group dialog double-Enter double-submit | Phase 1 (audit findings), frontend fixes bucket; a one-line guard (ignore Enter while `busy`) in `group-dialog.tsx`. |
-| 4 | Duplicate-name error surfaces as "invalid setting: name" with the wrong (Settings-screen) remediation | Phase 1 (audit findings); the actual fix (a per-field remediation override, or a generic non-Settings-specific message, on `AppError::InvalidSetting`) belongs to E-05 (error taxonomy)'s owner, since the error type is shared across every setting, not just groups. |
-| 5 | Rename/delete buttons invisible while keyboard-focused (audit finding 12) | Phase 1 (audit findings), the a11y batch; add a `focus-within`/`focus-visible` reveal alongside the existing `group-hover/row` one in `groups-nav.tsx`. |
-| 6 | Delete-active-group force-navigates to Repos | Phase 1 (audit findings), frontend fixes bucket; `doDelete`'s clear-filter call needs a path that clears `activeGroupId` without also switching `view`, separate from the "select a group" path that intentionally does both. |
+| Defect (spec.md Known defects #) | Description | Scheduled | Fixed by |
+|---|---|---|---|
+| 1 | Group filter false-empties during membership load or on failure (audit finding 7) | Phase 1 (audit findings), frontend fixes bucket | **Fixed**, commit `4ab54bf`: `inGroupCount` and the list body distinguish `membershipMap === null` (loading/error) from a genuine empty match, rendering the shared `AsyncPanel` presentation instead of "No repositories match this filter". |
+| 2 | BL-NI-22 (O(N) group filter fan-out) | Tracked as its own backlog entry, `docs/backlog.md` BL-NI-22; landed as Phase 1 / P1-E per `execution-plan.md` | **Resolved**, commit `261a689`: a single bulk `repo_group_memberships() -> Vec<RepoGroupMembership>` replaces the `groups_for_repo` fan-out for both the filter and the chips - the originally-proposed `repos_in_group(group_id)` was superseded, since it would have served only the filter, not the chips. |
+| 3 | Group dialog double-Enter double-submit | Phase 1 (audit findings), frontend fixes bucket | **Fixed**, commit `4ab54bf`: `submit()` returns immediately if `busy` is already `true`. |
+| 4 | Duplicate-name error surfaces as "invalid setting: name" with the wrong (Settings-screen) remediation | Phase 1 (audit findings); the underlying `AppError::InvalidSetting` message itself is E-05 (error taxonomy)'s to change | **Fixed at the UI layer**, commit `4ab54bf`: the dialog now detects the duplicate-name case by error code + field and toasts "That name is already taken." The raw `AppError::InvalidSetting` display/remediation text is unchanged for any other caller; a generic or per-field remediation override remains open, owned by E-05. |
+| 5 | Rename/delete buttons invisible while keyboard-focused (audit finding 12) | Phase 1 (audit findings), the a11y batch | **Fixed**, commit `4ab54bf`: `group-focus-within/row:opacity-100` added alongside the hover reveal, plus a visible `focus-visible` ring on the row-icon buttons. |
+| 6 | Delete-active-group force-navigates to Repos | Phase 1 (audit findings), frontend fixes bucket | **Fixed**, commit `4ab54bf`: a new `onClearActiveGroup` prop (`app-shell.tsx`'s `clearActiveGroup`) clears `activeGroupId` with no `setView` side effect; `doDelete` uses it instead of `onSelectGroup` when the deleted group was the active filter. |
 
 ## Definition of done (for the remaining work, not the shipped vertical)
 
-- All six Known defects above are either fixed (with the fix noted in `spec.md`'s Task Summary and the AC/defect entry updated) or explicitly re-triaged to a later release with a recorded reason.
-- If defect 2 (BL-NI-22) is fixed, the AC9 source citation in `spec.md` and the "Out of scope" line calling out the missing `repos_in_group` query are updated together, since they will no longer be accurate.
-- No regression in the five existing store-layer unit tests; any fix to the command or store layer keeps them green.
+- All six Known defects above are fixed, with the fix noted in `spec.md`'s Task Summary and each defect entry - **done 2026-07-05**.
+- Defect 2 (BL-NI-22) is fixed; the AC9 source citation and the "Out of scope" / V1.1-extension-points lines calling out the missing `repos_in_group` query in `spec.md` were updated in the same pass to say it is superseded by the bulk `repo_group_memberships` read - **done 2026-07-05**.
+- No regression in the five existing store-layer unit tests; the fix added a sixth (`bulk_repo_group_memberships_groups_by_repo` in `store.rs`) alongside them. Not independently re-run by this doc-sync pass (docs-only scope; verified by reading the test code, not by executing `cargo test`).
