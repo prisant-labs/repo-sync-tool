@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { Activity, LayoutDashboard, List, Moon, Settings, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,10 +27,31 @@ function useTheme() {
   return { dark, toggle: () => setDark((d) => !d) };
 }
 
+/**
+ * The running app version, read once from Tauri at mount (the real semver
+ * from `tauri.conf.json`, not a hand-maintained literal). Falls back to a
+ * loading placeholder while the async call resolves, following the same
+ * mounted-guard idiom as `useAsync` (hooks/use-async.ts).
+ */
+function useAppVersion() {
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    getVersion().then((v) => {
+      if (active) setVersion(v);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  return version;
+}
+
 export function AppShell() {
   const [view, setView] = useState<View>("dashboard");
   const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
   const { dark, toggle } = useTheme();
+  const appVersion = useAppVersion();
   const active = NAV.find((n) => n.id === view);
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
@@ -58,7 +80,9 @@ export function AppShell() {
           <span className="font-semibold">
             Repo<span className="text-primary">Sync</span>
           </span>
-          <span className="ml-auto font-mono text-[11px] text-muted-foreground">0.9.0</span>
+          <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+            {appVersion ?? "..."}
+          </span>
         </div>
         <nav className="flex flex-col gap-0.5 px-2.5 py-2">
           {NAV.map(({ id, label, Icon }) => (
@@ -97,6 +121,7 @@ export function AppShell() {
             className="ml-auto"
             onClick={toggle}
             title="Toggle light / dark"
+            aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
           >
             {dark ? <Sun /> : <Moon />}
           </Button>

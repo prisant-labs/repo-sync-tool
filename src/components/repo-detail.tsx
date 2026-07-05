@@ -341,7 +341,9 @@ function Focal({
   if (status === "behind") {
     return (
       <>
-        <div className={cn("text-sm font-bold", style.text)}>{r.behindCount ?? 0} commits behind origin</div>
+        <div className={cn("text-sm font-bold", style.text)}>
+          {r.behindCount ?? 0} {r.behindCount === 1 ? "commit" : "commits"} behind origin
+        </div>
         <p className="mt-0.5 text-xs text-foreground/80">
           Fast-forward pulls only new commits; it never rewrites history and stops if the merge would not
           be clean.

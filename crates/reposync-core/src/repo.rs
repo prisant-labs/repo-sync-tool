@@ -249,8 +249,8 @@ pub async fn check_now(
     //    git command; a fetched check records the fetch capture.
     let status = if fetch_failed { "failed" } else { "success" };
     let summary = format!(
-        "check: decision={decision}, ahead={:?}, behind={:?}",
-        ahead_behind.ahead, ahead_behind.behind
+        "check: decision={decision}{}",
+        format_ahead_behind_suffix(ahead_behind.ahead, ahead_behind.behind)
     );
     activity::record(
         pool,
@@ -566,6 +566,20 @@ fn needs_remote_fetch(mode: &UpdateMode, inspect: &InspectResult, has_origin: bo
         UpdateMode::PullFfOnly => {
             !inspect.is_dirty && !inspect.is_detached && upstream == UpstreamState::Tracking
         }
+    }
+}
+
+/// Human-readable ", ahead=N, behind=N" suffix for an activity summary line.
+/// Renders the honest integer instead of `Option`'s `Debug` form (which would
+/// otherwise leak as "ahead=Some(0), behind=Some(0)" into user-facing activity
+/// text), and omits the pair entirely when the comparison base is unknown
+/// (no upstream, a deleted upstream, or a failed read) rather than printing
+/// "ahead=None, behind=None". `AheadBehind` always sets both fields together,
+/// so treating them as a pair here is safe.
+fn format_ahead_behind_suffix(ahead: Option<i64>, behind: Option<i64>) -> String {
+    match (ahead, behind) {
+        (Some(a), Some(b)) => format!(", ahead={a}, behind={b}"),
+        _ => String::new(),
     }
 }
 
@@ -901,6 +915,29 @@ mod tests {
             Some("refs/remotes/origin/feature"),
             "the fresh upstream is authoritative"
         );
+    }
+
+    // --- activity summary ahead/behind formatting -----------------------------
+
+    #[test]
+    fn format_ahead_behind_suffix_renders_honest_integers() {
+        // Known counts render as plain integers, never Option's Debug form
+        // (the "ahead=Some(0), behind=Some(0)" leak this fix removes).
+        assert_eq!(
+            format_ahead_behind_suffix(Some(0), Some(0)),
+            ", ahead=0, behind=0"
+        );
+        assert_eq!(
+            format_ahead_behind_suffix(Some(3), Some(1)),
+            ", ahead=3, behind=1"
+        );
+    }
+
+    #[test]
+    fn format_ahead_behind_suffix_omits_unknown_cleanly() {
+        // No resolvable comparison base (no upstream / deleted upstream / a
+        // failed read) omits the pair entirely instead of printing "None".
+        assert_eq!(format_ahead_behind_suffix(None, None), "");
     }
 
     // --- update_mode parse/format round-trip ----------------------------------
