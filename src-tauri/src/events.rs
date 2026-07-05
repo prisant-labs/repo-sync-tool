@@ -14,9 +14,9 @@ use tauri_specta::Event;
 
 use reposync_core::error::{AppError, AppErrorPayload};
 use reposync_core::ipc::{
-    CheckCompletedPayload, CheckResult, CheckStartedPayload, NavigateRequestedPayload,
-    NotificationFiredPayload, SchedulerTickPayload, StateChangedPayload, UpdateCompletedPayload,
-    UpdateStartedPayload,
+    CheckCompletedPayload, CheckResult, CheckStartedPayload, MetadataRefreshedPayload,
+    NavigateRequestedPayload, NotificationFiredPayload, SchedulerTickPayload, StateChangedPayload,
+    UpdateCompletedPayload, UpdateStartedPayload,
 };
 
 /// Typed "check completed" event, broadcast after every `repo_check_now`.
@@ -91,6 +91,14 @@ pub struct NotificationFired(pub NotificationFiredPayload);
 pub struct ErrorRaised {
     pub error: AppErrorPayload,
 }
+
+/// Typed `repo:metadata-refreshed` event (E-17 finding 3): emitted once per background
+/// GitHub metadata refresh pass that changed at least one repo, so the aggregate list
+/// view refetches exactly once. Additive E-06 amendment (was a flagged V1.1 surface in
+/// the E-17 spec; promoted to V1 to fix the background-refresh-invisible finding).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Event)]
+#[tauri_specta(event_name = "repo:metadata-refreshed")]
+pub struct MetadataRefreshed(pub MetadataRefreshedPayload);
 
 /// Typed `navigate:requested` event (E-13 tray): the shell asks the UI to switch
 /// views.
@@ -183,6 +191,15 @@ pub fn emit_error_raised(app: &AppHandle, err: &AppError) {
         error: err.to_payload(),
     }
     .emit(app);
+}
+
+/// Emit the `repo:metadata-refreshed` event after a background metadata refresh pass
+/// that changed at least one repo (E-17 finding 3). ONE per pass, so the aggregate list
+/// view (dashboard / repos) refetches exactly once - the per-repo drawer refresh rides
+/// the separate `repo:state-changed` events. `changed_count` is how many repos moved;
+/// `at` is the pass timestamp. Best-effort like every emit.
+pub fn emit_metadata_refreshed(app: &AppHandle, changed_count: i64, at: i64) {
+    let _ = MetadataRefreshed(MetadataRefreshedPayload { changed_count, at }).emit(app);
 }
 
 /// Emit the `nav:requested` event asking the frontend to switch to `target` (E-13

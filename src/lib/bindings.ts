@@ -172,6 +172,7 @@ export const events = {
 	notificationFired: makeEvent<NotificationFired>("notification:fired"),
 	repoCheckCompleted: makeEvent<CheckCompleted>("repo:check-completed"),
 	repoCheckStarted: makeEvent<CheckStarted>("repo:check-started"),
+	repoMetadataRefreshed: makeEvent<MetadataRefreshed>("repo:metadata-refreshed"),
 	repoStateChanged: makeEvent<StateChanged>("repo:state-changed"),
 	repoUpdateCompleted: makeEvent<UpdateCompleted>("repo:update-completed"),
 	repoUpdateStarted: makeEvent<UpdateStarted>("repo:update-started"),
@@ -336,6 +337,31 @@ export type GroupSummary = {
 	name: string,
 	color: string | null,
 	repoCount: number,
+};
+
+/**
+ *  Typed `repo:metadata-refreshed` event (E-17 finding 3): emitted once per background
+ *  GitHub metadata refresh pass that changed at least one repo, so the aggregate list
+ *  view refetches exactly once. Additive E-06 amendment (was a flagged V1.1 surface in
+ *  the E-17 spec; promoted to V1 to fix the background-refresh-invisible finding).
+ */
+export type MetadataRefreshed = MetadataRefreshedPayload;
+
+/**
+ *  Payload for the `repo:metadata-refreshed` event (E-17 finding 3): the background
+ *  GitHub metadata + branch/PR refresh pass wrote fresh data for one or more repos.
+ * 
+ *  The shell emits this ONCE per pass (only when at least one repo actually changed),
+ *  so the aggregate list view (dashboard, repos) refetches EXACTLY ONCE per pass -
+ *  never an N+1 refetch storm (the Phase-3 F3 batching discipline). It is deliberately
+ *  distinct from `scheduler:tick`: a metadata refresh is not a git check, so reusing
+ *  the tick would falsely imply a check ran. `changed_count` is how many repos moved
+ *  this pass; `at` is the pass's unix-second timestamp. Per-repo `repo:state-changed`
+ *  events (one per changed repo) drive the focused drawer separately.
+ */
+export type MetadataRefreshedPayload = {
+	changedCount: number,
+	at: number,
 };
 
 /**

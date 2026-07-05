@@ -33,8 +33,8 @@ use commands::{
     repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
 };
 use events::{
-    CheckCompleted, CheckStarted, ErrorRaised, NavigateRequested, NotificationFired, SchedulerTick,
-    StateChanged, UpdateCompleted, UpdateStarted,
+    CheckCompleted, CheckStarted, ErrorRaised, MetadataRefreshed, NavigateRequested,
+    NotificationFired, SchedulerTick, StateChanged, UpdateCompleted, UpdateStarted,
 };
 
 /// Shared, managed application state injected into every command.
@@ -86,6 +86,13 @@ pub struct AppState {
     /// of every cycle, so a tray pause suppresses scheduled checks with no restart.
     /// In-memory by design: pause resets to running on the next launch.
     pub pause: reposync_core::scheduler::GlobalPause,
+    /// The ONE shared GitHub request budget (E-17 finding 2). BOTH the background
+    /// metadata-refresh pass and the manual `repo_refresh_metadata` command spend
+    /// against this same rolling-hour budgeter, so a manual refresh can never race the
+    /// background pass into overspending the unauthenticated 60/hour ceiling. The
+    /// budgeter itself is Tauri-free core (`reposync_core::github::RateBudgeter`); this
+    /// is only the shared handle. The background loop holds a clone of the same `Arc`.
+    pub github_budget: reposync_core::github::SharedBudgeter,
     pub db_recovered: bool,
     pub db_backup_path: Option<std::path::PathBuf>,
 }
@@ -160,6 +167,9 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             ErrorRaised,
             // E-13 tray "Settings" navigation (additive)
             NavigateRequested,
+            // E-17 finding 3: background metadata-refresh pass completed with changes
+            // (additive); one coalesced signal so the list view refetches once per pass.
+            MetadataRefreshed,
         ])
         // The IPC payloads carry `i64` repo ids, ahead/behind counts, and unix
         // second timestamps. specta-typescript refuses to emit i64/u64 by
@@ -460,22 +470,28 @@ pub fn run() {
                 // oldest-metadata-first, capped by a rolling-hour RateBudgeter so a cold
                 // library backfills over several hours rather than bursting past the
                 // unauthenticated ceiling (E-17 AC16). Runs the unauthenticated NoToken
-                // path only; the manual `repo_refresh_metadata` command is a separate
-                // user-initiated one-off and is not charged against this budget. No
-                // frontend event is emitted per pass (V1: the row/drawer pick up the
-                // fresher metadata on the next check/manual refresh; a
-                // `repo:metadata-refreshed` push is a V1.1 surface).
+                // path only.
+                //
+                // Finding 2: the budgeter is the SHARED handle in AppState, so the manual
+                // `repo_refresh_metadata` command spends against the SAME budget and the
+                // two paths can never together overspend the ceiling.
+                //
+                // Finding 3: after each pass, emit ONE `repo:metadata-refreshed` (only
+                // when at least one repo changed) so the aggregate list view refetches
+                // exactly once, plus a per-repo `repo:state-changed` for each changed repo
+                // so an open drawer refreshes. This is what makes a background PR/release
+                // refresh visible to the open UI without an N+1 refetch storm.
+                let github_budget = reposync_core::github::shared_budgeter();
                 {
-                    use reposync_core::github::{
-                        refresh_pass, NoToken, RateBudgeter, ReqwestTransport,
-                    };
+                    use reposync_core::github::{refresh_pass, NoToken, ReqwestTransport};
                     let refresh_pool = pool.clone();
+                    let refresh_budget = github_budget.clone();
+                    let refresh_handle = handle.clone();
                     match ReqwestTransport::new() {
                         Ok(transport) => {
                             tauri::async_runtime::spawn(async move {
-                                let mut budgeter = RateBudgeter::new();
                                 // A modest tick; the rolling-hour budgeter, the 24h
-                                // per-repo window, and the per-endpoint ETags pace the
+                                // per-resource window, and the per-endpoint ETags pace the
                                 // real request volume, so most ticks are cheap no-ops.
                                 let mut interval =
                                     tokio::time::interval(std::time::Duration::from_secs(600));
@@ -485,18 +501,40 @@ pub fn run() {
                                 loop {
                                     interval.tick().await;
                                     let now = crate::localtime::now_unix();
-                                    if let Err(e) = refresh_pass(
+                                    match refresh_pass(
                                         &refresh_pool,
                                         &transport,
                                         &NoToken,
-                                        &mut budgeter,
+                                        &refresh_budget,
                                         now,
                                     )
                                     .await
                                     {
-                                        eprintln!(
+                                        Ok(report) => {
+                                            // Per-repo drawer signal: only the focused
+                                            // repo-detail drawer (useRepoBackendEvents,
+                                            // scoped) reacts to repo:state-changed, so this
+                                            // is not a list-refetch storm.
+                                            for id in &report.changed_repo_ids {
+                                                crate::events::emit_state_changed(
+                                                    &refresh_handle,
+                                                    *id,
+                                                    None,
+                                                );
+                                            }
+                                            // ONE coalesced list signal per pass that
+                                            // actually changed something.
+                                            if !report.changed_repo_ids.is_empty() {
+                                                crate::events::emit_metadata_refreshed(
+                                                    &refresh_handle,
+                                                    report.changed_repo_ids.len() as i64,
+                                                    now,
+                                                );
+                                            }
+                                        }
+                                        Err(e) => eprintln!(
                                             "github: background metadata refresh pass failed: {e}"
-                                        );
+                                        ),
                                     }
                                 }
                             });
@@ -521,6 +559,7 @@ pub fn run() {
                     locks,
                     settings_write_lock: tokio::sync::Mutex::new(()),
                     pause,
+                    github_budget,
                     db_recovered,
                     db_backup_path,
                 });

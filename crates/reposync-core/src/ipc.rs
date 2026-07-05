@@ -444,6 +444,23 @@ pub struct NotificationFiredPayload {
     pub body: String,
 }
 
+/// Payload for the `repo:metadata-refreshed` event (E-17 finding 3): the background
+/// GitHub metadata + branch/PR refresh pass wrote fresh data for one or more repos.
+///
+/// The shell emits this ONCE per pass (only when at least one repo actually changed),
+/// so the aggregate list view (dashboard, repos) refetches EXACTLY ONCE per pass -
+/// never an N+1 refetch storm (the Phase-3 F3 batching discipline). It is deliberately
+/// distinct from `scheduler:tick`: a metadata refresh is not a git check, so reusing
+/// the tick would falsely imply a check ran. `changed_count` is how many repos moved
+/// this pass; `at` is the pass's unix-second timestamp. Per-repo `repo:state-changed`
+/// events (one per changed repo) drive the focused drawer separately.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MetadataRefreshedPayload {
+    pub changed_count: i64,
+    pub at: i64,
+}
+
 /// Payload for the `navigate:requested` event (E-13 tray): the shell asks the
 /// frontend to switch to a named view. `target` is a view id the app-shell router understands
 /// (`"dashboard"` / `"repos"` / `"activity"` / `"settings"`); an unknown target is

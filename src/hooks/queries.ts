@@ -93,6 +93,13 @@ export function useRepoGroupMemberships() {
  * carries no state change and is ignored. `repo:check-completed` / `-update-completed`
  * stay subscribed because those fire only on MANUAL, user-initiated single actions,
  * so refetching immediately keeps the screen responsive without any per-cycle storm.
+ *
+ * Background GitHub metadata (E-17 finding 3): the background PR/release refresh pass
+ * is NOT a git check, so it does not ride `scheduler:tick`. Instead it emits ONE
+ * `repo:metadata-refreshed` per pass that changed at least one repo, subscribed to
+ * here so the list picks up fresher PR/release badges - still exactly one refetch per
+ * pass, never a per-repo storm (the pass's per-repo `repo:state-changed` events go only
+ * to the scoped drawer hook, as above).
  */
 export function useBackendEvents(onChange: () => void) {
   useEffect(() => {
@@ -102,6 +109,7 @@ export function useBackendEvents(onChange: () => void) {
       events.schedulerTick.listen((e) => {
         if (e.payload.checked > 0) onChange();
       }),
+      events.repoMetadataRefreshed.listen(() => onChange()),
     ];
     return () => {
       void Promise.all(subscriptions).then((unlisteners) => {

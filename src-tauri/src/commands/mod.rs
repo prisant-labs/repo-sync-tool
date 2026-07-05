@@ -348,14 +348,30 @@ pub async fn repo_refresh_metadata(
         .and_then(|d| d.latest_release_tag);
 
     let transport = reposync_core::github::ReqwestTransport::new()?;
-    let report = reposync_core::github::refresh_one(
+    // Finding 2: route the manual refresh through the SAME budgeted entry point the
+    // background pass uses, spending against the ONE shared budget in AppState, so a
+    // manual refresh can never race the background pass into overspending the ceiling.
+    // Finding 1: `force = true` re-checks EVERY resource (repo + release + PR) regardless
+    // of any window, so a user Refresh always re-fetches.
+    let refreshed = reposync_core::github::refresh_one_budgeted(
         &state.pool,
         &transport,
         &reposync_core::github::NoToken,
+        &state.github_budget,
         id,
         crate::localtime::now_unix(),
+        true,
     )
     .await?;
+    let report = match refreshed {
+        // Budget exhausted: do NOT spend over the ceiling. Return the last-known detail,
+        // which the drawer renders with its "as of <time>" staleness marker - budget
+        // exhaustion is graceful degradation, never an error state (E-17 In scope (b)).
+        reposync_core::github::BudgetedRefresh::BudgetExhausted => {
+            return reposync_core::store::repo_get(&state.pool, RepoId(id)).await;
+        }
+        reposync_core::github::BudgetedRefresh::Refreshed(report) => report,
+    };
     if let Some(err) = refresh_report_error(&report, id) {
         return Err(err);
     }
@@ -810,6 +826,7 @@ mod tests {
             release_stale: false,
             pr_stale: false,
             requests_made: 0,
+            changed: false,
         }
     }
 

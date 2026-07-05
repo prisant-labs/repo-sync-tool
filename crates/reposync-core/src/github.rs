@@ -234,6 +234,14 @@ pub struct RefreshReport {
     /// 1 on a repo-resource failure; up to [`MAX_REQUESTS_PER_REPO`] on a 200/304).
     /// The refresh pass charges these against the [`RateBudgeter`].
     pub requests_made: u32,
+    /// `true` when this refresh WROTE fresh data the UI cares about: a repo-resource
+    /// 200 (`Updated`), a release 200 (`Modified`), or a PR 200 (`Modified`). A 304,
+    /// a cache hit, a skip, a preserve-on-`Unknown`, or an authoritative no-release
+    /// clear does NOT flip this - the ETags make a steady-state re-check a no-op, so
+    /// `changed` is precise, not merely "a network call happened" (finding 3). The
+    /// background pass collects the ids of changed repos so the shell can refresh the
+    /// open UI exactly for what moved, without an N+1 refetch storm.
+    pub changed: bool,
 }
 
 // =============================================================================
@@ -600,6 +608,50 @@ pub fn is_within_refresh_window(last_fetched_at: Option<i64>, now: i64) -> bool 
     }
 }
 
+/// Which of a repo's three GitHub resources are due for a network re-check at `now`.
+/// Each of the repo resource, the latest-release sub-resource, and the PR sub-resource
+/// carries its OWN last-checked timestamp (BL-NI-15b), so the decision is
+/// RESOURCE-AWARE: a fresh repo window never hides a stale (or never-fetched)
+/// sub-resource. See [`due_resources`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueResources {
+    pub repo: bool,
+    pub release: bool,
+    pub pr: bool,
+}
+
+impl DueResources {
+    /// `true` when at least one resource needs a network re-check (so the refresh is
+    /// not a pure cache hit).
+    pub fn any(&self) -> bool {
+        self.repo || self.release || self.pr
+    }
+}
+
+/// Decide which of a repo's three GitHub resources are due for a network re-check at
+/// `now`, given each resource's OWN last-checked timestamp. A resource is due when
+/// `force` is set (the manual-refresh path always re-checks), or when its last-checked
+/// is missing (never fetched) or older than the refresh window.
+///
+/// This is the fix for the repo-level cache masking a stale sub-resource (finding 1):
+/// a repo enriched by E-10 with a fresh `last_fetched_at` but a NULL
+/// `pr_last_checked_at` / `release_last_checked_at` is STILL due for its PR / release
+/// fetch, instead of being served wholesale from the repo cache and never fetching
+/// PR / release data until the 24h repo window elapses.
+pub fn due_resources(
+    last_fetched_at: Option<i64>,
+    release_last_checked_at: Option<i64>,
+    pr_last_checked_at: Option<i64>,
+    now: i64,
+    force: bool,
+) -> DueResources {
+    DueResources {
+        repo: force || !is_within_refresh_window(last_fetched_at, now),
+        release: force || !is_within_refresh_window(release_last_checked_at, now),
+        pr: force || !is_within_refresh_window(pr_last_checked_at, now),
+    }
+}
+
 /// Whether to back off given the rate-limit budget (AC4): remaining at or below
 /// [`RATE_LIMIT_BACKOFF_PERCENT`] of the limit. A non-positive limit never backs
 /// off (no budget information).
@@ -628,20 +680,26 @@ fn worst_budget(budgets: &[RateLimit]) -> Option<RateLimit> {
 /// function the `repo_refresh_metadata(id) -> RepoDetail` command wraps (the command
 /// shell is E-06/src-tauri).
 ///
-/// Flow: resolve the repo's coords (skip non-GitHub); if it is inside the refresh
-/// window, serve from cache (no network); else fetch the repo resource with the
-/// stored ETag as `If-None-Match`. On a 200/304, ALSO fetch the latest-release and
-/// pull-request sub-resources - each with its OWN stored ETag, decoupled from the
-/// repo-resource ETag (BL-NI-15b), so a repo-304 never hides a new release or PR.
-/// A 404/403 on the release is authoritative (clears); a 404/403 on the pulls is
-/// Unknown (preserves the cached counts, never a destructive zero - BL-NI-15a).
-/// `AppError` only on a DB failure.
+/// Flow: resolve the repo's coords (skip non-GitHub); decide which of the three
+/// resources (repo, latest-release, PR) are DUE using each resource's OWN last-checked
+/// timestamp (BL-NI-15b / finding 1) - so a fresh repo window never masks a stale or
+/// never-fetched sub-resource. If nothing is due, serve from cache (no network).
+/// Otherwise fetch each DUE resource with its own stored ETag as `If-None-Match`; the
+/// repo resource is fetched only when it is itself due, so a fresh repo whose PR
+/// sub-resource is due re-checks the PR without re-fetching the repo. A 404/403 on the
+/// release is authoritative (clears); a 404/403 on the pulls is Unknown (preserves the
+/// cached counts, never a destructive zero - BL-NI-15a).
+///
+/// `force` re-checks EVERY resource regardless of its window (the manual
+/// `repo_refresh_metadata` path), so a user Refresh always re-fetches. `AppError` only
+/// on a DB failure.
 pub async fn refresh_one<T: Transport, P: TokenProvider>(
     pool: &SqlitePool,
     transport: &T,
     tokens: &P,
     repo_id: i64,
     now: i64,
+    force: bool,
 ) -> Result<RefreshReport, AppError> {
     // 1. Resolve the repo's coords; a missing id is NotFound, a non-GitHub repo
     //    (or unparseable URL) is a clean skip - never a network call.
@@ -668,249 +726,306 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             release_stale: false,
             pr_stale: false,
             requests_made: 0,
+            changed: false,
         });
     };
 
-    // 2. Read the cached ETags + last_fetched_at (a repo may have no meta row yet).
-    //    Each resource carries its OWN ETag (BL-NI-15b): repo, release, and PR.
+    // 2. Read the cached ETags + last-checked timestamps (a repo may have no meta row
+    //    yet). Each resource carries its OWN ETag AND its OWN last-checked (BL-NI-15b):
+    //    repo, release, and PR, so their freshness is decided independently.
     let meta_row = sqlx::query(
-        "SELECT etag, last_fetched_at, release_etag, pr_etag \
+        "SELECT etag, last_fetched_at, release_etag, release_last_checked_at, \
+         pr_etag, pr_last_checked_at \
          FROM repo_remote_meta WHERE repo_id = ?",
     )
     .bind(repo_id)
     .fetch_optional(pool)
     .await?;
-    let (repo_etag, last_fetched_at, release_etag, pr_etag): (
+    #[allow(clippy::type_complexity)]
+    let (
+        repo_etag,
+        last_fetched_at,
+        release_etag,
+        release_last_checked_at,
+        pr_etag,
+        pr_last_checked_at,
+    ): (
         Option<String>,
         Option<i64>,
         Option<String>,
+        Option<i64>,
         Option<String>,
+        Option<i64>,
     ) = match &meta_row {
         Some(r) => (
             r.try_get("etag")?,
             r.try_get("last_fetched_at")?,
             r.try_get("release_etag")?,
+            r.try_get("release_last_checked_at")?,
             r.try_get("pr_etag")?,
+            r.try_get("pr_last_checked_at")?,
         ),
-        None => (None, None, None, None),
+        None => (None, None, None, None, None, None),
     };
 
-    // 3. Inside the ~24h refresh window -> serve from cache, no network (AC3).
-    if is_within_refresh_window(last_fetched_at, now) {
+    // 3. Resource-aware staleness (finding 1): decide which of repo / release / PR are
+    //    due from each resource's OWN last-checked. A fresh repo window no longer
+    //    short-circuits the whole refresh to Cached when a sub-resource is stale or
+    //    never fetched. If NOTHING is due (and not forced), serve from cache, no
+    //    network (AC3).
+    let due = due_resources(
+        last_fetched_at,
+        release_last_checked_at,
+        pr_last_checked_at,
+        now,
+        force,
+    );
+    if !due.any() {
         return Ok(RefreshReport {
             outcome: RefreshOutcome::Cached,
             rate_limit: None,
             release_stale: false,
             pr_stale: false,
             requests_made: 0,
+            changed: false,
         });
     }
 
-    // 4. Fetch the repo resource with its stored ETag and the seam's token (V1: None).
     let token = tokens.token();
-    let repo_fetch = transport
-        .fetch_repo(&coords, repo_etag.as_deref(), token.as_deref())
-        .await;
-    let mut requests_made: u32 = 1;
+    let mut requests_made: u32 = 0;
+    let mut changed = false;
 
-    // Collect the budgets observed across all three reads; the report surfaces the
-    // MOST conservative one so the edge's `should_backoff` fires on the tightest.
+    // Collect the budgets observed across the reads issued this pass; the report
+    // surfaces the MOST conservative one so the edge's `should_backoff` fires on the
+    // tightest.
     let mut budgets: Vec<RateLimit> = Vec::with_capacity(MAX_REQUESTS_PER_REPO);
 
-    // 5. A repo-resource FAILURE short-circuits: no release/PR sub-fetches, cache
-    //    left intact.
-    let (outcome, effective_default_branch): (RefreshOutcome, Option<String>) = match repo_fetch {
-        RepoFetch::NetworkLost => {
-            return Ok(RefreshReport {
-                outcome: RefreshOutcome::NetworkLost,
-                rate_limit: None,
-                release_stale: false,
-                pr_stale: false,
-                requests_made,
-            });
+    // 4. The repo resource is fetched ONLY when it is itself due. A fresh repo whose
+    //    PR / release sub-resource is due skips the repo fetch entirely (no wasted
+    //    round-trip) and serves the repo columns from cache, then still runs the due
+    //    sub-fetch(es) below. A repo-resource FAILURE short-circuits: no sub-fetches,
+    //    cache left intact.
+    let (outcome, effective_default_branch): (RefreshOutcome, Option<String>) = if due.repo {
+        let repo_fetch = transport
+            .fetch_repo(&coords, repo_etag.as_deref(), token.as_deref())
+            .await;
+        requests_made += 1;
+        match repo_fetch {
+            RepoFetch::NetworkLost => {
+                return Ok(RefreshReport {
+                    outcome: RefreshOutcome::NetworkLost,
+                    rate_limit: None,
+                    release_stale: false,
+                    pr_stale: false,
+                    requests_made,
+                    changed: false,
+                });
+            }
+            RepoFetch::NotFound => {
+                return Ok(RefreshReport {
+                    outcome: RefreshOutcome::NotFound,
+                    rate_limit: None,
+                    release_stale: false,
+                    pr_stale: false,
+                    requests_made,
+                    changed: false,
+                });
+            }
+            RepoFetch::RateLimited { rate_limit } => {
+                return Ok(RefreshReport {
+                    outcome: RefreshOutcome::RateLimited,
+                    // Carry the budget (incl. reset_at) so the edge can raise an honest
+                    // AppError::RateLimited { reset_at } and the pass can time its resume.
+                    rate_limit: Some(rate_limit),
+                    release_stale: false,
+                    pr_stale: false,
+                    requests_made,
+                    changed: false,
+                });
+            }
+            // 4a. A 200 repo fetch rewrites the repo-RESOURCE columns (description /
+            //     topics / archived / sha / etag / last_fetched_at) in ONE transaction
+            //     so the freshness markers cannot advance without the resource write
+            //     being durable. The release/PR columns are written SEPARATELY (below),
+            //     each with its own ETag, so a failed sub-fetch never erases them
+            //     (BL-NI-15a).
+            RepoFetch::Modified {
+                metadata,
+                etag: new_etag,
+                observed_sha,
+                rate_limit,
+            } => {
+                let effective_db = metadata
+                    .default_branch
+                    .clone()
+                    .or_else(|| cached_default_branch.clone());
+                let mut tx = pool.begin().await?;
+                sqlx::query(
+                    "UPDATE repos SET default_branch = COALESCE(?, default_branch) WHERE id = ?",
+                )
+                .bind(&metadata.default_branch)
+                .bind(repo_id)
+                .execute(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO repo_remote_meta \
+                     (repo_id, description, topics_json, is_archived, last_remote_sha, \
+                      last_fetched_at, etag) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(repo_id) DO UPDATE SET \
+                      description = excluded.description, topics_json = excluded.topics_json, \
+                      is_archived = excluded.is_archived, last_remote_sha = excluded.last_remote_sha, \
+                      last_fetched_at = excluded.last_fetched_at, etag = excluded.etag",
+                )
+                .bind(repo_id)
+                .bind(&metadata.description)
+                .bind(&metadata.topics_json)
+                .bind(metadata.is_archived as i64)
+                .bind(&observed_sha)
+                .bind(now)
+                .bind(&new_etag)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+                budgets.push(rate_limit);
+                changed = true;
+                (RefreshOutcome::Updated, effective_db)
+            }
+            // 4b. A 304 bumps only last_fetched_at (cached repo metadata intact, AC6).
+            //     The release/PR sub-fetches STILL run when due (BL-NI-15b decoupling),
+            //     so a repo-304 never suppresses a new release or pull request.
+            RepoFetch::NotModified { rate_limit } => {
+                sqlx::query(
+                    "INSERT INTO repo_remote_meta (repo_id, last_fetched_at) VALUES (?, ?) \
+                     ON CONFLICT(repo_id) DO UPDATE SET last_fetched_at = excluded.last_fetched_at",
+                )
+                .bind(repo_id)
+                .bind(now)
+                .execute(pool)
+                .await?;
+                budgets.push(rate_limit);
+                (RefreshOutcome::NotModified, cached_default_branch.clone())
+            }
         }
-        RepoFetch::NotFound => {
-            return Ok(RefreshReport {
-                outcome: RefreshOutcome::NotFound,
-                rate_limit: None,
-                release_stale: false,
-                pr_stale: false,
-                requests_made,
-            });
-        }
-        RepoFetch::RateLimited { rate_limit } => {
-            return Ok(RefreshReport {
-                outcome: RefreshOutcome::RateLimited,
-                // Carry the budget (incl. reset_at) so the edge can raise an honest
-                // AppError::RateLimited { reset_at } and the pass can time its resume.
-                rate_limit: Some(rate_limit),
-                release_stale: false,
-                pr_stale: false,
-                requests_made,
-            });
-        }
-        // 6a. A 200 repo fetch rewrites the repo-RESOURCE columns (description /
-        //     topics / archived / sha / etag / last_fetched_at) in ONE transaction so
-        //     the freshness markers cannot advance without the resource write being
-        //     durable. The release/PR columns are written SEPARATELY (below), each
-        //     with its own ETag, so a failed sub-fetch never erases them (BL-NI-15a).
-        RepoFetch::Modified {
-            metadata,
-            etag: new_etag,
-            observed_sha,
-            rate_limit,
-        } => {
-            let effective_db = metadata
-                .default_branch
-                .clone()
-                .or_else(|| cached_default_branch.clone());
-            let mut tx = pool.begin().await?;
-            sqlx::query(
-                "UPDATE repos SET default_branch = COALESCE(?, default_branch) WHERE id = ?",
-            )
-            .bind(&metadata.default_branch)
-            .bind(repo_id)
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                "INSERT INTO repo_remote_meta \
-                 (repo_id, description, topics_json, is_archived, last_remote_sha, \
-                  last_fetched_at, etag) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?) \
-                 ON CONFLICT(repo_id) DO UPDATE SET \
-                  description = excluded.description, topics_json = excluded.topics_json, \
-                  is_archived = excluded.is_archived, last_remote_sha = excluded.last_remote_sha, \
-                  last_fetched_at = excluded.last_fetched_at, etag = excluded.etag",
-            )
-            .bind(repo_id)
-            .bind(&metadata.description)
-            .bind(&metadata.topics_json)
-            .bind(metadata.is_archived as i64)
-            .bind(&observed_sha)
-            .bind(now)
-            .bind(&new_etag)
-            .execute(&mut *tx)
-            .await?;
-            tx.commit().await?;
-            budgets.push(rate_limit);
-            (RefreshOutcome::Updated, effective_db)
-        }
-        // 6b. A 304 bumps only last_fetched_at (cached repo metadata intact, AC6). The
-        //     release/PR sub-fetches STILL run (BL-NI-15b decoupling), so a repo-304
-        //     never suppresses a new release or pull request.
-        RepoFetch::NotModified { rate_limit } => {
-            sqlx::query(
-                "INSERT INTO repo_remote_meta (repo_id, last_fetched_at) VALUES (?, ?) \
-                 ON CONFLICT(repo_id) DO UPDATE SET last_fetched_at = excluded.last_fetched_at",
-            )
-            .bind(repo_id)
-            .bind(now)
-            .execute(pool)
-            .await?;
-            budgets.push(rate_limit);
-            (RefreshOutcome::NotModified, cached_default_branch.clone())
-        }
+    } else {
+        // The repo resource is still fresh: serve its columns from cache (no network),
+        // but a sub-resource is due, so the due sub-fetch(es) below still run. The
+        // outcome reflects the REPO resource, so it is Cached even though this refresh
+        // may issue sub-resource requests (finding 1).
+        (RefreshOutcome::Cached, cached_default_branch.clone())
     };
 
-    // 7. Latest-release sub-resource, with its OWN ETag (BL-NI-15b). Decoupled from
-    //    the repo-resource ETag, so it re-checks every window regardless of a repo-304.
-    let release_fetch = transport
-        .fetch_release(&coords, release_etag.as_deref(), token.as_deref())
-        .await;
-    requests_made += 1;
-    let release_stale = match release_fetch {
-        ReleaseFetch::Modified {
-            release,
-            etag,
-            rate_limit,
-        } => {
-            budgets.push(rate_limit);
-            sqlx::query(
-                "UPDATE repo_remote_meta SET latest_release_tag = ?, latest_release_at = ?, \
-                 latest_release_url = ?, release_etag = ?, release_last_checked_at = ? \
-                 WHERE repo_id = ?",
-            )
-            .bind(&release.tag)
-            .bind(release.published_at)
-            .bind(&release.url)
-            .bind(&etag)
-            .bind(now)
-            .bind(repo_id)
-            .execute(pool)
-            .await?;
-            false
-        }
-        ReleaseFetch::NotModified { rate_limit } => {
-            budgets.push(rate_limit);
-            sqlx::query(
-                "UPDATE repo_remote_meta SET release_last_checked_at = ? WHERE repo_id = ?",
-            )
-            .bind(now)
-            .bind(repo_id)
-            .execute(pool)
-            .await?;
-            false
-        }
-        ReleaseFetch::NoRelease { rate_limit } => {
-            budgets.push(rate_limit);
-            sqlx::query(
-                "UPDATE repo_remote_meta SET latest_release_tag = NULL, latest_release_at = NULL, \
-                 latest_release_url = NULL, release_etag = NULL, release_last_checked_at = ? \
-                 WHERE repo_id = ?",
-            )
-            .bind(now)
-            .bind(repo_id)
-            .execute(pool)
-            .await?;
-            false
-        }
-        // Unknown: preserve the cached release fields (BL-NI-15a); do NOT advance
-        // release_last_checked_at, so the "as of" reflects the last real confirmation.
-        ReleaseFetch::Unknown => true,
-    };
-
-    // 8. Pull-request sub-resource, with its OWN ETag. A 404/403 is Unknown
-    //    (preserve the cached counts), NEVER a destructive zero (BL-NI-15a, AC5).
-    let pr_fetch = transport
-        .fetch_pulls(
-            &coords,
-            effective_default_branch.as_deref(),
-            pr_etag.as_deref(),
-            token.as_deref(),
-        )
-        .await;
-    requests_made += 1;
-    let pr_stale = match pr_fetch {
-        PrFetch::Modified {
-            counts,
-            etag,
-            rate_limit,
-        } => {
-            budgets.push(rate_limit);
-            sqlx::query(
-                "UPDATE repo_remote_meta SET open_pr_count = ?, default_branch_pr_count = ?, \
-                 pr_etag = ?, pr_last_checked_at = ? WHERE repo_id = ?",
-            )
-            .bind(counts.open)
-            .bind(counts.default_branch)
-            .bind(&etag)
-            .bind(now)
-            .bind(repo_id)
-            .execute(pool)
-            .await?;
-            false
-        }
-        PrFetch::NotModified { rate_limit } => {
-            budgets.push(rate_limit);
-            sqlx::query("UPDATE repo_remote_meta SET pr_last_checked_at = ? WHERE repo_id = ?")
+    // 5. Latest-release sub-resource, fetched only when DUE, with its OWN ETag
+    //    (BL-NI-15b). Decoupled from the repo-resource ETag, so it re-checks on its own
+    //    window regardless of the repo result.
+    let release_stale = if due.release {
+        let release_fetch = transport
+            .fetch_release(&coords, release_etag.as_deref(), token.as_deref())
+            .await;
+        requests_made += 1;
+        match release_fetch {
+            ReleaseFetch::Modified {
+                release,
+                etag,
+                rate_limit,
+            } => {
+                budgets.push(rate_limit);
+                sqlx::query(
+                    "UPDATE repo_remote_meta SET latest_release_tag = ?, latest_release_at = ?, \
+                     latest_release_url = ?, release_etag = ?, release_last_checked_at = ? \
+                     WHERE repo_id = ?",
+                )
+                .bind(&release.tag)
+                .bind(release.published_at)
+                .bind(&release.url)
+                .bind(&etag)
                 .bind(now)
                 .bind(repo_id)
                 .execute(pool)
                 .await?;
-            false
+                changed = true;
+                false
+            }
+            ReleaseFetch::NotModified { rate_limit } => {
+                budgets.push(rate_limit);
+                sqlx::query(
+                    "UPDATE repo_remote_meta SET release_last_checked_at = ? WHERE repo_id = ?",
+                )
+                .bind(now)
+                .bind(repo_id)
+                .execute(pool)
+                .await?;
+                false
+            }
+            ReleaseFetch::NoRelease { rate_limit } => {
+                budgets.push(rate_limit);
+                sqlx::query(
+                    "UPDATE repo_remote_meta SET latest_release_tag = NULL, \
+                     latest_release_at = NULL, latest_release_url = NULL, release_etag = NULL, \
+                     release_last_checked_at = ? WHERE repo_id = ?",
+                )
+                .bind(now)
+                .bind(repo_id)
+                .execute(pool)
+                .await?;
+                false
+            }
+            // Unknown: preserve the cached release fields (BL-NI-15a); do NOT advance
+            // release_last_checked_at, so the "as of" reflects the last real confirmation.
+            ReleaseFetch::Unknown => true,
         }
-        // Unknown: preserve the cached counts; do NOT advance pr_last_checked_at.
-        PrFetch::Unknown => true,
+    } else {
+        false
+    };
+
+    // 6. Pull-request sub-resource, fetched only when DUE, with its OWN ETag. A 404/403
+    //    is Unknown (preserve the cached counts), NEVER a destructive zero (BL-NI-15a,
+    //    AC5).
+    let pr_stale = if due.pr {
+        let pr_fetch = transport
+            .fetch_pulls(
+                &coords,
+                effective_default_branch.as_deref(),
+                pr_etag.as_deref(),
+                token.as_deref(),
+            )
+            .await;
+        requests_made += 1;
+        match pr_fetch {
+            PrFetch::Modified {
+                counts,
+                etag,
+                rate_limit,
+            } => {
+                budgets.push(rate_limit);
+                sqlx::query(
+                    "UPDATE repo_remote_meta SET open_pr_count = ?, default_branch_pr_count = ?, \
+                     pr_etag = ?, pr_last_checked_at = ? WHERE repo_id = ?",
+                )
+                .bind(counts.open)
+                .bind(counts.default_branch)
+                .bind(&etag)
+                .bind(now)
+                .bind(repo_id)
+                .execute(pool)
+                .await?;
+                changed = true;
+                false
+            }
+            PrFetch::NotModified { rate_limit } => {
+                budgets.push(rate_limit);
+                sqlx::query("UPDATE repo_remote_meta SET pr_last_checked_at = ? WHERE repo_id = ?")
+                    .bind(now)
+                    .bind(repo_id)
+                    .execute(pool)
+                    .await?;
+                false
+            }
+            // Unknown: preserve the cached counts; do NOT advance pr_last_checked_at.
+            PrFetch::Unknown => true,
+        }
+    } else {
+        false
     };
 
     Ok(RefreshReport {
@@ -919,11 +1034,68 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
         release_stale,
         pr_stale,
         requests_made,
+        changed,
     })
 }
 
+/// A shared [`RateBudgeter`] handle: the ONE rolling-hour GitHub request budget that
+/// BOTH the background [`refresh_pass`] and the manual `repo_refresh_metadata` command
+/// spend against (finding 2). Tauri-free (`Arc<tokio::sync::Mutex<_>>`, the same
+/// primitive the scheduler's shared handles use); the shell owns the concrete handle
+/// in its `AppState` and hands a clone to the background loop.
+pub type SharedBudgeter = std::sync::Arc<tokio::sync::Mutex<RateBudgeter>>;
+
+/// A fresh [`SharedBudgeter`] with the production limits ([`RateBudgeter::new`]).
+pub fn shared_budgeter() -> SharedBudgeter {
+    std::sync::Arc::new(tokio::sync::Mutex::new(RateBudgeter::new()))
+}
+
+/// The result of one budgeted single-repo refresh ([`refresh_one_budgeted`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BudgetedRefresh {
+    /// The rolling-hour budget could not fully fund this repo, so NOTHING was
+    /// attempted (no network call, no overspend). The repo keeps its last-known
+    /// values, which the UI renders with their "as of <time>" staleness marker -
+    /// never an error (E-17 degradation: budget exhaustion is not a failure state).
+    BudgetExhausted,
+    /// The refresh ran; carries its [`RefreshReport`].
+    Refreshed(RefreshReport),
+}
+
+/// The ONE budgeted entry point BOTH the background [`refresh_pass`] and the manual
+/// `repo_refresh_metadata` command route through, so a manual refresh can never race
+/// the background pass into overspending the unauthenticated 60/hour ceiling
+/// (finding 2). It holds the SHARED budgeter lock for the duration of this ONE repo's
+/// refresh: the `can_spend` gate, the network calls, and the `record` all happen under
+/// one lock hold, so two callers cannot both pass the gate and overspend, and they
+/// cannot double-fetch the SAME repo concurrently (the lock serializes them - no
+/// separate per-repo metadata lock is needed). The lock is released between repos, so
+/// a manual refresh is never blocked for more than one repo's fetch.
+///
+/// `force` (the manual path) re-checks every resource regardless of its window
+/// (finding 1). The budget gate reserves the WORST case ([`MAX_REQUESTS_PER_REPO`]) so
+/// a repo is only started when it can be fully funded, but only the requests actually
+/// issued are recorded, so the rolling-hour accounting stays exact.
+pub async fn refresh_one_budgeted<T: Transport, P: TokenProvider>(
+    pool: &SqlitePool,
+    transport: &T,
+    tokens: &P,
+    budgeter: &SharedBudgeter,
+    repo_id: i64,
+    now: i64,
+    force: bool,
+) -> Result<BudgetedRefresh, AppError> {
+    let mut budget = budgeter.lock().await;
+    if !budget.can_spend(now, MAX_REQUESTS_PER_REPO) {
+        return Ok(BudgetedRefresh::BudgetExhausted);
+    }
+    let report = refresh_one(pool, transport, tokens, repo_id, now, force).await?;
+    budget.record(now, report.requests_made as usize);
+    Ok(BudgetedRefresh::Refreshed(report))
+}
+
 /// The result of one budgeted [`refresh_pass`] over the tracked GitHub repos.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PassReport {
     /// How many repos this pass actually refreshed (called [`refresh_one`] on).
     pub attempted: usize,
@@ -934,29 +1106,47 @@ pub struct PassReport {
     pub budget_exhausted: bool,
     /// `true` when a repo returned a rate-limited outcome and the pass backed off.
     pub rate_limited: bool,
+    /// The ids of the repos whose GitHub metadata actually CHANGED this pass - a repo
+    /// whose fetch wrote fresh data (a repo/release/PR 200), NOT a 304/cached no-op
+    /// (finding 3). The shell emits ONE coalesced `repo:metadata-refreshed` for the
+    /// whole pass (so the aggregate list refetches exactly once, never an N+1 storm -
+    /// the Phase-3 F3 batching discipline) plus a per-repo `repo:state-changed` for
+    /// each (so an open repo-detail drawer refreshes for the repo that moved).
+    pub changed_repo_ids: Vec<i64>,
 }
 
 /// One budgeted refresh pass over the tracked GitHub repos, oldest-metadata-first
-/// (round-robin), driven by the scheduler tick (E-17 AC16). Refreshes repos whose
-/// repo-resource window has expired, spending at most [`MAX_REQUESTS_PER_REPO`] per
-/// repo and never starting a repo it cannot fully fund, so aggregate usage stays
-/// under [`MAX_REQUESTS_PER_HOUR`] in any rolling hour. On budget exhaustion or a
-/// rate-limited outcome the pass stops; the remaining repos keep their last-known
-/// values (the UI renders them with an "as of" timestamp, never an error).
+/// (round-robin), driven by the scheduler tick (E-17 AC16). Refreshes repos with any
+/// DUE resource (repo, release, or PR - each on its own window, so a fresh repo whose
+/// PR sub-resource is stale is NOT stranded, finding 1), spending at most
+/// [`MAX_REQUESTS_PER_REPO`] per repo through the shared [`SharedBudgeter`] and never
+/// starting a repo it cannot fully fund, so aggregate usage stays under
+/// [`MAX_REQUESTS_PER_HOUR`] in any rolling hour EVEN when a manual refresh interleaves
+/// (finding 2). On budget exhaustion or a rate-limited outcome the pass stops; the
+/// remaining repos keep their last-known values (the UI renders them with an "as of"
+/// timestamp, never an error).
 pub async fn refresh_pass<T: Transport, P: TokenProvider>(
     pool: &SqlitePool,
     transport: &T,
     tokens: &P,
-    budgeter: &mut RateBudgeter,
+    budgeter: &SharedBudgeter,
     now: i64,
 ) -> Result<PassReport, AppError> {
-    // Oldest-metadata-first: a never-fetched repo (COALESCE 0) sorts first, then the
-    // least-recently refreshed, so a cold 100-repo backfill spreads across passes.
+    // Oldest-metadata-first across ALL THREE resources: sort by the earliest of the
+    // repo/release/PR last-checked timestamps (a never-fetched resource COALESCEs to 0
+    // and sorts first), so the most-stale repo is refreshed first and a cold 100-repo
+    // backfill spreads across passes.
     let rows = sqlx::query(
-        "SELECT r.id AS id, COALESCE(m.last_fetched_at, 0) AS lf \
+        "SELECT r.id AS id, \
+                m.last_fetched_at AS lf, \
+                m.release_last_checked_at AS rlc, \
+                m.pr_last_checked_at AS plc \
          FROM repos r LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
          WHERE r.host_type = 'github' \
-         ORDER BY lf ASC, r.id ASC",
+         ORDER BY MIN(COALESCE(m.last_fetched_at, 0), \
+                      COALESCE(m.release_last_checked_at, 0), \
+                      COALESCE(m.pr_last_checked_at, 0)) ASC, \
+                  r.id ASC",
     )
     .fetch_all(pool)
     .await?;
@@ -964,28 +1154,36 @@ pub async fn refresh_pass<T: Transport, P: TokenProvider>(
     let mut report = PassReport::default();
     for row in &rows {
         let id: i64 = row.try_get("id")?;
-        let lf: i64 = row.try_get("lf")?;
-        let last_fetched = if lf == 0 { None } else { Some(lf) };
-        // Skip repos still inside the refresh window (no network needed).
-        if is_within_refresh_window(last_fetched, now) {
+        let lf: Option<i64> = row.try_get("lf")?;
+        let rlc: Option<i64> = row.try_get("rlc")?;
+        let plc: Option<i64> = row.try_get("plc")?;
+        // Resource-aware skip (finding 1): a repo whose repo-resource window is fresh is
+        // STILL visited when its release or PR sub-resource is due, so a repo enriched
+        // by E-10 (fresh last_fetched_at, NULL PR columns) is not stranded. Only a repo
+        // with NOTHING due is skipped (no network).
+        if !due_resources(lf, rlc, plc, now, false).any() {
             continue;
         }
-        // Never START a repo we cannot fully fund, so the rolling-hour cap is never
-        // exceeded. Stopping here leaves the repo for the next pass (its last-known
-        // values stay put with their staleness timestamp - never an error).
-        if !budgeter.can_spend(now, MAX_REQUESTS_PER_REPO) {
-            report.budget_exhausted = true;
-            break;
-        }
-        let rep = refresh_one(pool, transport, tokens, id, now).await?;
-        report.attempted += 1;
-        let made = rep.requests_made as usize;
-        budgeter.record(now, made);
-        report.requests_made += made;
-        if matches!(rep.outcome, RefreshOutcome::RateLimited) {
-            // Back off for the rest of this pass; the reset time is in rep.rate_limit.
-            report.rate_limited = true;
-            break;
+        match refresh_one_budgeted(pool, transport, tokens, budgeter, id, now, false).await? {
+            // Never START a repo we cannot fully fund, so the rolling-hour cap is never
+            // exceeded. Stopping here leaves the repo for the next pass (its last-known
+            // values stay put with their staleness timestamp - never an error).
+            BudgetedRefresh::BudgetExhausted => {
+                report.budget_exhausted = true;
+                break;
+            }
+            BudgetedRefresh::Refreshed(rep) => {
+                report.attempted += 1;
+                report.requests_made += rep.requests_made as usize;
+                if rep.changed {
+                    report.changed_repo_ids.push(id);
+                }
+                if matches!(rep.outcome, RefreshOutcome::RateLimited) {
+                    // Back off for the rest of this pass; the reset is in rep.rate_limit.
+                    report.rate_limited = true;
+                    break;
+                }
+            }
         }
     }
     Ok(report)
@@ -1729,7 +1927,9 @@ mod tests {
         .unwrap()
         .last_insert_rowid();
         let t = FakeTransport::repo_only(RepoFetch::NotFound);
-        let out = refresh_one(&pool, &t, &NoToken, id, 1000).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, 1000, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Skipped);
         assert_eq!(out.requests_made, 0);
         assert_eq!(
@@ -1771,7 +1971,9 @@ mod tests {
                 rate_limit: healthy_budget(),
             },
         );
-        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, 5000, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
         assert!(!out.release_stale && !out.pr_stale);
         assert_eq!(out.requests_made, 3, "repo + release + pulls");
@@ -1834,18 +2036,27 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
+        // All THREE resources fresh (within the window at now=10000), so NOTHING is due
+        // and the refresh is a pure cache hit - no repo, release, or PR network call.
         sqlx::query(
-            "INSERT INTO repo_remote_meta (repo_id, last_fetched_at, etag) VALUES (?, ?, '\"e\"')",
+            "INSERT INTO repo_remote_meta \
+             (repo_id, last_fetched_at, etag, release_last_checked_at, pr_last_checked_at) \
+             VALUES (?, ?, '\"e\"', ?, ?)",
         )
         .bind(id)
+        .bind(9900_i64)
+        .bind(9900_i64)
         .bind(9900_i64)
         .execute(&pool)
         .await
         .unwrap();
         let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
-        let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, 10000, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Cached);
         assert_eq!(out.requests_made, 0);
+        assert!(!out.changed, "a pure cache hit changed nothing");
         assert_eq!(t.repo_calls.get(), 0, "inside the window, no network call");
         assert_eq!(t.release_calls.get(), 0);
         assert_eq!(t.pulls_calls.get(), 0);
@@ -1884,7 +2095,9 @@ mod tests {
             },
         );
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::NotModified);
         assert_eq!(t.last_repo_etag.borrow().as_deref(), Some("\"repo-e\""));
         assert_eq!(t.last_release_etag.borrow().as_deref(), Some("\"rel-e\""));
@@ -1934,7 +2147,9 @@ mod tests {
             },
         );
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::NotModified);
         assert_eq!(
             read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
@@ -1971,7 +2186,9 @@ mod tests {
             PrFetch::Unknown,
         );
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert!(out.pr_stale, "an Unknown PR fetch is surfaced as stale");
         assert_eq!(
             read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
@@ -1988,13 +2205,15 @@ mod tests {
     #[tokio::test]
     async fn refresh_pr_304_bumps_pr_last_checked_only() {
         // A PR-endpoint 304 bumps only pr_last_checked_at and leaves the counts intact.
+        // pr_last_checked_at is seeded stale (=1, out of the window at `now`) so the PR
+        // sub-resource is DUE and actually re-checked (finding 1 gating).
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
         sqlx::query(
             "INSERT INTO repo_remote_meta \
              (repo_id, open_pr_count, default_branch_pr_count, pr_etag, pr_last_checked_at, last_fetched_at) \
-             VALUES (?, 2, 1, '\"pr-e\"', 100, 1)",
+             VALUES (?, 2, 1, '\"pr-e\"', 1, 1)",
         )
         .bind(id)
         .execute(&pool)
@@ -2010,7 +2229,9 @@ mod tests {
             },
         );
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert_eq!(
             read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
             Some(2),
@@ -2038,7 +2259,9 @@ mod tests {
         .unwrap();
         let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::NetworkLost);
         assert_eq!(
             t.release_calls.get(),
@@ -2092,7 +2315,9 @@ mod tests {
             PrFetch::Unknown,
         );
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
         assert!(out.release_stale, "an Unknown release sub-fetch is stale");
         assert_eq!(
@@ -2145,7 +2370,9 @@ mod tests {
             PrFetch::Unknown,
         );
         let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
         assert!(!out.release_stale, "a confirmed NoRelease is not stale");
         assert_eq!(
             read_meta::<Option<String>>(&pool, id, "latest_release_tag").await,
@@ -2166,7 +2393,9 @@ mod tests {
                 reset_at: 1_700_000_000,
             },
         });
-        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, 5000, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::RateLimited);
         assert_eq!(
             out.rate_limit,
@@ -2208,7 +2437,9 @@ mod tests {
                 },
             },
         );
-        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
+        let out = refresh_one(&pool, &t, &NoToken, id, 5000, false)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
         let budget = out
             .rate_limit
@@ -2224,13 +2455,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
-        sqlx::query("INSERT INTO repo_remote_meta (repo_id, last_fetched_at) VALUES (?, 9900)")
-            .bind(id)
-            .execute(&pool)
+        // All three resources fresh, so nothing is due -> a true cache hit, no budget.
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, last_fetched_at, release_last_checked_at, pr_last_checked_at) \
+             VALUES (?, 9900, 9900, 9900)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
+        let out = refresh_one(&pool, &t, &NoToken, id, 10000, false)
             .await
             .unwrap();
-        let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
-        let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Cached);
         assert_eq!(out.rate_limit, None, "a cache hit reports no budget");
     }
@@ -2318,16 +2556,16 @@ mod tests {
         }
 
         let transport = AlwaysOkTransport;
-        let mut budgeter = RateBudgeter::new(); // 30 / hour
-                                                // Record (now, requests_made) for each productive pass so we can prove the
-                                                // rolling-hour ceiling was respected.
+        let budgeter = shared_budgeter(); // 30 / hour, the shared handle
+                                          // Record (now, requests_made) for each productive pass so we can prove the
+                                          // rolling-hour ceiling was respected.
         let mut history: Vec<(i64, usize)> = Vec::new();
         let mut now: i64 = 1_000_000;
         // Advance the clock by 30 min between passes so two consecutive passes fall in
         // one rolling hour - the budgeter must still hold the line.
         let step = 1800;
         for _ in 0..40 {
-            let report = refresh_pass(&pool, &transport, &NoToken, &mut budgeter, now)
+            let report = refresh_pass(&pool, &transport, &NoToken, &budgeter, now)
                 .await
                 .unwrap();
             assert!(!report.rate_limited, "no rate-limit error must surface");
@@ -2368,5 +2606,297 @@ mod tests {
                 "the 30/hour budgeter must hold; window at {t} had {in_window}"
             );
         }
+    }
+
+    // --- finding 1: resource-aware staleness ---------------------------------
+
+    #[tokio::test]
+    async fn fresh_repo_window_still_fetches_a_due_pr_subresource() {
+        // Finding 1 regression: a repo enriched by E-10 (fresh last_fetched_at, fresh
+        // release, but NULL pr_last_checked_at) must STILL fetch its PR sub-resource,
+        // instead of being served wholesale from the repo cache. The repo resource and
+        // the release are fresh, so ONLY the PR fetch fires - no wasted repo re-fetch.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, last_fetched_at, etag, release_last_checked_at) \
+             VALUES (?, 9900, '\"repo-e\"', 9900)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::NetworkLost,
+            ReleaseFetch::Unknown,
+            PrFetch::Modified {
+                counts: PrCounts {
+                    open: 4,
+                    default_branch: 2,
+                },
+                etag: Some("\"pr\"".into()),
+                rate_limit: healthy_budget(),
+            },
+        );
+        let out = refresh_one(&pool, &t, &NoToken, id, 10000, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            out.outcome,
+            RefreshOutcome::Cached,
+            "the repo resource is still served from cache (it was fresh)"
+        );
+        assert_eq!(
+            out.requests_made, 1,
+            "only the due PR sub-resource is fetched"
+        );
+        assert!(out.changed, "the PR fetch wrote fresh counts");
+        assert_eq!(
+            t.repo_calls.get(),
+            0,
+            "the fresh repo resource is NOT re-fetched"
+        );
+        assert_eq!(
+            t.release_calls.get(),
+            0,
+            "the fresh release is NOT re-fetched"
+        );
+        assert_eq!(t.pulls_calls.get(), 1, "the due PR sub-resource IS fetched");
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
+            Some(4),
+            "a fresh repo window no longer masks a due PR fetch (finding 1)"
+        );
+    }
+
+    #[tokio::test]
+    async fn force_rechecks_every_resource_inside_the_window() {
+        // Finding 1 force path: a manual refresh (force=true) re-checks all three
+        // resources even when every window is fresh, so a user Refresh always re-fetches.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, last_fetched_at, release_last_checked_at, pr_last_checked_at) \
+             VALUES (?, 9900, 9900, 9900)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+            PrFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+        );
+        let out = refresh_one(&pool, &t, &NoToken, id, 10000, true)
+            .await
+            .unwrap();
+        assert_eq!(out.requests_made, 3, "force re-checks all three resources");
+        assert_eq!(t.repo_calls.get(), 1);
+        assert_eq!(t.release_calls.get(), 1);
+        assert_eq!(t.pulls_calls.get(), 1);
+    }
+
+    // --- finding 2: manual + background share ONE budget ---------------------
+
+    #[tokio::test]
+    async fn manual_and_background_share_one_budget_and_never_overspend() {
+        // Finding 2: the manual `repo_refresh_metadata` path and the background pass
+        // spend against the SAME budget, so a manual refresh cannot race the pass into
+        // overspending the ceiling. Shared budget of 5 funds ONE full repo (3) with
+        // headroom, but not a second (6).
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let a = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repos (local_name, local_path, remote_origin_url, host_type, default_branch, created_at) \
+             VALUES ('b', 'b', 'https://github.com/owner/b', 'github', 'main', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let transport = AlwaysOkTransport;
+        let budget: SharedBudgeter =
+            std::sync::Arc::new(tokio::sync::Mutex::new(RateBudgeter::with_limits(5, 3600)));
+        let now = 1_000_000;
+
+        // Manual refresh of A (force) spends 3 against the SHARED budget.
+        let manual = refresh_one_budgeted(&pool, &transport, &NoToken, &budget, a, now, true)
+            .await
+            .unwrap();
+        assert!(matches!(manual, BudgetedRefresh::Refreshed(_)));
+        assert_eq!(
+            budget.lock().await.remaining(now),
+            2,
+            "the manual refresh spent 3 of the shared 5"
+        );
+
+        // A background pass now sees only 2 budget left - not enough to START B (needs
+        // 3), so it stops WITHOUT overspending the shared ceiling.
+        let report = refresh_pass(&pool, &transport, &NoToken, &budget, now)
+            .await
+            .unwrap();
+        assert!(
+            report.budget_exhausted,
+            "the shared budget stops the background pass"
+        );
+        assert_eq!(
+            report.attempted, 0,
+            "B is never started - it cannot be fully funded from the shared budget"
+        );
+        assert_eq!(
+            budget.lock().await.remaining(now),
+            2,
+            "no overspend past the shared ceiling"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_exhaustion_yields_a_non_error_last_known_state() {
+        // Finding 2 degradation: when the shared budget is exhausted, a refresh returns
+        // BudgetExhausted (the caller shows last-known "as of" values), NOT an error and
+        // NOT an overspend.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        let transport = AlwaysOkTransport;
+        // A zero budget: nothing can be funded.
+        let budget: SharedBudgeter =
+            std::sync::Arc::new(tokio::sync::Mutex::new(RateBudgeter::with_limits(0, 3600)));
+        let out = refresh_one_budgeted(&pool, &transport, &NoToken, &budget, id, 1000, true)
+            .await
+            .unwrap();
+        assert_eq!(out, BudgetedRefresh::BudgetExhausted);
+    }
+
+    // --- finding 3: the pass reports which repos CHANGED ----------------------
+
+    /// A fake that 304s every resource - a steady-state re-check where nothing moved.
+    struct AllNotModifiedTransport;
+    impl Transport for AllNotModifiedTransport {
+        async fn fetch_repo(
+            &self,
+            _c: &RepoCoords,
+            _e: Option<&str>,
+            _t: Option<&str>,
+        ) -> RepoFetch {
+            RepoFetch::NotModified {
+                rate_limit: healthy_budget(),
+            }
+        }
+        async fn fetch_release(
+            &self,
+            _c: &RepoCoords,
+            _e: Option<&str>,
+            _t: Option<&str>,
+        ) -> ReleaseFetch {
+            ReleaseFetch::NotModified {
+                rate_limit: healthy_budget(),
+            }
+        }
+        async fn fetch_pulls(
+            &self,
+            _c: &RepoCoords,
+            _db: Option<&str>,
+            _e: Option<&str>,
+            _t: Option<&str>,
+        ) -> PrFetch {
+            PrFetch::NotModified {
+                rate_limit: healthy_budget(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pass_reports_changed_ids_for_fresh_data_and_none_when_nothing_moves() {
+        // Finding 3: a cold pass writes fresh data and reports EVERY repo as changed (so
+        // the shell emits one coalesced list refresh + a per-repo drawer signal); an
+        // immediate re-pass with nothing due reports NO changed repos.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let a = seed_github_repo(&pool).await;
+        let b = sqlx::query(
+            "INSERT INTO repos (local_name, local_path, remote_origin_url, host_type, default_branch, created_at) \
+             VALUES ('b', 'b', 'https://github.com/owner/b', 'github', 'main', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+
+        let transport = AlwaysOkTransport;
+        let budget = shared_budgeter();
+        let now = 1_000_000;
+        let report = refresh_pass(&pool, &transport, &NoToken, &budget, now)
+            .await
+            .unwrap();
+        assert_eq!(report.attempted, 2);
+        let mut changed = report.changed_repo_ids.clone();
+        changed.sort_unstable();
+        let mut expected = vec![a, b];
+        expected.sort_unstable();
+        assert_eq!(
+            changed, expected,
+            "a cold pass reports every repo as changed"
+        );
+
+        // A second pass at the SAME instant: every resource is inside its window, so
+        // nothing is due and nothing is reported as changed.
+        let report2 = refresh_pass(&pool, &transport, &NoToken, &budget, now)
+            .await
+            .unwrap();
+        assert_eq!(report2.attempted, 0);
+        assert!(
+            report2.changed_repo_ids.is_empty(),
+            "a pass with nothing due reports no changed repos - no needless UI refresh"
+        );
+    }
+
+    #[tokio::test]
+    async fn pass_with_only_304s_reports_no_changed_repos() {
+        // Finding 3 precision: a due pass where every resource 304s (nothing actually
+        // moved) reports NO changed repos, so the ETag steady state does not spam the UI
+        // with refreshes.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        // Seed an existing meta row whose windows have all elapsed (so it is DUE) but
+        // whose ETags are set (so the transport 304s).
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, last_fetched_at, etag, release_etag, release_last_checked_at, \
+              pr_etag, pr_last_checked_at) \
+             VALUES (?, 1, '\"r\"', '\"rel\"', 1, '\"pr\"', 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let transport = AllNotModifiedTransport;
+        let budget = shared_budgeter();
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let report = refresh_pass(&pool, &transport, &NoToken, &budget, now)
+            .await
+            .unwrap();
+        assert_eq!(report.attempted, 1, "the due repo was refreshed");
+        assert_eq!(
+            report.requests_made, 3,
+            "all three resources were re-checked"
+        );
+        assert!(
+            report.changed_repo_ids.is_empty(),
+            "a 304-only pass changed nothing, so it reports no changed repos"
+        );
     }
 }
