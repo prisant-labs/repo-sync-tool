@@ -87,6 +87,7 @@ Every box must be checked before the `v0.9.0` tag. The list draws on the project
 | `CHANGELOG.md` | Move `[Unreleased]` items into a `v0.9.0` section with the date | [ ] |
 | `README.md` | Bump version references; add install instructions for the Windows artifact | [ ] |
 | `docs/architecture.md`, `docs/explanation.md`, `docs/faq.md` | Reflect the shipped state (remove "not built yet" hedges that no longer hold) | [ ] |
+| `docs/user-guide.md` | Write the enhanced explanatory user guide against the shipped v0.9.0 behavior (jp directive 2026-07-04): install, first run, concepts (freshness model, update policies, cadence inherit, groups), every feature, troubleshooting | [ ] |
 | `docs/internal/program-roadmap.md` | Mark shipped efforts; record any descope-trigger outcomes | [ ] |
 | `docs/backlog.md` | Move anything resolved out; confirm V1.1 items are parked | [ ] |
 | macOS posture note | State in the Release notes whether macOS ships (unsigned beta) or is deferred | [ ] |
