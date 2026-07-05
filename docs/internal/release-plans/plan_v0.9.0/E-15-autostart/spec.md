@@ -15,9 +15,9 @@ source: docs/internal/v1-architecture-and-decisions.md (cross-platform table row
 
 > Agents keep this block current as work proceeds.
 
-- **State:** core done (2026-06-29). `reconcile(os, setting_on)` (the AC2 startup drift-correction decision over a tri-state OS read, with a non-actuating `Unknown`) and `is_autostart_launch(args, flag)` (the AC3 launch detection) live in `reposync-core/src/autostart.rs`, built test-first (5 tests) and adversarially reviewed - the tri-state `Unknown` fix landed test-first; the "setting wins vs adopt the OS change" policy is filed as BL-NI-18. The `tauri-plugin-autostart` actuation + the start-minimized window behavior are the deferred edge.
-- **Next:** the edge-wiring effort queries the OS registration, calls `reconcile`, actuates via `tauri-plugin-autostart` (AC1), starts minimized on an autostart launch (AC3), and configures the per-user / no-elevation registration (AC4).
-- **Blockers (edge only):** none for the core; the edge needs E-01's window/tray lifecycle for the minimized start.
+- **State:** core done (2026-06-29); OS wiring not yet started as of 2026-07-04. `reconcile(os, setting_on)` (the AC2 startup drift-correction decision over a tri-state OS read, with a non-actuating `Unknown`) and `is_autostart_launch(args, flag)` (the AC3 launch detection) live in `reposync-core/src/autostart.rs`, built test-first (5 tests) and adversarially reviewed - the tri-state `Unknown` fix landed test-first; the "setting wins vs adopt the OS change" policy is filed as BL-NI-18. The `tauri-plugin-autostart` actuation + the start-minimized window behavior remain unbuilt. The window/tray lifecycle this needs is now built (the tray shipped PARTIAL 2026-07-03, commit bb353f9; see E-13's Task Summary), so this is a pure wiring task, not a missing dependency.
+- **Next:** query the OS registration, call `reconcile`, actuate via `tauri-plugin-autostart` (AC1), start minimized on an autostart launch (AC3), and configure the per-user / no-elevation registration (AC4). Sequenced as Phase 3 of [../execution-plan.md](../execution-plan.md).
+- **Blockers (edge only):** none for the core; none structural for the edge either now that the window/tray lifecycle exists. The remaining work is the wiring itself.
 
 ## Context
 

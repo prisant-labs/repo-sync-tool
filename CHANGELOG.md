@@ -11,14 +11,25 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Added
-- Foundation: Cargo workspace (Tauri-free `reposync-core` + `src-tauri` shell), React/TypeScript frontend skeleton, dual-OS CI matrix with the dependency-hygiene gate (E-01).
+- Foundation: Cargo workspace (Tauri-free `reposync-core` + `src-tauri` shell), React/TypeScript frontend, dual-OS CI matrix with the dependency-hygiene gate (E-01).
 - The full 30-variant `AppError` taxonomy with stable codes and remediation (E-05).
-- The frozen IPC contract: 18 commands, 8 events, and the payload surface, with `tauri-specta` TypeScript codegen and a stale-bindings CI gate (E-06).
-- Tracer slice: real `repo_add_path` and `repo_check_now` end to end (git to SQLite to emitted event) (E-12).
+- The frozen IPC contract: commands, events, and the payload surface, with `tauri-specta` TypeScript codegen and a stale-bindings CI gate (E-06).
+- The update-policy engine: per-repo modes, dirty/branch/failure handling, and 3-strikes auto-pause (E-07).
+- The scheduler: interval checks with jitter, quiet hours, bounded concurrency, and per-repo locking, with a global cadence setting that new repos inherit by default (E-08).
+- The activity log: every git operation recorded with full context, with retention (E-09).
+- The GitHub metadata client: unauthenticated release and repo enrichment with ETag caching and rate-limit backoff (E-10).
+- The daily summary: an aggregated view of what happened across all repos today (E-11).
+- The full desktop GUI: Dashboard, Repos, Activity, and Settings screens, a repo detail drawer, add/scan flows, and editable settings.
+- Groups: user-defined, colored labels for repos, with filtering by group.
+- Open-in actions: open a repo's folder, terminal, editor, or GitHub remote from the app (known defects tracked in `docs/backlog.md`; see Notes).
+- A system tray icon with Show and Quit (the full native menu is still in progress; see Notes).
 - Release scaffolding: version-scoped release plans under `docs/internal/release-plans/`, the cut-tag runbook, and this changelog.
 
 ### Notes
-- Pre-release. The update-policy engine, scheduler, activity writer, GitHub client, summary engine, and the GUI are not built yet. See `docs/internal/program-roadmap.md` for the effort breakdown and `docs/internal/release-plans/plan_v0.9.0/plan_v0.9.0.md` for the release plan.
+- Pre-release; this repo is private. See `docs/internal/program-roadmap.md` for the effort breakdown and `docs/internal/release-plans/plan_v0.9.0/plan_v0.9.0.md` for the release plan and readiness checks.
+- Desktop notifications and autostart have their core logic built but are not yet wired to the OS (`tauri-plugin-notification` / `tauri-plugin-autostart`); their Settings toggles do not yet have a runtime effect.
+- The tray menu is partial: Show and Quit are wired; Check All Now, Pause/Resume, Open recent, Settings, and close-to-tray are still to come.
+- Open-in has known defects on Windows (path handling, remote URL validation, and more); see `docs/backlog.md`.
 
 <!--
 Template for a cut release section (move [Unreleased] items here at G2):

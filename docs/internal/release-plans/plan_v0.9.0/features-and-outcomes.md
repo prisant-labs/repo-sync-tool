@@ -1,8 +1,8 @@
 # RepoSync v0.9.0 - Features and User Outcomes
 
-- **Date:** 2026-06-30 (expanded 2026-06-30)
-- **Purpose:** The product-facing description of the first public release: the features it ships, the functionality behind each, the user problems each one solves, and the screens that carry them. This is the "what the user gets" companion to [feature-inventory.md](feature-inventory.md) (the build-readiness view, by command and effort) and [plan_v0.9.0.md](plan_v0.9.0.md) (the release plan). It does not redefine scope; scope authority stays in [program-roadmap.md](../../program-roadmap.md) and each effort's `spec.md`.
-- **Scope:** v0.9.0, RepoSync V1 MUST scope, Windows GA first. macOS ships as an unsigned beta if unblocked by the week-4 descope trigger, otherwise deferred.
+- **Date:** 2026-06-30 (expanded 2026-06-30, updated 2026-07-04)
+- **Purpose:** The product-facing description of the first release: the features it ships, the functionality behind each, the user problems each one solves, and the screens that carry them. This is the "what the user gets" companion to [feature-inventory.md](feature-inventory.md) (the build-readiness view, by command and effort), [plan_v0.9.0.md](plan_v0.9.0.md) (the release plan), and [product-requirements.md](../../product-requirements.md) (the PRD). It does not redefine scope; scope authority stays in [program-roadmap.md](../../program-roadmap.md) and each effort's `spec.md`.
+- **Scope:** v0.9.0, RepoSync V1 MUST scope plus Groups (E-16) plus, ratified 2026-07-04, branch/PR intelligence (E-17) and auto-update/distribution (E-18). Windows GA first; macOS ships as an unsigned beta if unblocked by the week-4 descope trigger, otherwise deferred. Ships COMPLETE but on a PRIVATE repository; the public flip is a later, separate milestone (Section 13).
 - **Source framing:** users and problems from [PRODUCT.md](../../../../PRODUCT.md); experience commitments from [DESIGN.md](../../../../DESIGN.md); the information architecture and screen detail from [v1-architecture-and-decisions.md](../../v1-architecture-and-decisions.md) Section (UI); the feature spine and functional enumerations from the feature inventory, the strategy doc's V1 functional spec, and the frozen schema.
 
 ## Contents
@@ -25,14 +25,15 @@
 
 ## Maturity legend
 
-Because v0.9.0 is mid-build, each feature carries an honest maturity marker:
+As of 2026-07-04, most of v0.9.0 is built end to end (backend and GUI); each feature still carries an honest maturity marker because "built" is not the same as "correct" (the 2026-07-04 audit found real defects in shipped work):
 
-- **Core done** - the backend capability is built and tested behind the IPC seam; it will render once the GUI lands. This is the state of nearly every feature below.
-- **Planned, schema ready** - the data model exists in the frozen schema, but the full spec is intentionally deferred. Applies to Groups/tags.
-- **Follow-up** - a small, unbuilt piece with no dedicated effort yet, expected to fold into the GUI work.
+- **Core done** - the backend capability is built and tested behind the IPC seam and renders in the built GUI. This is the state of nearly every feature below.
+- **Built** - implemented end to end (backend, IPC, and the GUI surface), and may still carry open defects tracked in the backlog and fixed in Phase 1 of [execution-plan.md](execution-plan.md). Applies to Groups and the quick actions.
+- **Follow-up** - a small, unbuilt piece with no dedicated effort yet.
+- **Not started** - a 2026-07-04 SHOULD addition (E-17, E-18) with a spec but no build yet.
 - **Deferred** - explicitly out of this release (listed in Section 12 for contrast).
 
-> The one piece that gates the release and is not itself a feature is the **webview GUI** that renders all of this. Every capability below is built behind the typed command seam (`src/lib/bindings.ts`); the screens that surface them are the remaining work before the tag. See the feature inventory for per-feature build status.
+> The GUI that renders all of this, once the one piece gating the release, is now built: the full shell plus Dashboard, Repos, Activity, and Settings, plus the repo-detail drawer, landed 2026-07-03. What remains before the tag is fixing the audit's open defects, dogfooding, finishing the E-13/E-14/E-15 OS-integration wiring, and building E-17/E-18, sequenced in [execution-plan.md](execution-plan.md). See the feature inventory for per-feature build status.
 
 ---
 
@@ -40,7 +41,7 @@ Because v0.9.0 is mid-build, each feature carries an honest maturity marker:
 
 RepoSync is a resident desktop tray utility that keeps a personal library of consume-only Git repositories fresh, visible, and safe, with a transparent audit trail. It is local-first (Tauri v2 + a Rust core + a React/TypeScript shell, SQLite-backed), open source (MIT), with no telemetry, no account, and no cloud sync.
 
-v0.9.0 is the first public build: the full V1 MUST feature set, shipping on Windows as the first real GA, with macOS kept honest in CI and released as an unsigned beta if it is unblocked in time. It is deliberately `0.9.0`, not `1.0.0`: the product is feature-complete enough to try and dogfood, ahead of the `1.0.0` stability promise.
+v0.9.0 is the first complete release: the full V1 MUST feature set plus Groups, plus (ratified 2026-07-04) branch/PR intelligence and auto-update/distribution, shipping on Windows as the first real GA, with macOS kept honest in CI and released as an unsigned beta if it is unblocked in time. It is deliberately `0.9.0`, not `1.0.0`: the product is feature-complete enough to try and dogfood, ahead of the `1.0.0` stability promise. It ships complete, including the full release ceremony, but on a private repository; the public flip is a separate later milestone (Section 13).
 
 ---
 
@@ -98,9 +99,9 @@ Turning a sprawling folder of clones into a managed, organized, at-a-glance libr
 | Repo detail | The full view of one repo: local vs remote, latest release, recent commits, policy, and where it lives (`repo_get`). | Drill from "this repo needs me" into exactly why. | Core done |
 | Remove a repo | Stop tracking a repo (`repo_remove`). Clears the registry row and its history; it never touches the working tree on disk. | Curate the watch list without any risk to the actual clone. | Core done |
 | Enable or disable per repo | Turn scheduled checks on or off for a single repo (`repo_set_enabled`); its settings survive being disabled. | Park a repo you do not care about right now without losing its configuration. | Core done |
-| Groups (repo tags) | Associate a repo with one or more user-defined, colored groups, and organize or filter the library by them. The `groups` and `repo_groups` tables (a many-to-many association, name plus color) are already frozen into the schema, so "one repo, many groups" is storable today. | Impose a personal taxonomy on a large library ("self-hosted apps," "reference," "templates," "forks") instead of one flat list. | Planned, schema ready |
+| Groups (repo tags) | Associate a repo with one or more user-defined, colored groups, and organize or filter the library by them, via a Groups nav, create/assign/filter flows, and per-row chips. The `groups` and `repo_groups` tables (a many-to-many association, name plus color) are frozen into the schema, so "one repo, many groups" is stored today. | Impose a personal taxonomy on a large library ("self-hosted apps," "reference," "templates," "forks") instead of one flat list. | Built |
 
-> **Groups/tags scope note.** Groups are committed to the initial release, and the schema scaffolding for them already exists. The detailed feature spec (exact UX, create/assign/filter flows, whether the surface reads as a sidebar of groups or as chips on each repo, and the final "Groups" vs "Tags" label) is **intentionally deferred until the GUI is finalized**, because the feature is primarily a UI surface and should be designed as one coherent screen alongside the rest of the interface. What is settled: a single taxonomy, reusing the existing schema, with repos assignable to more than one.
+> **Groups/tags scope note.** Groups were promoted to MUST-tier scope as E-16 on 2026-06-30 and were fully built 2026-07-03: the store and IPC layer (commit a85e0fc) and the GUI, a Groups sidebar nav, create/assign/filter, and per-row chips (commit 51daaa7). The feature spec was written retroactively, after the build, as the as-built contract in [E-16-groups/spec.md](E-16-groups/spec.md), rather than designed ahead of the build as originally planned. Settled: a single taxonomy, reusing the `groups`/`repo_groups` schema, with repos assignable to more than one. Known defects: BL-NI-22 (the per-repo group-membership query is O(N), one IPC round-trip per visible row) and the group filter false-empties during load or on a fan-out failure; both are Phase 1 fixes in [execution-plan.md](execution-plan.md).
 
 ---
 
@@ -137,7 +138,7 @@ The awareness half of the product: reading state at a glance, proving what happe
 | Activity log and retention | Every git operation is recorded with its raw command, stdout, stderr, exit code, and timestamp, on a filterable global timeline, with configurable retention (default 90 days) and an automatic sweep (`activity_list`). | Trust through receipts: audit exactly what ran, and confirm nothing was done to a working tree that was not asked for. | Core done |
 | GitHub enrichment | Unauthenticated metadata for GitHub repos: description, default branch, latest release (tag, date, URL), and topics, with aggressive caching and honest rate-limit handling that captures the reset time (`repo_refresh_metadata`). | Know when a tool you run has shipped a new release, and see repo context, without leaving the app or logging in. | Core done |
 | Daily summary | A read-only, once-a-day roll-up over activity and state: what needed attention, what updated, what shipped a release, over the local-day window (`summary_today`). | Get a digest instead of watching the app all day. | Core done |
-| Desktop notifications | Fire a notification on a new release or a failure, coalesced per check cycle so one sweep does not spam, and aware of quiet hours. | Ambient awareness without nagging, and without interrupting focus time. | Core done (emit-site pending edge-wiring) |
+| Desktop notifications | Fire a notification on a new release or a failure, coalesced per check cycle so one sweep does not spam, and aware of quiet hours. | Ambient awareness without nagging, and without interrupting focus time. | Core done (the `tauri-plugin-notification` emit-site is Phase 3 of [execution-plan.md](execution-plan.md)) |
 
 ---
 
@@ -182,11 +183,11 @@ The utility layer: living in the tray, starting with your session, bending to yo
 
 | Feature | What it does | Problem it solves | Maturity |
 |---------|--------------|-------------------|----------|
-| Tray presence and menu | A resident system-tray icon with a compact menu (needs attention, recently updated, new releases) and quick controls. | A background utility that is just there and glanceable, never occupying a window you have to manage. | Edge-wiring (pure Tauri chrome, no headless core; builds at launch) |
-| Autostart (launch on login) | Opt-in launch when you log in, reconciling drift between the setting and the actual OS state, and refusing to actuate when the OS state cannot be read. | Have the watcher running from the moment you start work, without remembering to open it. | Core done (OS registration pending edge-wiring) |
+| Tray presence and menu | A resident system-tray icon with a native right-click menu (needs attention, recently updated, new releases) and quick controls. | A background utility that is just there and glanceable, never occupying a window you have to manage. | Built, PARTIAL (Show, Quit, and left-click-show shipped 2026-07-03, commit bb353f9; Check All Now, Pause/Resume, Open recent, the Settings menu item, and close-to-tray remain, Phase 3 of [execution-plan.md](execution-plan.md)) |
+| Autostart (launch on login) | Opt-in launch when you log in, reconciling drift between the setting and the actual OS state, and refusing to actuate when the OS state cannot be read. | Have the watcher running from the moment you start work, without remembering to open it. | Core done (OS registration is Phase 3 of [execution-plan.md](execution-plan.md)) |
 | Settings | Global cadence, quiet hours, notify-on-release and notify-on-failure toggles, git executable path, editor and terminal commands, autostart, and activity retention (`settings_get`/`settings_set`). | Make the tool fit your machine and your preferences. | Core done |
 | Honest error and degraded states | A typed error taxonomy surfaces specific, truthful failures (auth failure, missing path, deleted upstream, auto-paused) rather than vague messages (`AppError`). | Know precisely what is wrong and why, so you can fix it. | Core done |
-| Quick actions | Open a repo's folder, terminal, editor, or remote in one click (`repo_open_folder` / `terminal` / `editor` / `remote`). | Jump from "this repo needs me" straight into acting on it in your own tools. | Follow-up (typed stubs; fold into the GUI) |
+| Quick actions | Open a repo's folder, terminal, editor, or remote in one click (`repo_open_folder` / `terminal` / `editor` / `remote`). | Jump from "this repo needs me" straight into acting on it in your own tools. | Built, with open defects (implemented 2026-07-03, commit 8fc806c; broken on Windows, including a security defect in `repo_open_remote`, per the audit findings 1-2 and 8-9; fixed in Phase 1 of [execution-plan.md](execution-plan.md)) |
 
 ---
 
@@ -227,12 +228,14 @@ Naming the boundary is part of the scope. These are deliberate exclusions, not g
 - Search across repos (name, path, description, remote URL, tag).
 - Custom per-repo command recipes ("after update, run X").
 - The frameless tray popup window (the native tray menu ships; the popup is V1.1, `BL-V11-01`).
-- App auto-updater. v0.9.x updates are a manual re-download; a "check for updates" link is an open call.
 - Power-aware scheduling (battery and lock awareness). V1 ships a fixed cadence plus a global pause.
 - Optional Personal Access Token for higher GitHub rate limits. V1 is unauthenticated with aggressive caching; a token flow is a later upgrade.
 - macOS signed GA (signing and notarization are gated on Mac hardware and Apple credentials).
+- winget **submission** (the manifest is prepared and verified as part of E-18, but publishing it to the winget-pkgs repo waits for the public flip, since winget requires public artifact URLs).
 
-**Deferred design, committed feature.** The Groups/tags **spec** is deferred until the GUI is finalized, but the feature itself is committed to this release and its schema already exists (see Section 5).
+**No longer deferred, ratified into scope 2026-07-04.** App auto-updater: previously cut to V1.1 with manual re-download as the plan, this is now E-18 (auto-update and distribution), built in Phase 4 of [execution-plan.md](execution-plan.md). Its update-check endpoint is private-repo-only until the public flip.
+
+**Deferred design, committed feature, now built.** Groups/tags was originally planned with its spec deferred until the GUI was finalized; instead the feature was built ahead of its spec (2026-07-03), and the spec was written retroactively (E-16, see Section 5).
 
 ---
 
@@ -240,8 +243,9 @@ Naming the boundary is part of the scope. These are deliberate exclusions, not g
 
 - **Windows GA first.** Windows is the first real GA target. macOS is kept compiling and bundling in CI and ships as an unsigned beta if the week-4 descope trigger clears, otherwise it is deferred to a staged later release.
 - **Unsigned-binary friction, stated up front.** Windows SmartScreen "unknown publisher" and macOS Gatekeeper will warn on first run, because code signing is deferred. This is documented in the release notes, not hidden.
-- **Manual updates in 0.9.x.** With the auto-updater cut to V1.1, updating means re-downloading the latest artifact.
-- **Open source and private by default.** MIT licensed, no telemetry, no crash reporting, no account, no cloud sync. All state is local, in a SQLite database.
+- **Private-repo posture for this release (ratified 2026-07-04).** v0.9.0 ships COMPLETE, including the full release ceremony (tag, GitHub Release, installer artifacts), but on a private repository. The updater's `latest.json` manifest is hosted and verified privately; winget submission is prepared but withheld, since winget requires public artifact URLs. Both wait for a later, separate "public flip" milestone.
+- **In-app updates via E-18.** The auto-updater, previously cut to V1.1, is now in scope (Section 12); it checks the private update endpoint above.
+- **Open source and private by default (product posture, distinct from the private-repo posture above).** MIT licensed, no telemetry, no crash reporting, no account, no cloud sync. All state is local, in a SQLite database.
 
 ---
 
@@ -261,11 +265,12 @@ From the product and design principles, the qualities every screen must hold:
 
 ## 15. Build maturity at a glance
 
-Every behind-the-seam core in this document is built, adversarially reviewed, and tested. What remains before the `v0.9.0` tag:
+As of 2026-07-04: every behind-the-seam core is built, adversarially reviewed, and tested; the **webview GUI** (dashboard, repos list and detail, activity timeline, settings, add/scan flow), **Groups** (E-16, with its spec written retroactively), and the **quick actions** (`repo_open_*`) are all built too. What remains before the `v0.9.0` tag, sequenced in [execution-plan.md](execution-plan.md):
 
-- The **webview GUI** that renders these features (dashboard, repos list and detail, activity timeline, summaries, settings, add/scan flow). This is the one release-gating item that is not itself a feature.
-- The **edge-wiring** effort: spawn the scheduler at launch, wire the manual commands to shared locks, build the tray, and wire the notification and autostart plugin emit-sites.
-- The **Groups/tags spec and UI**, designed once the GUI is finalized (feature committed, schema ready).
-- The small **quick-actions follow-up** (`repo_open_*`).
+- **Correctness.** Fix the 2026-07-04 audit's findings: the opener defects (broken open-in on Windows, the unvalidated-remote-URL security defect, `cmd /C` injection), the scheduler cadence gaps, and the frontend defects (group filter false-empty, the Dashboard attention-row taxonomy, drawer staleness, an accessibility batch). Also repair PR #2's CI (red on all four checks) and the test suite (does not complete in a reasonable time).
+- **Dogfood.** Run the real, packaged app and exercise every flow; fix what falls out.
+- **OS-integration completion.** Finish E-13 (tray): Check All Now, Pause/Resume, Open recent, the Settings menu item, close-to-tray. Wire E-14 (notifications) and E-15 (autostart) to their OS plugins.
+- **New features.** E-17 (branch and PR intelligence) and E-18 (auto-update and distribution), ratified 2026-07-04, not started.
+- **Packaging and the private release ceremony.** Build and smoke-test the Windows installer; merge PR #2; tag `v0.9.0`; cut a private GitHub Release.
 
 For per-feature build status and effort ownership, see [feature-inventory.md](feature-inventory.md).

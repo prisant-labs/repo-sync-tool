@@ -15,9 +15,9 @@ source: docs/internal/v1-architecture-and-decisions.md (deliverable 11 "Notifica
 
 > Agents keep this block current as work proceeds.
 
-- **State:** core done (2026-06-29). The pure firing decision (`decide`) + per-cycle coalescing (`coalesce`) live in `reposync-core/src/notify.rs`, built test-first (10 tests over the release/failure/auth x toggle x quiet-hours matrix, plus the coalescing bound) and adversarially reviewed - findings fixed test-first (release identity preserved, no double-report, typed `LocalMinute`); the auth-toggle policy is filed as BL-NI-17. The `tauri-plugin-notification` emit-site is the only remaining piece (AC5), deferred to the edge-wiring effort.
-- **Next:** the edge-wiring effort calls `decide`/`coalesce` from the scheduler's check-completion path, raises the OS toast via `tauri-plugin-notification`, and emits `notification:fired` (AC5). It sources the `LocalMinute` from the scheduler's offset-aware clock so notifications and scheduling agree on "now".
-- **Blockers (edge only):** needs E-08's check-completion hook wired and E-10's release-detection signal live (BL-NI-16 for faithful per-release identity); the core logic itself is unblocked and done.
+- **State:** core done (2026-06-29); OS wiring not yet started as of 2026-07-04. The pure firing decision (`decide`) + per-cycle coalescing (`coalesce`) live in `reposync-core/src/notify.rs`, built test-first (10 tests over the release/failure/auth x toggle x quiet-hours matrix, plus the coalescing bound) and adversarially reviewed - findings fixed test-first (release identity preserved, no double-report, typed `LocalMinute`); the auth-toggle policy is filed as BL-NI-17. The `tauri-plugin-notification` emit-site is the only remaining piece (AC5). The resident scheduler that will host the check-completion hook is spawned as of 2026-07-03 (commit 81c96af); the hook itself, and the plugin call, are unbuilt.
+- **Next:** wire `decide`/`coalesce` into the scheduler's check-completion path, raise the OS toast via `tauri-plugin-notification`, and emit `notification:fired` (AC5). Source the `LocalMinute` from the scheduler's offset-aware clock so notifications and scheduling agree on "now". Sequenced as Phase 3 of [../execution-plan.md](../execution-plan.md).
+- **Blockers (edge only):** none structural; E-08's scheduler is running and E-10's release-detection signal is live. The remaining work is the wiring itself (BL-NI-16 for faithful per-release identity applies once wired); the core logic is unblocked and done.
 
 ## Context
 

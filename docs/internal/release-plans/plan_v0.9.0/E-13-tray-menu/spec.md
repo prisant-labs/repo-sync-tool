@@ -15,9 +15,9 @@ source: docs/internal/v1-architecture-and-decisions.md (Section 8 "Tray architec
 
 > Agents keep this block current as work proceeds.
 
-- **State:** not started (spec drafted 2026-06-23 to close a category-C gap: the tray menu was identified in the brief but owned by no effort; `tray.rs` is an empty E-01 placeholder).
-- **Next:** build the `TrayIconBuilder` + `Menu` in `src-tauri/src/tray.rs` and wire the menu items to existing commands.
-- **Blockers:** Pause/Resume and Check-All need the E-08 scheduler control surface; "Open recent" needs E-02's repo list.
+- **State:** PARTIAL (shipped 2026-07-03, commit bb353f9). `src-tauri/src/tray.rs` builds a real `TrayIconBuilder` + `Menu`, but only 2 of the 6 planned items exist: **Show RepoSync** and **Quit**, plus left-click-show. AC1 and AC2 are mostly unmet (4 of 6 menu items missing); AC3 (close-to-tray) is entirely unmet, closing the main window still exits the app. AC4 and AC5 hold for what is built.
+- **Next:** add Check All Now (scheduler check-all over enabled repos), Pause/Resume (toggle + reflect scheduler state), Open recent (submenu over the repo list), and the Settings menu item; wire close-to-tray so the window hides instead of exiting. Sequenced as Phase 3 of [../execution-plan.md](../execution-plan.md).
+- **Blockers:** Pause/Resume and Check-All need the E-08 scheduler control surface (the scheduler itself is spawned resident as of commit 81c96af, 2026-07-03, so this blocker is now a wiring task, not a missing dependency); "Open recent" needs E-02's repo list, which is available.
 
 ## Context
 
