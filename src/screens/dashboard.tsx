@@ -1,5 +1,6 @@
-import { useCallback, useState } from "react";
-import { AlertTriangle, FolderGit2, Plus, RefreshCw } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { FolderGit2, Plus, RefreshCw } from "lucide-react";
+import type { RepoSummary } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +10,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
 import { useBackendEvents, useRepoList, useSummaryToday } from "@/hooks/queries";
+import { deriveStatus, STATUS_ICON, STATUS_STYLE } from "@/lib/status";
 
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
 
@@ -29,6 +31,16 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
 
   const underWatch = repos.data?.length ?? null;
   const noRepos = repos.data !== null && repos.data.length === 0;
+
+  // Look up each attention item's live facts so its icon/color can follow the
+  // repo's actual current status (finding 10 / BL-NI-27), rather than always
+  // rendering the failed-red glyph. A miss (repo dropped out of the list
+  // between fetches) falls back to the prior failed-red treatment.
+  const repoById = useMemo(() => {
+    const m = new Map<number, RepoSummary>();
+    for (const r of repos.data ?? []) m.set(r.id, r);
+    return m;
+  }, [repos.data]);
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-5">
@@ -90,23 +102,28 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
                   </CardContent>
                 ) : (
                   <ul>
-                    {s.attention.map((item) => (
-                      <li key={item.repoId}>
-                        <button
-                          type="button"
-                          onClick={() => setSelectedId(item.repoId)}
-                          className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left last:border-b-0 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
-                        >
-                          <AlertTriangle className="size-4 shrink-0 text-status-failed" />
-                          <div className="min-w-0">
-                            <div className="truncate font-mono text-sm font-semibold">{item.localName}</div>
-                            {item.detail && (
-                              <div className="truncate text-xs text-muted-foreground">{item.detail}</div>
-                            )}
-                          </div>
-                        </button>
-                      </li>
-                    ))}
+                    {s.attention.map((item) => {
+                      const repo = repoById.get(item.repoId);
+                      const status = repo ? deriveStatus(repo) : "failed";
+                      const Icon = STATUS_ICON[status];
+                      return (
+                        <li key={item.repoId}>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedId(item.repoId)}
+                            className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left last:border-b-0 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                          >
+                            <Icon className={cn("size-4 shrink-0", STATUS_STYLE[status].text)} />
+                            <div className="min-w-0">
+                              <div className="truncate font-mono text-sm font-semibold">{item.localName}</div>
+                              {item.detail && (
+                                <div className="truncate text-xs text-muted-foreground">{item.detail}</div>
+                              )}
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </Card>

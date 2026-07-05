@@ -1,3 +1,5 @@
+import { AlertTriangle, ArrowDown, ArrowUp, Check, PauseCircle, XCircle } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { RepoSummary } from "@/lib/bindings";
 
 /** The 7-state taxonomy, derived on the frontend from raw RepoSummary facts. */
@@ -23,6 +25,21 @@ export function deriveStatus(r: StatusFacts): RepoStatus {
   if ((r.aheadCount ?? 0) > 0) return "ahead";
   return "sync";
 }
+
+/**
+ * One lucide icon per state, so status survives grayscale and color
+ * blindness. Shared by `StatusBadge` and any other surface (e.g. the
+ * dashboard's "Needs attention" rows) that renders a status without going
+ * through `StatusBadge` itself.
+ */
+export const STATUS_ICON: Record<RepoStatus, LucideIcon> = {
+  sync: Check,
+  ahead: ArrowUp,
+  behind: ArrowDown,
+  dirty: AlertTriangle,
+  failed: XCircle,
+  paused: PauseCircle,
+};
 
 /**
  * Per-status presentation. Class strings are written out in full (never

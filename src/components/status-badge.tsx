@@ -1,16 +1,5 @@
-import { AlertTriangle, ArrowDown, ArrowUp, Check, PauseCircle, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { STATUS_STYLE, type RepoStatus } from "@/lib/status";
-
-/** One lucide icon per state, so status survives grayscale and color blindness. */
-const ICONS: Record<RepoStatus, typeof Check> = {
-  sync: Check,
-  ahead: ArrowUp,
-  behind: ArrowDown,
-  dirty: AlertTriangle,
-  failed: XCircle,
-  paused: PauseCircle,
-};
+import { STATUS_ICON, STATUS_STYLE, type RepoStatus } from "@/lib/status";
 
 /**
  * The status taxonomy rendered as color + icon + word. `count` folds the
@@ -26,7 +15,7 @@ export function StatusBadge({
   className?: string;
 }) {
   const style = STATUS_STYLE[status];
-  const Icon = ICONS[status];
+  const Icon = STATUS_ICON[status];
   const label =
     (status === "behind" || status === "ahead") && count != null && count > 0
       ? `${count} ${style.label.toLowerCase()}`

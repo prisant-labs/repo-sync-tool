@@ -22,7 +22,7 @@ import { AsyncPanel } from "@/components/async-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
 import { useToast } from "@/hooks/use-toast";
-import { useGroups, useGroupsForRepo, useRepoDetail } from "@/hooks/queries";
+import { useGroups, useGroupsForRepo, useRepoBackendEvents, useRepoDetail } from "@/hooks/queries";
 import {
   deriveStatus,
   lagLabel,
@@ -79,6 +79,11 @@ export function RepoDetailPanel({
   const refetch = detail.refetch;
   const refetchGroups = groupsState.refetch;
   const refetchMemberships = memberships.refetch;
+
+  // Keep the open drawer live when a background scheduled check/update
+  // completes for this repo, instead of only refreshing after this drawer's
+  // own actions (finding 11 / BL-NI-28).
+  useRepoBackendEvents(id, refetch);
 
   const run = useCallback<RunFn>(
     (key, action, okTitle, okMessage) => {

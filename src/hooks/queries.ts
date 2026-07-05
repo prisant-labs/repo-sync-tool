@@ -90,3 +90,35 @@ export function useBackendEvents(onChange: () => void) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }
+
+/**
+ * Like `useBackendEvents`, but scoped to one repo: only calls `onChange` when
+ * a check/update/state event's payload concerns this repo id. Used by the
+ * open repo-detail drawer so it stays live when a background scheduled check
+ * completes for its repo (finding 11 / BL-NI-28), without refetching on every
+ * OTHER repo's event too (no refetch storm across a whole scheduler pass, and
+ * no need to also refetch group membership here: nothing about a check or
+ * update changes it, so that stays scoped to the drawer's own toggle action).
+ */
+export function useRepoBackendEvents(repoId: number, onChange: () => void) {
+  useEffect(() => {
+    const subscriptions = [
+      events.repoCheckCompleted.listen((e) => {
+        if (e.payload.repoId === repoId) onChange();
+      }),
+      events.repoUpdateCompleted.listen((e) => {
+        if (e.payload.repoId === repoId) onChange();
+      }),
+      events.repoStateChanged.listen((e) => {
+        if (e.payload.repoId === repoId) onChange();
+      }),
+    ];
+    return () => {
+      void Promise.all(subscriptions).then((unlisteners) => {
+        for (const off of unlisteners) off();
+      });
+    };
+    // onChange is expected to be referentially stable; see useBackendEvents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoId]);
+}

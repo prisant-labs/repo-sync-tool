@@ -20,11 +20,13 @@ export function GroupsNav({
   groups,
   activeGroupId,
   onSelectGroup,
+  onClearActiveGroup,
   refetchGroups,
 }: {
   groups: GroupSummary[];
   activeGroupId: number | null;
   onSelectGroup: (id: number | null) => void;
+  onClearActiveGroup: () => void;
   refetchGroups: () => void;
 }) {
   const toast = useToast();
@@ -37,7 +39,11 @@ export function GroupsNav({
     try {
       await unwrap(commands.groupDelete(id));
       toast("ok", "Group deleted");
-      if (activeGroupId === id) onSelectGroup(null);
+      // Clear the filter without the navigation side effect `onSelectGroup`
+      // carries (it force-switches to the Repos view; deleting the active
+      // group filter can happen from any screen, since the sidebar renders
+      // everywhere - E-16 Known defect 6).
+      if (activeGroupId === id) onClearActiveGroup();
       refetchGroups();
     } catch (e) {
       toast("error", "Could not delete group", e instanceof IpcError ? e.message : String(e));
@@ -179,13 +185,13 @@ function GroupRow({
         <span className="flex items-center pr-2.5">
           <span
             className={cn(
-              "font-mono text-[11px] tabular-nums transition-opacity group-hover/row:opacity-0",
+              "font-mono text-[11px] tabular-nums transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
               active ? "text-primary" : "text-muted-foreground",
             )}
           >
             {group.repoCount}
           </span>
-          <span className="absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100">
+          <span className="absolute right-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-within/row:opacity-100">
             <RowIcon
               label={`Rename ${group.name}`}
               onClick={onRename}
@@ -228,7 +234,7 @@ function RowIcon({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "grid size-6 place-items-center rounded text-muted-foreground transition-colors disabled:opacity-50",
+        "grid size-6 place-items-center rounded text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
         className,
       )}
     >

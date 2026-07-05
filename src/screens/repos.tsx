@@ -98,10 +98,14 @@ export function ReposScreen({
     return c;
   }, [list]);
 
-  // Repos in the active group (before the status / name filters narrow further).
+  // Repos in the active group (before the status / name filters narrow
+  // further). `null` means "not yet known" (membership fan-out still loading
+  // or failed), distinct from a genuine zero (finding 7 / BL-NI-27's sibling
+  // defect in the E-16 spec: a null map must never read as "no members").
   const inGroupCount = useMemo(() => {
     if (activeGroupId === null) return list.length;
-    return list.filter((r) => membershipMap?.get(r.id)?.includes(activeGroupId)).length;
+    if (membershipMap === null) return null;
+    return list.filter((r) => membershipMap.get(r.id)?.includes(activeGroupId)).length;
   }, [list, membershipMap, activeGroupId]);
 
   const filtered = useMemo(() => {
@@ -139,7 +143,7 @@ export function ReposScreen({
             Filtered to <span className="font-semibold">{activeGroup.name}</span>
           </span>
           <span className="font-mono text-xs text-muted-foreground">
-            {inGroupCount} {inGroupCount === 1 ? "repo" : "repos"}
+            {inGroupCount === null ? "…" : `${inGroupCount} ${inGroupCount === 1 ? "repo" : "repos"}`}
           </span>
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onClearGroup}>
             <X /> Clear filter
@@ -194,8 +198,24 @@ export function ReposScreen({
           />
         }
       >
-        {() =>
-          filtered.length === 0 ? (
+        {() => {
+          // With an active group filter, `filtered` depends on `membershipMap`
+          // (from the `groups_for_repo` fan-out). A `null` map means the fan-out
+          // is still loading or has failed, not that zero repos match (finding
+          // 7): show the shared loading/error presentation instead of the
+          // "no matches" empty state until membership is actually known.
+          if (activeGroupId !== null && membershipMap === null) {
+            return (
+              <AsyncPanel state={memberships}>
+                {/* Unreachable: this branch only renders while membershipMap is
+                    null, and AsyncPanel only calls children once state.data is
+                    non-null (the outer condition above then takes over). */}
+                {() => null}
+              </AsyncPanel>
+            );
+          }
+
+          return filtered.length === 0 ? (
             <div className="rounded-xl border border-border bg-card py-16 text-center text-sm text-muted-foreground shadow-sm">
               No repositories match this filter.
             </div>
@@ -229,8 +249,8 @@ export function ReposScreen({
                 );
               })}
             </div>
-          )
-        }
+          );
+        }}
       </AsyncPanel>
 
       <Drawer open={selectedId !== null} onClose={() => setSelectedId(null)}>
@@ -309,11 +329,16 @@ function RepoRow({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onOpen();
+        if (e.key === "Enter") {
+          onOpen();
+        } else if (e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
       }}
       className={cn(
         GRID,
-        "cursor-pointer border-b border-border px-4 py-3 last:border-b-0 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none",
+        "cursor-pointer border-b border-border px-4 py-3 last:border-b-0 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
       )}
     >
       <div className="min-w-0">

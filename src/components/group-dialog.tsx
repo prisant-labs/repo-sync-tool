@@ -23,6 +23,26 @@ const GROUP_COLORS = [
   "oklch(0.5 0.03 258)",
 ];
 
+// Human names for the preset swatches above, matched by index, so each color
+// button gets a distinct accessible name (finding 13 / BL-NI-29d; a screen
+// reader otherwise hears "Choose group color" eight times with no way to
+// tell them apart). Named after the same hues DESIGN.md uses for the status
+// taxonomy where they line up (blue is the interaction accent; green/amber/
+// red/violet/magenta mirror sync/dirty/failed/behind/release).
+const GROUP_COLOR_NAMES = ["Blue", "Green", "Amber", "Red", "Violet", "Magenta", "Teal", "Slate"];
+
+/**
+ * Whether an error is `group_create` / `group_rename`'s duplicate-name
+ * rejection, keyed on the error code and the `field` it carries (E-16 Known
+ * defect 4) rather than string-matching the message, so it stays robust if
+ * the wire message text ever changes.
+ */
+function isDuplicateNameError(e: unknown): boolean {
+  if (!(e instanceof IpcError) || e.code !== "config.invalid_setting") return false;
+  const context = e.payload.context;
+  return typeof context === "object" && context !== null && (context as { field?: unknown }).field === "name";
+}
+
 /**
  * Create or rename a group. In create mode it collects a name plus a preset
  * color; in rename mode only the name is editable (the backend `group_rename`
@@ -63,6 +83,11 @@ export function GroupDialog({
   }
 
   async function submit() {
+    // Guard re-entrancy: a double-Enter in the name field (or a stray double
+    // click) could otherwise fire two creates/renames for the same input
+    // before the first `await` resolves and `busy` re-renders (E-16 Known
+    // defect 3).
+    if (busy) return;
     const trimmed = name.trim();
     if (!trimmed) return;
     setBusy(true);
@@ -80,7 +105,11 @@ export function GroupDialog({
       toast(
         "error",
         mode === "create" ? "Could not create group" : "Could not rename group",
-        e instanceof IpcError ? e.message : String(e),
+        isDuplicateNameError(e)
+          ? "That name is already taken."
+          : e instanceof IpcError
+            ? e.message
+            : String(e),
       );
       setBusy(false);
     }
@@ -120,15 +149,15 @@ export function GroupDialog({
               Color
             </span>
             <div className="flex flex-wrap gap-2">
-              {GROUP_COLORS.map((c) => (
+              {GROUP_COLORS.map((c, i) => (
                 <button
                   key={c}
                   type="button"
-                  aria-label="Choose group color"
+                  aria-label={`${GROUP_COLOR_NAMES[i]} (color ${i + 1} of ${GROUP_COLORS.length})`}
                   aria-pressed={color === c}
                   onClick={() => setColor(c)}
                   className={cn(
-                    "size-7 rounded-full ring-offset-2 ring-offset-card transition-shadow",
+                    "size-7 rounded-full ring-offset-2 ring-offset-card transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     color === c ? "ring-2 ring-ring" : "hover:ring-2 hover:ring-border",
                   )}
                   style={{ backgroundColor: c }}

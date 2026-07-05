@@ -39,6 +39,15 @@ export function AppShell() {
     setView("repos");
   }
 
+  // Clear the active group filter without switching views. Unlike
+  // `selectGroup`, this has no navigation side effect, which matters when the
+  // active filter's group is deleted from the sidebar: that can happen from
+  // any screen (the sidebar renders everywhere), and should not force-navigate
+  // to Repos (E-16 Known defect 6).
+  function clearActiveGroup() {
+    setActiveGroupId(null);
+  }
+
   return (
     <div className="grid h-svh grid-cols-[232px_1fr] bg-background text-foreground">
       <aside className="flex min-h-0 flex-col border-r border-border bg-sidebar">
@@ -72,6 +81,7 @@ export function AppShell() {
           groups={groups}
           activeGroupId={activeGroupId}
           onSelectGroup={selectGroup}
+          onClearActiveGroup={clearActiveGroup}
           refetchGroups={groupsState.refetch}
         />
       </aside>
@@ -97,7 +107,7 @@ export function AppShell() {
             <ReposScreen
               activeGroupId={activeGroupId}
               groups={groups}
-              onClearGroup={() => setActiveGroupId(null)}
+              onClearGroup={clearActiveGroup}
               onGroupsChanged={groupsState.refetch}
             />
           )}
