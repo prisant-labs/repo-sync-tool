@@ -101,6 +101,12 @@ pub struct RepoSummary {
     pub last_checked_at: Option<i64>,
     pub last_error_code: Option<String>,
     pub latest_release_tag: Option<String>,
+    /// Open pull-request count (E-17). `None` = un-refreshed or non-GitHub repo (a
+    /// clean unknown, never a fabricated zero). Rides the single `repo_list` join.
+    pub open_pr_count: Option<i64>,
+    /// The HEAD commit's committer time (E-17), distinct from `last_checked_at`
+    /// ("when RepoSync last looked"). `None` when the inspect never read it.
+    pub last_local_commit_at: Option<i64>,
 }
 
 /// The full detail of a tracked repo (detail view). Repeats every
@@ -148,6 +154,15 @@ pub struct RepoDetail {
     pub is_archived: bool,
     pub last_remote_sha: Option<String>,
     pub last_fetched_at: Option<i64>,
+    // --- repo_remote_meta: branch and PR intelligence (E-17) ---
+    /// Open pull-request count. `None` = un-refreshed / non-GitHub / unknown (a
+    /// 404-or-403 on a private repo preserves the cache; it is NEVER a fabricated 0).
+    pub open_pr_count: Option<i64>,
+    /// Open pull requests targeting the default branch (a subset of `open_pr_count`).
+    pub default_branch_pr_count: Option<i64>,
+    /// When the PR counts were last confirmed against GitHub, for the drawer's
+    /// "as of <time>" staleness marker when offline / rate-limited (E-17 AC8).
+    pub pr_last_checked_at: Option<i64>,
 }
 
 // =============================================================================
@@ -453,6 +468,8 @@ mod tests {
             last_checked_at: Some(1_700_000_000),
             last_error_code: None,
             latest_release_tag: Some("v1.0.0".into()),
+            open_pr_count: Some(3),
+            last_local_commit_at: Some(1_699_400_000),
         };
         assert_round_trip(&summary);
 
@@ -491,6 +508,9 @@ mod tests {
             is_archived: false,
             last_remote_sha: Some("def456".into()),
             last_fetched_at: Some(1_700_000_000),
+            open_pr_count: Some(3),
+            default_branch_pr_count: Some(1),
+            pr_last_checked_at: Some(1_700_000_500),
         };
         assert_round_trip(&detail);
 

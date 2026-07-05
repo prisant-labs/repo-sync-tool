@@ -437,6 +437,59 @@ pub fn run() {
                     locks
                 };
 
+                // E-17: the resident background GitHub metadata + branch/PR
+                // intelligence refresh. A budgeted pass over the tracked GitHub repos,
+                // oldest-metadata-first, capped by a rolling-hour RateBudgeter so a cold
+                // library backfills over several hours rather than bursting past the
+                // unauthenticated ceiling (E-17 AC16). Runs the unauthenticated NoToken
+                // path only; the manual `repo_refresh_metadata` command is a separate
+                // user-initiated one-off and is not charged against this budget. No
+                // frontend event is emitted per pass (V1: the row/drawer pick up the
+                // fresher metadata on the next check/manual refresh; a
+                // `repo:metadata-refreshed` push is a V1.1 surface).
+                {
+                    use reposync_core::github::{
+                        refresh_pass, NoToken, RateBudgeter, ReqwestTransport,
+                    };
+                    let refresh_pool = pool.clone();
+                    match ReqwestTransport::new() {
+                        Ok(transport) => {
+                            tauri::async_runtime::spawn(async move {
+                                let mut budgeter = RateBudgeter::new();
+                                // A modest tick; the rolling-hour budgeter, the 24h
+                                // per-repo window, and the per-endpoint ETags pace the
+                                // real request volume, so most ticks are cheap no-ops.
+                                let mut interval =
+                                    tokio::time::interval(std::time::Duration::from_secs(600));
+                                // Consume the immediate first tick so the first real pass
+                                // waits one period (startup is busy enough already).
+                                interval.tick().await;
+                                loop {
+                                    interval.tick().await;
+                                    let now = crate::localtime::now_unix();
+                                    if let Err(e) = refresh_pass(
+                                        &refresh_pool,
+                                        &transport,
+                                        &NoToken,
+                                        &mut budgeter,
+                                        now,
+                                    )
+                                    .await
+                                    {
+                                        eprintln!(
+                                            "github: background metadata refresh pass failed: {e}"
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                        Err(e) => eprintln!(
+                            "github: could not build the HTTP client; background \
+                             metadata refresh disabled: {e}"
+                        ),
+                    }
+                }
+
                 // Seed the tray's "Open recent" submenu from the most-recently-active
                 // repos (E-13) BEFORE the pool moves into AppState. `recent` is owned
                 // (it borrows nothing), so it outlives the move below.

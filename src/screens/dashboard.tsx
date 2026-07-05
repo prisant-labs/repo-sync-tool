@@ -106,6 +106,17 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
                       const repo = repoById.get(item.repoId);
                       const status = repo ? deriveStatus(repo) : "failed";
                       const Icon = STATUS_ICON[status];
+                      // Fold the repo's branch/PR context into the item detail (E-17):
+                      // e.g. "3 commits behind · 2 open PRs". A null openPrCount (a
+                      // non-GitHub / un-refreshed / private-inaccessible repo) adds
+                      // nothing - it is never a fabricated "0 PRs".
+                      const prCount = repo?.openPrCount ?? 0;
+                      const detail = [
+                        item.detail,
+                        prCount > 0 ? `${prCount} open PR${prCount === 1 ? "" : "s"}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ");
                       return (
                         <li key={item.repoId}>
                           <button
@@ -116,8 +127,8 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
                             <Icon className={cn("size-4 shrink-0", STATUS_STYLE[status].text)} />
                             <div className="min-w-0">
                               <div className="truncate font-mono text-sm font-semibold">{item.localName}</div>
-                              {item.detail && (
-                                <div className="truncate text-xs text-muted-foreground">{item.detail}</div>
+                              {detail && (
+                                <div className="truncate text-xs text-muted-foreground">{detail}</div>
                               )}
                             </div>
                           </button>

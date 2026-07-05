@@ -27,6 +27,11 @@ pub struct InspectResult {
     pub is_dirty: bool,
     pub is_detached: bool,
     pub upstream_branch: Option<String>,
+    /// The HEAD commit's committer time in unix seconds (E-17 local recency), or
+    /// `None` for an unborn HEAD or an unreadable commit time. Distinct from
+    /// `last_checked_at` ("when RepoSync last looked"): this is "how stale is the
+    /// checkout's HEAD".
+    pub last_commit_at: Option<i64>,
 }
 
 /// Classification of a `git fetch` outcome (AC10 / BL-NI-05).

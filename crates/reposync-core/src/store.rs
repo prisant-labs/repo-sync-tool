@@ -49,7 +49,9 @@ pub async fn repo_list(
             s.is_dirty AS is_dirty, s.is_detached AS is_detached, \
             s.auto_paused AS auto_paused, s.last_checked_at AS last_checked_at, \
             s.last_error_code AS last_error_code, \
-            m.latest_release_tag AS latest_release_tag \
+            s.last_local_commit_at AS last_local_commit_at, \
+            m.latest_release_tag AS latest_release_tag, \
+            m.open_pr_count AS open_pr_count \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
@@ -97,6 +99,8 @@ pub async fn repo_list(
             last_checked_at: r.try_get("last_checked_at")?,
             last_error_code: r.try_get("last_error_code")?,
             latest_release_tag: r.try_get("latest_release_tag")?,
+            open_pr_count: r.try_get("open_pr_count")?,
+            last_local_commit_at: r.try_get("last_local_commit_at")?,
         });
     }
     Ok(out)
@@ -123,7 +127,10 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
             m.description AS description, m.topics_json AS topics_json, \
             m.latest_release_tag AS latest_release_tag, m.latest_release_at AS latest_release_at, \
             m.latest_release_url AS latest_release_url, m.is_archived AS is_archived, \
-            m.last_remote_sha AS last_remote_sha, m.last_fetched_at AS last_fetched_at \
+            m.last_remote_sha AS last_remote_sha, m.last_fetched_at AS last_fetched_at, \
+            m.open_pr_count AS open_pr_count, \
+            m.default_branch_pr_count AS default_branch_pr_count, \
+            m.pr_last_checked_at AS pr_last_checked_at \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
@@ -176,6 +183,9 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
         is_archived: int_to_bool(r.try_get("is_archived").unwrap_or(0)),
         last_remote_sha: r.try_get("last_remote_sha")?,
         last_fetched_at: r.try_get("last_fetched_at")?,
+        open_pr_count: r.try_get("open_pr_count")?,
+        default_branch_pr_count: r.try_get("default_branch_pr_count")?,
+        pr_last_checked_at: r.try_get("pr_last_checked_at")?,
     })
 }
 

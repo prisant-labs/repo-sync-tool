@@ -9,6 +9,7 @@ import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
+import { IntelSignals } from "@/components/intel-signals";
 import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
@@ -342,10 +343,12 @@ function RepoRow({
     >
       <div className="min-w-0">
         <div className="truncate font-mono text-sm font-semibold">{repo.localName}</div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground">
-          {repo.hostType}
-          {repo.latestReleaseTag ? ` · ${repo.latestReleaseTag}` : ""}
-        </div>
+        <div className="truncate font-mono text-[11px] text-muted-foreground">{repo.hostType}</div>
+        <IntelSignals
+          latestReleaseTag={repo.latestReleaseTag}
+          openPrCount={repo.openPrCount}
+          className="mt-1"
+        />
         {repoGroups.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1">
             {repoGroups.map((g) => (

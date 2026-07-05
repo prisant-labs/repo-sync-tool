@@ -23,10 +23,13 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
     // commit / no branch" rather than an error.
     let head = repo.head().ok();
 
-    let head_sha = head
-        .as_ref()
-        .and_then(|h| h.peel_to_commit().ok())
-        .map(|c| c.id().to_string());
+    // Peel HEAD to its commit once, for both the SHA and the committer time (E-17
+    // local recency). An unborn HEAD or an unreadable commit yields None for both.
+    let head_commit = head.as_ref().and_then(|h| h.peel_to_commit().ok());
+    let head_sha = head_commit.as_ref().map(|c| c.id().to_string());
+    // The committer time (stable, matches "when the checkout's HEAD was committed"),
+    // not the author time. git2 reports it in seconds since the epoch.
+    let last_commit_at = head_commit.as_ref().map(|c| c.time().seconds());
 
     let active_branch = head.as_ref().and_then(|h| {
         if h.is_branch() {
@@ -59,6 +62,7 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
         is_dirty,
         is_detached,
         upstream_branch,
+        last_commit_at,
     })
 }
 
@@ -181,6 +185,33 @@ mod tests {
         std::fs::write(tmp.path().join("new.txt"), "untracked\n").expect("write");
         let dirty = inspect(tmp.path()).expect("inspect dirty");
         assert!(dirty.is_dirty, "untracked file should make it dirty");
+    }
+
+    #[test]
+    fn inspect_reads_head_commit_committer_time() {
+        // E-17 AC2: inspect reads the HEAD commit's committer time (unix seconds) so
+        // the check path can persist it into last_local_commit_at. Commit with a KNOWN
+        // committer time and assert inspect reports exactly that.
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = git2::Repository::init(tmp.path()).expect("init");
+        std::fs::write(tmp.path().join("f.txt"), "v1\n").expect("write");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("f.txt")).expect("add");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        // A fixed committer time (2023-11-14T22:13:20Z), offset 0.
+        let when = git2::Time::new(1_700_000_000, 0);
+        let sig = git2::Signature::new("T", "t@example.com", &when).expect("sig");
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .expect("commit");
+
+        let inspected = inspect(tmp.path()).expect("inspect");
+        assert_eq!(
+            inspected.last_commit_at,
+            Some(1_700_000_000),
+            "inspect reports the HEAD commit's committer time"
+        );
     }
 
     #[test]

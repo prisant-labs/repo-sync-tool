@@ -1,10 +1,13 @@
-//! github - owned by E-10 (the unauthenticated GitHub metadata client).
+//! github - owned by E-10 (the unauthenticated GitHub metadata client) and
+//! extended by E-17 (branch and PR intelligence).
 //!
 //! Enriches each tracked repo with its GitHub host metadata - description,
-//! default branch, latest release (tag/date/URL), topics, and the archived flag -
-//! and caches it in `repo_remote_meta` with ETag conditional requests, a ~24h
-//! refresh clock, and rate-limit backoff. V1 ships the UNAUTHENTICATED path only;
-//! the optional PAT plugs in behind the [`TokenProvider`] seam in V1.1.
+//! default branch, latest release (tag/date/URL), topics, the archived flag -
+//! AND its pull-request intelligence (open PR count + PRs targeting the default
+//! branch). Everything is cached in `repo_remote_meta` with ETag conditional
+//! requests, a ~24h refresh clock, and rate-limit backoff. V1 ships the
+//! UNAUTHENTICATED path only; the optional PAT plugs in behind the
+//! [`TokenProvider`] seam in V1.1.
 //!
 //! DESIGN: the HTTP boundary is the [`Transport`] seam, so the cache decision, the
 //! 200/304 write path, the backoff decision, the URL parse, and the JSON -> DB
@@ -13,12 +16,23 @@
 //! [`ReqwestTransport`] (reqwest + RUSTLS, no OpenSSL) is the only place the
 //! network stack appears and is not exercised by unit tests.
 //!
-//! NOTE (AC1 deviation): the spec names "octocrab on reqwest", but octocrab is
-//! built on hyper, not reqwest, so that pairing is contradictory. This effort uses
-//! reqwest + rustls directly (satisfying AC2 and the no-OpenSSL hard rule with full
-//! control); the transport seam keeps the choice swappable.
+//! E-17 own-cache discipline (BL-NI-15a / BL-NI-15b): the repo resource, the
+//! latest-release sub-resource, and the pull-request sub-resource EACH carry their
+//! own ETag and last-checked timestamp, so a repo-resource 304 never hides a new
+//! release or pull request for the 24h window (BL-NI-15b resolved). A 404/403 on
+//! the release sub-resource is authoritative "no release" (it clears); a 404/403
+//! on the PR sub-resource is AMBIGUOUS (private / inaccessible) and is treated as
+//! Unknown - it PRESERVES the cached counts, never a destructive zero (BL-NI-15a).
+//!
+//! E-17 request budgeter: [`RateBudgeter`] caps aggregate unauthenticated GitHub
+//! usage at [`MAX_REQUESTS_PER_HOUR`] requests per rolling hour (shared with the
+//! E-10 enrichment traffic), leaving headroom under the real 60/hour ceiling. The
+//! scheduler-driven [`refresh_pass`] refreshes oldest-metadata-first, so a cold
+//! 100-repo backfill spreads over several hours by design rather than bursting.
 //!
 //! Tauri-free; sqlx RUNTIME query API; unix-seconds timestamps (no chrono).
+
+use std::collections::VecDeque;
 
 use sqlx::{Row, SqlitePool};
 
@@ -32,12 +46,33 @@ pub const REFRESH_WINDOW_SECS: i64 = 24 * 60 * 60;
 /// (AC4). Named so the threshold is one obvious constant.
 pub const RATE_LIMIT_BACKOFF_PERCENT: i64 = 10;
 
+/// The hard budget ceiling: aggregate unauthenticated GitHub requests per rolling
+/// hour, shared across E-10 enrichment and E-17 PR intelligence (E-17 AC16). Set
+/// to HALF the real unauthenticated 60/hour ceiling so a full pass never bursts
+/// past it and there is headroom for the manual `repo_refresh_metadata` path.
+pub const MAX_REQUESTS_PER_HOUR: usize = 30;
+
+/// The rolling window the budgeter enforces, in seconds (one hour).
+pub const RATE_WINDOW_SECS: i64 = 60 * 60;
+
+/// The worst-case network cost of refreshing ONE repo: the repo resource, the
+/// latest-release sub-resource, and the pull-request sub-resource. The budgeter
+/// only STARTS a repo it can fully fund, so the rolling-hour cap is never exceeded.
+pub const MAX_REQUESTS_PER_REPO: usize = 3;
+
 /// The GitHub REST API base. Centralized so the production transport has one
 /// place to build URLs.
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
 /// The User-Agent GitHub requires on every request.
 const USER_AGENT: &str = "RepoSync";
+
+/// The page size for the pulls read: the ONE pulls request per repo per pass reads
+/// up to this many open PRs and counts them (open total + default-branch subset)
+/// from the body. A repo with more than this many OPEN pull requests undercounts
+/// (documented approximation; the precise `Link`-header trick cannot also yield the
+/// default-branch subset in one request). GitHub caps `per_page` at 100.
+const PULLS_PER_PAGE: usize = 100;
 
 // =============================================================================
 // Data types.
@@ -51,9 +86,9 @@ pub struct RepoCoords {
 }
 
 /// The repo-RESOURCE metadata mapped from a GitHub repo API response into the
-/// `repo_remote_meta` shape (E-02). The latest-release fields are modeled separately as a
-/// [`ReleaseState`] / [`GhRelease`], because the release sub-fetch can fail independently
-/// of the repo fetch (BL-NI-15a).
+/// `repo_remote_meta` shape (E-02). The latest-release and pull-request fields are
+/// modeled as their OWN sub-resource fetches ([`ReleaseFetch`] / [`PrFetch`]),
+/// because each can fail independently of the repo fetch (BL-NI-15a/b).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GhMetadata {
     pub description: Option<String>,
@@ -70,8 +105,8 @@ pub struct RateLimit {
     pub limit: i64,
     /// `X-RateLimit-Reset`: the unix second at which the window resets. `0` when the
     /// header is absent. Carried so a rate-limited outcome can surface an honest
-    /// `AppError::RateLimited { reset_at }` (and the future refresh-pass orchestrator
-    /// can time its resume) rather than guessing the reset.
+    /// `AppError::RateLimited { reset_at }` (and the refresh-pass orchestrator can
+    /// time its resume) rather than guessing the reset.
     pub reset_at: i64,
 }
 
@@ -84,51 +119,81 @@ pub struct GhRelease {
     pub url: Option<String>,
 }
 
-/// The conclusive state of the `/releases/latest` sub-fetch within a 200 repo fetch
-/// (BL-NI-15a). A SINGLE typed value (Codex review): the release payload lives ONLY inside
-/// `Found`, so an "unknown yet carrying a release" state is unrepresentable - the edge
-/// cannot mistakenly persist an untrusted release.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReleaseState {
-    /// `/releases/latest` returned a release (200): authoritative, write it.
-    Found(GhRelease),
-    /// `/releases/latest` returned 404 - the repo has no release: authoritative, so a
-    /// stale cached release is cleared.
-    NoRelease,
-    /// The sub-fetch FAILED (network / parse / rate-limit / any other status) while the
-    /// repo fetch itself succeeded: the cached release fields are PRESERVED, never
-    /// overwritten with a spurious `None`.
-    Unknown,
+/// Open pull-request counts for a repo: the total open, and the subset whose base
+/// (target) branch is the default branch. E-17 counts, never per-PR detail.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrCounts {
+    pub open: i64,
+    pub default_branch: i64,
 }
 
-/// One transport fetch result. The transport classifies the HTTP outcome; the
-/// caller ([`refresh_one`]) decides what to persist.
+/// One repo-RESOURCE fetch result (the repo GET only - NOT the release or PR
+/// sub-resources, which are separate calls with their own ETags). The transport
+/// classifies the HTTP outcome; [`refresh_one`] decides what to persist.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FetchOutcome {
-    /// 200: fresh metadata, the new ETag, the observed commit SHA, the budget, and
-    /// whether the latest-release sub-fetch was conclusive (BL-NI-15a).
+pub enum RepoFetch {
+    /// 200: fresh metadata, the new ETag, the observed commit SHA, and the budget.
     Modified {
         metadata: GhMetadata,
         etag: Option<String>,
         observed_sha: Option<String>,
         rate_limit: RateLimit,
-        release: ReleaseState,
     },
-    /// 304 Not Modified: the cached metadata is still current; only the budget.
+    /// 304 Not Modified: the cached repo metadata is still current; only the budget.
     NotModified { rate_limit: RateLimit },
     /// A transport/connectivity failure (the cached row must be left intact).
     NetworkLost,
     /// 404: the repo is not found on GitHub.
     NotFound,
     /// Rate-limited: a 403 with remaining 0, or the budget hit the backoff floor.
-    /// Carries the budget so the reset time reaches the caller (an honest
-    /// `AppError::RateLimited { reset_at }`), not just the bare outcome.
     RateLimited { rate_limit: RateLimit },
+}
+
+/// The conclusive state of the latest-release sub-resource fetch (BL-NI-15a/b). The
+/// release payload lives ONLY inside `Modified`, so an "unknown yet carrying a
+/// release" state is unrepresentable - the edge cannot persist an untrusted release.
+/// This fetch carries its OWN ETag, decoupled from the repo-resource ETag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReleaseFetch {
+    /// 200: a release exists - authoritative, write it (and its new ETag).
+    Modified {
+        release: GhRelease,
+        etag: Option<String>,
+        rate_limit: RateLimit,
+    },
+    /// 304: the cached release is still current; bump only `release_last_checked_at`.
+    NotModified { rate_limit: RateLimit },
+    /// 404 under the verified auth context - the repo has no release: authoritative,
+    /// so a stale cached release is cleared.
+    NoRelease { rate_limit: RateLimit },
+    /// The sub-fetch FAILED (network / parse / rate-limit / any other status): the
+    /// cached release fields are PRESERVED, never overwritten (BL-NI-15a).
+    Unknown,
+}
+
+/// The conclusive state of the pull-request sub-resource fetch. Its 404/403 handling
+/// differs from the release sub-resource: a 404/403 on the pulls endpoint is
+/// AMBIGUOUS (private / inaccessible), so it is `Unknown` (preserve the cached
+/// counts), never a destructive zero (BL-NI-15a, E-17 AC5). Carries its OWN ETag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrFetch {
+    /// 200: fresh counts - authoritative, write them (and the new ETag).
+    Modified {
+        counts: PrCounts,
+        etag: Option<String>,
+        rate_limit: RateLimit,
+    },
+    /// 304: the cached counts are still current; bump only `pr_last_checked_at`.
+    NotModified { rate_limit: RateLimit },
+    /// The fetch was ambiguous or failed (404/403/network/parse/other): PRESERVE the
+    /// cached counts. A private repo must NEVER read as "0 PRs" (E-17 AC5).
+    Unknown,
 }
 
 /// The result of [`refresh_one`] for one repo. The network failures are
 /// engine-level outcomes E-05 maps to `AppError` variants later; `AppError` here
-/// is reserved for DB failures.
+/// is reserved for DB failures. The outcome reflects the REPO resource; the
+/// release/PR sub-resources degrade gracefully via `release_stale` / `pr_stale`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshOutcome {
     /// Served from cache (inside the refresh window); no network call.
@@ -145,25 +210,30 @@ pub enum RefreshOutcome {
     RateLimited,
 }
 
-/// The full result of [`refresh_one`]: the [`RefreshOutcome`] plus the rate-limit budget
-/// observed when the network was actually reached (`Some` on a 200/304; `None` when served
-/// from cache, skipped, or on a transport failure that carries no budget). The deferred
-/// refresh-pass orchestrator feeds `rate_limit` to [`should_backoff`] to decide whether to
-/// pause the remaining repos (BL-NI-15c); designing the orchestration cadence itself is the
-/// edge-wiring effort's job.
+/// The full result of [`refresh_one`]: the [`RefreshOutcome`] plus the rate-limit
+/// budget observed when the network was actually reached (`Some` on a 200/304 for
+/// any of the three resources; `None` when served from cache, skipped, or on a
+/// repo-resource transport failure that carries no budget). The refresh-pass
+/// orchestrator feeds `rate_limit` to [`should_backoff`] to decide whether to pause.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshReport {
     pub outcome: RefreshOutcome,
     pub rate_limit: Option<RateLimit>,
-    /// A TRANSIENT per-cycle hint: `true` only when THIS 200 refresh's latest-release
-    /// sub-fetch was `Unknown` (BL-NI-15a/c), so the repo metadata refreshed but the cached
-    /// release could not be confirmed. It is NOT persisted - the cache-hit / 304 / failure
-    /// paths report `false` because they did not attempt a release fetch, NOT because the
-    /// release is proven fresh. A DURABLE cross-cycle release-freshness boundary (a
-    /// `release_last_checked_at` / `release_etag` column the cache/304 paths derive staleness
-    /// from, so a flaky release endpoint actually retries despite the repo's 24h window) is
-    /// the deferred BL-NI-15b work; until it lands, treat this as a within-pass hint only.
+    /// `true` when THIS pass's latest-release sub-fetch was `Unknown` (BL-NI-15a): the
+    /// repo metadata refreshed but the cached release could not be confirmed. With the
+    /// decoupled `release_etag` / `release_last_checked_at` (BL-NI-15b), the release
+    /// re-checks every window regardless of the repo 200/304, so this is a within-pass
+    /// signal, not a permanent block.
     pub release_stale: bool,
+    /// `true` when THIS pass's pull-request sub-fetch was `Unknown` (a 404/403 on a
+    /// private/inaccessible repo, or a transient failure): the cached PR counts were
+    /// PRESERVED, never zeroed (E-17 AC5). The UI renders the last-known counts with
+    /// their `pr_last_checked_at` "as of" timestamp.
+    pub pr_stale: bool,
+    /// How many network requests this refresh actually issued (0 when cached/skipped;
+    /// 1 on a repo-resource failure; up to [`MAX_REQUESTS_PER_REPO`] on a 200/304).
+    /// The refresh pass charges these against the [`RateBudgeter`].
+    pub requests_made: u32,
 }
 
 // =============================================================================
@@ -197,14 +267,112 @@ impl TokenProvider for NoToken {
 /// The HTTP boundary. The production impl ([`ReqwestTransport`]) talks to GitHub
 /// over reqwest+rustls; tests use a fake returning canned outcomes, so the cache
 /// and write logic is exercised with no network.
+///
+/// Three methods, one per resource, each ETag-aware under the SAME auth context, so
+/// a 304 on any resource is cheap and each sub-resource's freshness is decoupled
+/// from the repo-resource ETag (BL-NI-15b).
 #[allow(async_fn_in_trait)]
 pub trait Transport {
-    async fn fetch(
+    /// The repo resource GET (`/repos/{owner}/{name}`), sending `repo_etag` as
+    /// `If-None-Match`.
+    async fn fetch_repo(
         &self,
         coords: &RepoCoords,
-        etag: Option<&str>,
+        repo_etag: Option<&str>,
         token: Option<&str>,
-    ) -> FetchOutcome;
+    ) -> RepoFetch;
+
+    /// The latest-release sub-resource GET (`/releases/latest`), sending
+    /// `release_etag` as `If-None-Match`. A 404 is authoritative "no release".
+    async fn fetch_release(
+        &self,
+        coords: &RepoCoords,
+        release_etag: Option<&str>,
+        token: Option<&str>,
+    ) -> ReleaseFetch;
+
+    /// The open pull-request sub-resource GET (`/pulls?state=open`), sending
+    /// `pr_etag` as `If-None-Match`. `default_branch` (when known) drives the
+    /// default-branch subset count. A 404/403 is Unknown (preserve), never zero.
+    async fn fetch_pulls(
+        &self,
+        coords: &RepoCoords,
+        default_branch: Option<&str>,
+        pr_etag: Option<&str>,
+        token: Option<&str>,
+    ) -> PrFetch;
+}
+
+// =============================================================================
+// The rate budgeter (E-17 AC16) - pure, injected clock.
+// =============================================================================
+
+/// A hard request budgeter: caps aggregate unauthenticated GitHub usage at
+/// `max_per_window` requests per rolling `window_secs` window (default
+/// [`MAX_REQUESTS_PER_HOUR`] / [`RATE_WINDOW_SECS`]). Pure over an injected `now`,
+/// so a rolling-hour window is deterministically testable with no wall-clock waits.
+///
+/// The refresh pass consults [`RateBudgeter::can_spend`] before STARTING a repo and
+/// [`RateBudgeter::record`]s the requests it actually issued, so a cold 100-repo
+/// backfill spreads over several hours and never bursts past the ceiling (AC16).
+#[derive(Debug, Clone)]
+pub struct RateBudgeter {
+    max_per_window: usize,
+    window_secs: i64,
+    /// Timestamps (unix seconds) of the requests inside the current window, oldest
+    /// at the front. Pruned lazily on each query.
+    events: VecDeque<i64>,
+}
+
+impl RateBudgeter {
+    /// A budgeter with the production limits (30 requests per rolling hour).
+    pub fn new() -> RateBudgeter {
+        RateBudgeter::with_limits(MAX_REQUESTS_PER_HOUR, RATE_WINDOW_SECS)
+    }
+
+    /// A budgeter with explicit limits (for tests / tuning).
+    pub fn with_limits(max_per_window: usize, window_secs: i64) -> RateBudgeter {
+        RateBudgeter {
+            max_per_window,
+            window_secs,
+            events: VecDeque::new(),
+        }
+    }
+
+    /// Drop events that have aged out of the rolling window at `now`.
+    fn prune(&mut self, now: i64) {
+        while let Some(&front) = self.events.front() {
+            if front <= now - self.window_secs {
+                self.events.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Remaining budget in the rolling window at `now`.
+    pub fn remaining(&mut self, now: i64) -> usize {
+        self.prune(now);
+        self.max_per_window.saturating_sub(self.events.len())
+    }
+
+    /// Whether at least `count` more requests fit in the window at `now`.
+    pub fn can_spend(&mut self, now: i64, count: usize) -> bool {
+        self.remaining(now) >= count
+    }
+
+    /// Record `count` requests issued at `now` (called after they are made).
+    pub fn record(&mut self, now: i64, count: usize) {
+        for _ in 0..count {
+            self.events.push_back(now);
+        }
+    }
+}
+
+impl Default for RateBudgeter {
+    fn default() -> Self {
+        RateBudgeter::new()
+    }
 }
 
 // =============================================================================
@@ -396,6 +564,32 @@ pub fn map_release(release_json: &serde_json::Value) -> GhRelease {
     }
 }
 
+/// Map a `/pulls?state=open` JSON array into [`PrCounts`] (E-17 AC3): `open` is the
+/// number of returned pull requests (each entry is one open PR); `default_branch` is
+/// the subset whose `base.ref` equals `default_branch` (when the default branch is
+/// known). A non-array body yields `(0, 0)` - the transport only maps a 200, so an
+/// empty array is a legitimate "genuinely zero open PRs".
+pub fn map_pull_counts(pulls_json: &serde_json::Value, default_branch: Option<&str>) -> PrCounts {
+    let arr = pulls_json.as_array();
+    let open = arr.map(|a| a.len() as i64).unwrap_or(0);
+    let default_branch_count = match (arr, default_branch) {
+        (Some(a), Some(db)) => a
+            .iter()
+            .filter(|pr| {
+                pr.get("base")
+                    .and_then(|b| b.get("ref"))
+                    .and_then(|r| r.as_str())
+                    == Some(db)
+            })
+            .count() as i64,
+        _ => 0,
+    };
+    PrCounts {
+        open,
+        default_branch: default_branch_count,
+    }
+}
+
 /// Whether a repo fetched at `last_fetched_at` is still inside the refresh window
 /// at `now` (so it is served from cache with no network call, AC3). `None`
 /// (never fetched) is always out of the window.
@@ -419,20 +613,29 @@ pub fn should_backoff(rate_limit: &RateLimit) -> bool {
     rate_limit.remaining <= floor
 }
 
+/// The most conservative (lowest `remaining`) budget among those observed this pass,
+/// so the caller's [`should_backoff`] fires on the tightest of the repo/release/PR
+/// reads. `None` when no network budget was observed.
+fn worst_budget(budgets: &[RateLimit]) -> Option<RateLimit> {
+    budgets.iter().copied().min_by_key(|b| b.remaining)
+}
+
 // =============================================================================
 // The refresh entry point (orchestration over the seams + the DB).
 // =============================================================================
 
-/// Refresh one repo's GitHub metadata: the core function the future
-/// `repo_refresh_metadata(id) -> RepoDetail` command wraps (the command shell is
-/// E-06/src-tauri, not this effort).
+/// Refresh one repo's GitHub metadata AND its branch/PR intelligence: the core
+/// function the `repo_refresh_metadata(id) -> RepoDetail` command wraps (the command
+/// shell is E-06/src-tauri).
 ///
 /// Flow: resolve the repo's coords (skip non-GitHub); if it is inside the refresh
-/// window, serve from cache (no network); else fetch with the stored ETag as
-/// `If-None-Match` and the token from the seam. On 200, persist the metadata +
-/// etag + observed sha + `last_fetched_at`; on 304, bump `last_fetched_at` only
-/// (cached metadata intact, AC6); on a network/not-found/rate-limited outcome,
-/// return it without corrupting the cached row. `AppError` only on a DB failure.
+/// window, serve from cache (no network); else fetch the repo resource with the
+/// stored ETag as `If-None-Match`. On a 200/304, ALSO fetch the latest-release and
+/// pull-request sub-resources - each with its OWN stored ETag, decoupled from the
+/// repo-resource ETag (BL-NI-15b), so a repo-304 never hides a new release or PR.
+/// A 404/403 on the release is authoritative (clears); a 404/403 on the pulls is
+/// Unknown (preserves the cached counts, never a destructive zero - BL-NI-15a).
+/// `AppError` only on a DB failure.
 pub async fn refresh_one<T: Transport, P: TokenProvider>(
     pool: &SqlitePool,
     transport: &T,
@@ -442,10 +645,11 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
 ) -> Result<RefreshReport, AppError> {
     // 1. Resolve the repo's coords; a missing id is NotFound, a non-GitHub repo
     //    (or unparseable URL) is a clean skip - never a network call.
-    let repo_row = sqlx::query("SELECT remote_origin_url, host_type FROM repos WHERE id = ?")
-        .bind(repo_id)
-        .fetch_optional(pool)
-        .await?;
+    let repo_row =
+        sqlx::query("SELECT remote_origin_url, host_type, default_branch FROM repos WHERE id = ?")
+            .bind(repo_id)
+            .fetch_optional(pool)
+            .await?;
     let Some(repo_row) = repo_row else {
         return Err(AppError::NotFound {
             entity: format!("repo {repo_id}"),
@@ -453,6 +657,7 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
     };
     let remote: Option<String> = repo_row.try_get("remote_origin_url")?;
     let host_type: String = repo_row.try_get("host_type")?;
+    let cached_default_branch: Option<String> = repo_row.try_get("default_branch")?;
     let Some(coords) = remote
         .as_deref()
         .and_then(|u| parse_github_coords(u, &host_type))
@@ -461,18 +666,33 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             outcome: RefreshOutcome::Skipped,
             rate_limit: None,
             release_stale: false,
+            pr_stale: false,
+            requests_made: 0,
         });
     };
 
-    // 2. Read the cached ETag + last_fetched_at (a repo may have no meta row yet).
-    let meta_row =
-        sqlx::query("SELECT etag, last_fetched_at FROM repo_remote_meta WHERE repo_id = ?")
-            .bind(repo_id)
-            .fetch_optional(pool)
-            .await?;
-    let (etag, last_fetched_at): (Option<String>, Option<i64>) = match &meta_row {
-        Some(r) => (r.try_get("etag")?, r.try_get("last_fetched_at")?),
-        None => (None, None),
+    // 2. Read the cached ETags + last_fetched_at (a repo may have no meta row yet).
+    //    Each resource carries its OWN ETag (BL-NI-15b): repo, release, and PR.
+    let meta_row = sqlx::query(
+        "SELECT etag, last_fetched_at, release_etag, pr_etag \
+         FROM repo_remote_meta WHERE repo_id = ?",
+    )
+    .bind(repo_id)
+    .fetch_optional(pool)
+    .await?;
+    let (repo_etag, last_fetched_at, release_etag, pr_etag): (
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    ) = match &meta_row {
+        Some(r) => (
+            r.try_get("etag")?,
+            r.try_get("last_fetched_at")?,
+            r.try_get("release_etag")?,
+            r.try_get("pr_etag")?,
+        ),
+        None => (None, None, None, None),
     };
 
     // 3. Inside the ~24h refresh window -> serve from cache, no network (AC3).
@@ -481,32 +701,70 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             outcome: RefreshOutcome::Cached,
             rate_limit: None,
             release_stale: false,
+            pr_stale: false,
+            requests_made: 0,
         });
     }
 
-    // 4. Fetch with the stored ETag as If-None-Match and the seam's token (V1: None).
+    // 4. Fetch the repo resource with its stored ETag and the seam's token (V1: None).
     let token = tokens.token();
-    let outcome = transport
-        .fetch(&coords, etag.as_deref(), token.as_deref())
+    let repo_fetch = transport
+        .fetch_repo(&coords, repo_etag.as_deref(), token.as_deref())
         .await;
+    let mut requests_made: u32 = 1;
 
-    // 5. Persist per the outcome (AC6): a 200 rewrites everything; a 304 bumps only
-    //    last_fetched_at; a network/not-found/rate-limited result leaves the row.
-    match outcome {
-        FetchOutcome::Modified {
+    // Collect the budgets observed across all three reads; the report surfaces the
+    // MOST conservative one so the edge's `should_backoff` fires on the tightest.
+    let mut budgets: Vec<RateLimit> = Vec::with_capacity(MAX_REQUESTS_PER_REPO);
+
+    // 5. A repo-resource FAILURE short-circuits: no release/PR sub-fetches, cache
+    //    left intact.
+    let (outcome, effective_default_branch): (RefreshOutcome, Option<String>) = match repo_fetch {
+        RepoFetch::NetworkLost => {
+            return Ok(RefreshReport {
+                outcome: RefreshOutcome::NetworkLost,
+                rate_limit: None,
+                release_stale: false,
+                pr_stale: false,
+                requests_made,
+            });
+        }
+        RepoFetch::NotFound => {
+            return Ok(RefreshReport {
+                outcome: RefreshOutcome::NotFound,
+                rate_limit: None,
+                release_stale: false,
+                pr_stale: false,
+                requests_made,
+            });
+        }
+        RepoFetch::RateLimited { rate_limit } => {
+            return Ok(RefreshReport {
+                outcome: RefreshOutcome::RateLimited,
+                // Carry the budget (incl. reset_at) so the edge can raise an honest
+                // AppError::RateLimited { reset_at } and the pass can time its resume.
+                rate_limit: Some(rate_limit),
+                release_stale: false,
+                pr_stale: false,
+                requests_made,
+            });
+        }
+        // 6a. A 200 repo fetch rewrites the repo-RESOURCE columns (description /
+        //     topics / archived / sha / etag / last_fetched_at) in ONE transaction so
+        //     the freshness markers cannot advance without the resource write being
+        //     durable. The release/PR columns are written SEPARATELY (below), each
+        //     with its own ETag, so a failed sub-fetch never erases them (BL-NI-15a).
+        RepoFetch::Modified {
             metadata,
             etag: new_etag,
             observed_sha,
             rate_limit,
-            release,
         } => {
-            // All metadata writes for a 200 run in ONE transaction so the freshness
-            // markers (last_fetched_at, etag) cannot advance unless the release write is
-            // also durable (BL-NI-15a atomicity). Otherwise a release-write failure could
-            // leave the repo marked freshly-fetched with a stale release, which the 24h
-            // window would then hide.
+            let effective_db = metadata
+                .default_branch
+                .clone()
+                .or_else(|| cached_default_branch.clone());
             let mut tx = pool.begin().await?;
-            // default_branch lives on repos; the rest on repo_remote_meta.
             sqlx::query(
                 "UPDATE repos SET default_branch = COALESCE(?, default_branch) WHERE id = ?",
             )
@@ -514,9 +772,6 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             .bind(repo_id)
             .execute(&mut *tx)
             .await?;
-            // The repo-RESOURCE columns are always authoritative on a 200. The release
-            // columns are written separately (next) so a failed latest-release sub-fetch
-            // never erases the cached release (BL-NI-15a).
             sqlx::query(
                 "INSERT INTO repo_remote_meta \
                  (repo_id, description, topics_json, is_archived, last_remote_sha, \
@@ -536,43 +791,14 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             .bind(&new_etag)
             .execute(&mut *tx)
             .await?;
-            // Release columns, by the conclusive state of the sub-fetch (BL-NI-15a):
-            // Found writes the release, NoRelease clears a deleted one, Unknown preserves
-            // the cached fields and is surfaced as release_stale.
-            let release_stale = match &release {
-                ReleaseState::Found(rel) => {
-                    sqlx::query(
-                        "UPDATE repo_remote_meta SET latest_release_tag = ?, \
-                         latest_release_at = ?, latest_release_url = ? WHERE repo_id = ?",
-                    )
-                    .bind(&rel.tag)
-                    .bind(rel.published_at)
-                    .bind(&rel.url)
-                    .bind(repo_id)
-                    .execute(&mut *tx)
-                    .await?;
-                    false
-                }
-                ReleaseState::NoRelease => {
-                    sqlx::query(
-                        "UPDATE repo_remote_meta SET latest_release_tag = NULL, \
-                         latest_release_at = NULL, latest_release_url = NULL WHERE repo_id = ?",
-                    )
-                    .bind(repo_id)
-                    .execute(&mut *tx)
-                    .await?;
-                    false
-                }
-                ReleaseState::Unknown => true,
-            };
             tx.commit().await?;
-            Ok(RefreshReport {
-                outcome: RefreshOutcome::Updated,
-                rate_limit: Some(rate_limit),
-                release_stale,
-            })
+            budgets.push(rate_limit);
+            (RefreshOutcome::Updated, effective_db)
         }
-        FetchOutcome::NotModified { rate_limit } => {
+        // 6b. A 304 bumps only last_fetched_at (cached repo metadata intact, AC6). The
+        //     release/PR sub-fetches STILL run (BL-NI-15b decoupling), so a repo-304
+        //     never suppresses a new release or pull request.
+        RepoFetch::NotModified { rate_limit } => {
             sqlx::query(
                 "INSERT INTO repo_remote_meta (repo_id, last_fetched_at) VALUES (?, ?) \
                  ON CONFLICT(repo_id) DO UPDATE SET last_fetched_at = excluded.last_fetched_at",
@@ -581,31 +807,188 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             .bind(now)
             .execute(pool)
             .await?;
-            Ok(RefreshReport {
-                outcome: RefreshOutcome::NotModified,
-                rate_limit: Some(rate_limit),
-                release_stale: false,
-            })
+            budgets.push(rate_limit);
+            (RefreshOutcome::NotModified, cached_default_branch.clone())
         }
-        FetchOutcome::NetworkLost => Ok(RefreshReport {
-            outcome: RefreshOutcome::NetworkLost,
-            rate_limit: None,
-            release_stale: false,
-        }),
-        FetchOutcome::NotFound => Ok(RefreshReport {
-            outcome: RefreshOutcome::NotFound,
-            rate_limit: None,
-            release_stale: false,
-        }),
-        FetchOutcome::RateLimited { rate_limit } => Ok(RefreshReport {
-            outcome: RefreshOutcome::RateLimited,
-            // Carry the budget (incl. reset_at) so the edge can raise an honest
-            // AppError::RateLimited { reset_at } and the future refresh-pass
-            // orchestrator can time its resume.
-            rate_limit: Some(rate_limit),
-            release_stale: false,
-        }),
+    };
+
+    // 7. Latest-release sub-resource, with its OWN ETag (BL-NI-15b). Decoupled from
+    //    the repo-resource ETag, so it re-checks every window regardless of a repo-304.
+    let release_fetch = transport
+        .fetch_release(&coords, release_etag.as_deref(), token.as_deref())
+        .await;
+    requests_made += 1;
+    let release_stale = match release_fetch {
+        ReleaseFetch::Modified {
+            release,
+            etag,
+            rate_limit,
+        } => {
+            budgets.push(rate_limit);
+            sqlx::query(
+                "UPDATE repo_remote_meta SET latest_release_tag = ?, latest_release_at = ?, \
+                 latest_release_url = ?, release_etag = ?, release_last_checked_at = ? \
+                 WHERE repo_id = ?",
+            )
+            .bind(&release.tag)
+            .bind(release.published_at)
+            .bind(&release.url)
+            .bind(&etag)
+            .bind(now)
+            .bind(repo_id)
+            .execute(pool)
+            .await?;
+            false
+        }
+        ReleaseFetch::NotModified { rate_limit } => {
+            budgets.push(rate_limit);
+            sqlx::query(
+                "UPDATE repo_remote_meta SET release_last_checked_at = ? WHERE repo_id = ?",
+            )
+            .bind(now)
+            .bind(repo_id)
+            .execute(pool)
+            .await?;
+            false
+        }
+        ReleaseFetch::NoRelease { rate_limit } => {
+            budgets.push(rate_limit);
+            sqlx::query(
+                "UPDATE repo_remote_meta SET latest_release_tag = NULL, latest_release_at = NULL, \
+                 latest_release_url = NULL, release_etag = NULL, release_last_checked_at = ? \
+                 WHERE repo_id = ?",
+            )
+            .bind(now)
+            .bind(repo_id)
+            .execute(pool)
+            .await?;
+            false
+        }
+        // Unknown: preserve the cached release fields (BL-NI-15a); do NOT advance
+        // release_last_checked_at, so the "as of" reflects the last real confirmation.
+        ReleaseFetch::Unknown => true,
+    };
+
+    // 8. Pull-request sub-resource, with its OWN ETag. A 404/403 is Unknown
+    //    (preserve the cached counts), NEVER a destructive zero (BL-NI-15a, AC5).
+    let pr_fetch = transport
+        .fetch_pulls(
+            &coords,
+            effective_default_branch.as_deref(),
+            pr_etag.as_deref(),
+            token.as_deref(),
+        )
+        .await;
+    requests_made += 1;
+    let pr_stale = match pr_fetch {
+        PrFetch::Modified {
+            counts,
+            etag,
+            rate_limit,
+        } => {
+            budgets.push(rate_limit);
+            sqlx::query(
+                "UPDATE repo_remote_meta SET open_pr_count = ?, default_branch_pr_count = ?, \
+                 pr_etag = ?, pr_last_checked_at = ? WHERE repo_id = ?",
+            )
+            .bind(counts.open)
+            .bind(counts.default_branch)
+            .bind(&etag)
+            .bind(now)
+            .bind(repo_id)
+            .execute(pool)
+            .await?;
+            false
+        }
+        PrFetch::NotModified { rate_limit } => {
+            budgets.push(rate_limit);
+            sqlx::query("UPDATE repo_remote_meta SET pr_last_checked_at = ? WHERE repo_id = ?")
+                .bind(now)
+                .bind(repo_id)
+                .execute(pool)
+                .await?;
+            false
+        }
+        // Unknown: preserve the cached counts; do NOT advance pr_last_checked_at.
+        PrFetch::Unknown => true,
+    };
+
+    Ok(RefreshReport {
+        outcome,
+        rate_limit: worst_budget(&budgets),
+        release_stale,
+        pr_stale,
+        requests_made,
+    })
+}
+
+/// The result of one budgeted [`refresh_pass`] over the tracked GitHub repos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PassReport {
+    /// How many repos this pass actually refreshed (called [`refresh_one`] on).
+    pub attempted: usize,
+    /// Total network requests issued this pass (charged against the budgeter).
+    pub requests_made: usize,
+    /// `true` when the pass stopped because the rolling-hour budget was exhausted
+    /// (the remaining repos keep their last-known values and are picked up next pass).
+    pub budget_exhausted: bool,
+    /// `true` when a repo returned a rate-limited outcome and the pass backed off.
+    pub rate_limited: bool,
+}
+
+/// One budgeted refresh pass over the tracked GitHub repos, oldest-metadata-first
+/// (round-robin), driven by the scheduler tick (E-17 AC16). Refreshes repos whose
+/// repo-resource window has expired, spending at most [`MAX_REQUESTS_PER_REPO`] per
+/// repo and never starting a repo it cannot fully fund, so aggregate usage stays
+/// under [`MAX_REQUESTS_PER_HOUR`] in any rolling hour. On budget exhaustion or a
+/// rate-limited outcome the pass stops; the remaining repos keep their last-known
+/// values (the UI renders them with an "as of" timestamp, never an error).
+pub async fn refresh_pass<T: Transport, P: TokenProvider>(
+    pool: &SqlitePool,
+    transport: &T,
+    tokens: &P,
+    budgeter: &mut RateBudgeter,
+    now: i64,
+) -> Result<PassReport, AppError> {
+    // Oldest-metadata-first: a never-fetched repo (COALESCE 0) sorts first, then the
+    // least-recently refreshed, so a cold 100-repo backfill spreads across passes.
+    let rows = sqlx::query(
+        "SELECT r.id AS id, COALESCE(m.last_fetched_at, 0) AS lf \
+         FROM repos r LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
+         WHERE r.host_type = 'github' \
+         ORDER BY lf ASC, r.id ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut report = PassReport::default();
+    for row in &rows {
+        let id: i64 = row.try_get("id")?;
+        let lf: i64 = row.try_get("lf")?;
+        let last_fetched = if lf == 0 { None } else { Some(lf) };
+        // Skip repos still inside the refresh window (no network needed).
+        if is_within_refresh_window(last_fetched, now) {
+            continue;
+        }
+        // Never START a repo we cannot fully fund, so the rolling-hour cap is never
+        // exceeded. Stopping here leaves the repo for the next pass (its last-known
+        // values stay put with their staleness timestamp - never an error).
+        if !budgeter.can_spend(now, MAX_REQUESTS_PER_REPO) {
+            report.budget_exhausted = true;
+            break;
+        }
+        let rep = refresh_one(pool, transport, tokens, id, now).await?;
+        report.attempted += 1;
+        let made = rep.requests_made as usize;
+        budgeter.record(now, made);
+        report.requests_made += made;
+        if matches!(rep.outcome, RefreshOutcome::RateLimited) {
+            // Back off for the rest of this pass; the reset time is in rep.rate_limit.
+            report.rate_limited = true;
+            break;
+        }
     }
+    Ok(report)
 }
 
 // =============================================================================
@@ -614,9 +997,9 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
 // =============================================================================
 
 /// The production [`Transport`]: GitHub REST over reqwest configured with RUSTLS
-/// (no OpenSSL/native-tls). Does the conditional repo GET (sending `If-None-Match`
-/// and the optional token), then the latest-release GET on a 200, mapping the
-/// result via [`map_metadata`] and reading the ETag + rate-limit headers.
+/// (no OpenSSL/native-tls). Does the conditional repo GET, the release GET, and the
+/// pulls GET (each sending its own `If-None-Match` and the optional token under the
+/// SAME auth context), reading the ETag + rate-limit headers each time.
 pub struct ReqwestTransport {
     client: reqwest::Client,
 }
@@ -651,21 +1034,28 @@ impl ReqwestTransport {
             reset_at: read("x-ratelimit-reset", 0),
         }
     }
+
+    fn etag_of(headers: &reqwest::header::HeaderMap) -> Option<String> {
+        headers
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+    }
 }
 
 impl Transport for ReqwestTransport {
-    async fn fetch(
+    async fn fetch_repo(
         &self,
         coords: &RepoCoords,
-        etag: Option<&str>,
+        repo_etag: Option<&str>,
         token: Option<&str>,
-    ) -> FetchOutcome {
+    ) -> RepoFetch {
         let repo_url = format!("{GITHUB_API_BASE}/repos/{}/{}", coords.owner, coords.name);
         let mut req = self
             .client
             .get(&repo_url)
             .header("Accept", "application/vnd.github+json");
-        if let Some(tag) = etag {
+        if let Some(tag) = repo_etag {
             req = req.header("If-None-Match", tag);
         }
         if let Some(tok) = token {
@@ -674,81 +1064,143 @@ impl Transport for ReqwestTransport {
 
         let resp = match req.send().await {
             Ok(r) => r,
-            Err(_) => return FetchOutcome::NetworkLost,
+            Err(_) => return RepoFetch::NetworkLost,
         };
         let rate_limit = Self::rate_limit_from(resp.headers());
         let status = resp.status();
 
         if status == reqwest::StatusCode::NOT_MODIFIED {
-            return FetchOutcome::NotModified { rate_limit };
+            return RepoFetch::NotModified { rate_limit };
         }
         if status == reqwest::StatusCode::NOT_FOUND {
-            return FetchOutcome::NotFound;
+            return RepoFetch::NotFound;
         }
         if status == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining <= 0 {
-            return FetchOutcome::RateLimited { rate_limit };
+            return RepoFetch::RateLimited { rate_limit };
         }
         if !status.is_success() {
-            return FetchOutcome::NetworkLost;
+            return RepoFetch::NetworkLost;
         }
 
-        let new_etag = resp
-            .headers()
-            .get("etag")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+        let new_etag = Self::etag_of(resp.headers());
         let repo_json: serde_json::Value = match resp.json().await {
             Ok(v) => v,
-            Err(_) => return FetchOutcome::NetworkLost,
+            Err(_) => return RepoFetch::NetworkLost,
         };
-
-        // The latest release is a separate endpoint; a 404 means "no releases".
-        let release_url = format!(
-            "{GITHUB_API_BASE}/repos/{}/{}/releases/latest",
-            coords.owner, coords.name
-        );
-        // The release sub-request MUST use the SAME auth context as the repo request
-        // (Codex review): otherwise, once the V1.1 PAT lands, a private repo could be
-        // fetched WITH the token but its release endpoint hit WITHOUT it, and that 404
-        // ("inaccessible", not "no release") would be misread as NoRelease and wrongly
-        // CLEAR the cached release. Sending the same token makes a 404 authoritative,
-        // because the repo was proven accessible under that same context.
-        let mut release_req = self
-            .client
-            .get(&release_url)
-            .header("Accept", "application/vnd.github+json");
-        if let Some(tok) = token {
-            release_req = release_req.header("Authorization", format!("Bearer {tok}"));
-        }
-        let release: ReleaseState = match release_req.send().await {
-            // 200: a release exists - parse it. A parse failure is NOT authoritative, so
-            // it is Unknown (preserve any cached release) rather than a spurious "none".
-            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
-                Ok(v) => ReleaseState::Found(map_release(&v)),
-                Err(_) => ReleaseState::Unknown,
-            },
-            // 404 under the same verified auth context: GitHub confirmed the repo has no
-            // latest release - authoritative None.
-            Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => ReleaseState::NoRelease,
-            // Any other status (incl. a rate-limited 403) or a transport error: do not
-            // trust it - preserve the cached release fields (BL-NI-15a). Sending the
-            // release endpoint its own conditional/rate-limit handling is the deferred
-            // wiring work (BL-NI-15b).
-            _ => ReleaseState::Unknown,
-        };
-
         let metadata = map_metadata(&repo_json);
         // The observed SHA (last_remote_sha) is the default branch HEAD; a precise
         // value needs a separate commits call. V1 leaves it None when not cheaply
         // available; a commits-based fill is a documented refinement (backlog).
-        let observed_sha: Option<String> = None;
-
-        FetchOutcome::Modified {
+        RepoFetch::Modified {
             metadata,
             etag: new_etag,
-            observed_sha,
+            observed_sha: None,
             rate_limit,
-            release,
+        }
+    }
+
+    async fn fetch_release(
+        &self,
+        coords: &RepoCoords,
+        release_etag: Option<&str>,
+        token: Option<&str>,
+    ) -> ReleaseFetch {
+        let url = format!(
+            "{GITHUB_API_BASE}/repos/{}/{}/releases/latest",
+            coords.owner, coords.name
+        );
+        // The release request MUST use the SAME auth context as the repo request
+        // (Codex E-10 review): once the V1.1 PAT lands, a private repo fetched WITH the
+        // token whose release endpoint is hit WITHOUT it would misread an inaccessible
+        // 404 as NoRelease and wrongly CLEAR the cached release. Sending the same token
+        // makes a 404 authoritative.
+        let mut req = self
+            .client
+            .get(&url)
+            .header("Accept", "application/vnd.github+json");
+        if let Some(tag) = release_etag {
+            req = req.header("If-None-Match", tag);
+        }
+        if let Some(tok) = token {
+            req = req.header("Authorization", format!("Bearer {tok}"));
+        }
+
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(_) => return ReleaseFetch::Unknown,
+        };
+        let rate_limit = Self::rate_limit_from(resp.headers());
+        let status = resp.status();
+
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            return ReleaseFetch::NotModified { rate_limit };
+        }
+        // 404 under the verified auth context: GitHub confirmed no latest release.
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return ReleaseFetch::NoRelease { rate_limit };
+        }
+        // Any other non-success (incl. a rate-limited 403): do not trust it - preserve.
+        if !status.is_success() {
+            return ReleaseFetch::Unknown;
+        }
+        let new_etag = Self::etag_of(resp.headers());
+        match resp.json::<serde_json::Value>().await {
+            Ok(v) => ReleaseFetch::Modified {
+                release: map_release(&v),
+                etag: new_etag,
+                rate_limit,
+            },
+            // A parse failure is NOT authoritative: Unknown (preserve), not a spurious none.
+            Err(_) => ReleaseFetch::Unknown,
+        }
+    }
+
+    async fn fetch_pulls(
+        &self,
+        coords: &RepoCoords,
+        default_branch: Option<&str>,
+        pr_etag: Option<&str>,
+        token: Option<&str>,
+    ) -> PrFetch {
+        let url = format!(
+            "{GITHUB_API_BASE}/repos/{}/{}/pulls?state=open&per_page={PULLS_PER_PAGE}",
+            coords.owner, coords.name
+        );
+        let mut req = self
+            .client
+            .get(&url)
+            .header("Accept", "application/vnd.github+json");
+        if let Some(tag) = pr_etag {
+            req = req.header("If-None-Match", tag);
+        }
+        if let Some(tok) = token {
+            req = req.header("Authorization", format!("Bearer {tok}"));
+        }
+
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(_) => return PrFetch::Unknown,
+        };
+        let rate_limit = Self::rate_limit_from(resp.headers());
+        let status = resp.status();
+
+        if status == reqwest::StatusCode::NOT_MODIFIED {
+            return PrFetch::NotModified { rate_limit };
+        }
+        // A 404/403/any-other under the unauthenticated context is AMBIGUOUS
+        // (private / inaccessible): Unknown (preserve the cached counts), NEVER a
+        // destructive zero (BL-NI-15a, E-17 AC5).
+        if !status.is_success() {
+            return PrFetch::Unknown;
+        }
+        let new_etag = Self::etag_of(resp.headers());
+        match resp.json::<serde_json::Value>().await {
+            Ok(v) => PrFetch::Modified {
+                counts: map_pull_counts(&v, default_branch),
+                etag: new_etag,
+                rate_limit,
+            },
+            Err(_) => PrFetch::Unknown,
         }
     }
 }
@@ -757,6 +1209,7 @@ impl Transport for ReqwestTransport {
 mod tests {
     use super::*;
     use crate::db;
+    use std::cell::{Cell, RefCell};
     use tempfile::TempDir;
 
     // --- parse_github_coords (AC1) ------------------------------------------
@@ -831,9 +1284,6 @@ mod tests {
 
     #[test]
     fn parse_coords_rejects_look_alike_hosts() {
-        // Codex E-10 review: the host must be EXACTLY github.com, never a substring
-        // of a look-alike host nor a path segment of some other host - otherwise a
-        // non-GitHub remote gets enriched with unrelated GitHub metadata.
         for url in [
             "git@notgithub.com:owner/name.git",
             "https://example.com/github.com/owner/name",
@@ -863,7 +1313,6 @@ mod tests {
 
     #[test]
     fn parse_coords_rejects_invalid_segments() {
-        // A query/fragment or a path-traversal segment must not resolve.
         assert_eq!(
             parse_github_coords("https://github.com/owner/name?x=1", "github"),
             None,
@@ -885,7 +1334,6 @@ mod tests {
 
     #[test]
     fn iso8601_known_timestamp() {
-        // 2024-01-15T10:30:00Z = 1705314600 (verified against a unix epoch table).
         assert_eq!(iso8601_to_unix("2024-01-15T10:30:00Z"), Some(1_705_314_600));
     }
 
@@ -898,7 +1346,6 @@ mod tests {
 
     #[test]
     fn iso8601_rejects_invalid_calendar_dates() {
-        // Codex E-10 review: impossible dates must be rejected, not normalized.
         assert_eq!(
             iso8601_to_unix("2023-02-29T00:00:00Z"),
             None,
@@ -920,14 +1367,11 @@ mod tests {
 
     #[test]
     fn iso8601_accepts_valid_leap_day() {
-        // Feb 29 2024 (a leap year) is valid: 2024-02-29T00:00:00Z = 1709164800.
         assert_eq!(iso8601_to_unix("2024-02-29T00:00:00Z"), Some(1_709_164_800));
     }
 
     #[test]
     fn iso8601_requires_utc_z_and_rejects_offsets_and_junk() {
-        // Codex E-10 review: a numeric offset must NOT be silently read as UTC, and
-        // trailing junk / a missing timezone must be rejected.
         assert_eq!(
             iso8601_to_unix("2024-01-15T10:30:00+02:00"),
             None,
@@ -943,7 +1387,6 @@ mod tests {
             None,
             "a missing timezone is rejected"
         );
-        // A fractional-seconds UTC form is accepted (the fraction is truncated).
         assert_eq!(
             iso8601_to_unix("2024-01-15T10:30:00.000Z"),
             Some(1_705_314_600),
@@ -965,7 +1408,6 @@ mod tests {
         assert_eq!(m.description.as_deref(), Some("a repo"));
         assert_eq!(m.default_branch.as_deref(), Some("main"));
         assert!(m.is_archived);
-        // topics serialize to a JSON-array string.
         let topics: Vec<String> = serde_json::from_str(m.topics_json.as_deref().unwrap()).unwrap();
         assert_eq!(topics, vec!["rust", "cli"]);
     }
@@ -992,6 +1434,40 @@ mod tests {
         assert_eq!(r.tag, None);
         assert_eq!(r.published_at, None);
         assert_eq!(r.url, None);
+    }
+
+    // --- map_pull_counts (E-17 AC3) -----------------------------------------
+
+    #[test]
+    fn map_pull_counts_counts_open_and_default_branch_subset() {
+        // Three open PRs: two target main (the default branch), one targets a feature
+        // branch. open = 3, default_branch = 2.
+        let pulls = serde_json::json!([
+            { "number": 1, "base": { "ref": "main" } },
+            { "number": 2, "base": { "ref": "feature-x" } },
+            { "number": 3, "base": { "ref": "main" } }
+        ]);
+        let counts = map_pull_counts(&pulls, Some("main"));
+        assert_eq!(counts.open, 3, "three open pull requests");
+        assert_eq!(counts.default_branch, 2, "two target the default branch");
+    }
+
+    #[test]
+    fn map_pull_counts_empty_array_is_genuine_zero() {
+        // A 200 with an empty array is a legitimate "zero open PRs" (the transport only
+        // maps a 200; a 404/403 is Unknown upstream, never reaching the mapper).
+        let counts = map_pull_counts(&serde_json::json!([]), Some("main"));
+        assert_eq!(counts, PrCounts::default());
+    }
+
+    #[test]
+    fn map_pull_counts_unknown_default_branch_yields_zero_subset() {
+        // Without a known default branch, the subset count is 0 but the open total
+        // still maps.
+        let pulls = serde_json::json!([{ "number": 1, "base": { "ref": "main" } }]);
+        let counts = map_pull_counts(&pulls, None);
+        assert_eq!(counts.open, 1);
+        assert_eq!(counts.default_branch, 0);
     }
 
     // --- is_within_refresh_window (AC3) -------------------------------------
@@ -1021,7 +1497,6 @@ mod tests {
 
     #[test]
     fn backoff_at_or_below_ten_percent() {
-        // limit 60 (unauthenticated): 10% = 6.
         assert!(
             !should_backoff(&RateLimit {
                 remaining: 7,
@@ -1058,8 +1533,6 @@ mod tests {
 
     #[test]
     fn rate_limit_from_parses_remaining_limit_and_reset() {
-        // The transport parses X-RateLimit-Reset into reset_at (alongside
-        // remaining/limit) so a rate-limited outcome carries an honest reset time.
         let mut h = reqwest::header::HeaderMap::new();
         h.insert("x-ratelimit-remaining", "0".parse().unwrap());
         h.insert("x-ratelimit-limit", "60".parse().unwrap());
@@ -1073,15 +1546,620 @@ mod tests {
         );
     }
 
+    // --- RateBudgeter (E-17 AC16) -------------------------------------------
+
+    #[test]
+    fn budgeter_caps_requests_in_the_rolling_window() {
+        let mut b = RateBudgeter::with_limits(30, 3600);
+        assert_eq!(b.remaining(1000), 30, "fresh budget is the full cap");
+        b.record(1000, 30);
+        assert_eq!(b.remaining(1000), 0, "30 recorded -> none left");
+        assert!(!b.can_spend(1000, 1), "cannot spend past the cap");
+        // Advance past the window: the events age out and the budget refills.
+        assert_eq!(b.remaining(1000 + 3600), 30, "the window rolled over");
+    }
+
+    #[test]
+    fn budgeter_prunes_only_events_older_than_the_window() {
+        let mut b = RateBudgeter::with_limits(30, 3600);
+        b.record(0, 10); // 10 at t=0
+        b.record(1800, 10); // 10 at t=1800
+                            // At t=3600 the t=0 events age out (0 <= 3600-3600), the t=1800 stay.
+        assert_eq!(
+            b.remaining(3600),
+            20,
+            "only the oldest window of events is pruned"
+        );
+    }
+
+    // --- TokenProvider seam (AC5) -------------------------------------------
+
+    #[test]
+    fn v1_token_provider_is_always_none() {
+        assert_eq!(NoToken.token(), None, "V1 runs the unauthenticated path");
+    }
+
+    #[test]
+    fn token_provider_seam_is_real() {
+        struct StubToken;
+        impl TokenProvider for StubToken {
+            fn token(&self) -> Option<String> {
+                Some("ghp_stub".into())
+            }
+        }
+        assert_eq!(StubToken.token().as_deref(), Some("ghp_stub"));
+    }
+
+    // --- refresh_one orchestration against a fake transport -------
+
+    /// A fully configurable fake transport: each of the three seam methods returns a
+    /// cloned canned outcome and records its call count + the ETag it was sent, so a
+    /// test can prove the stored ETag is forwarded and each sub-resource is (or is not)
+    /// hit. Defaults: repo Modified with sample metadata, release Unknown, PR Unknown.
+    struct FakeTransport {
+        repo: RefCell<RepoFetch>,
+        release: RefCell<ReleaseFetch>,
+        pulls: RefCell<PrFetch>,
+        repo_calls: Cell<u32>,
+        release_calls: Cell<u32>,
+        pulls_calls: Cell<u32>,
+        last_repo_etag: RefCell<Option<String>>,
+        last_release_etag: RefCell<Option<String>>,
+        last_pr_etag: RefCell<Option<String>>,
+        last_pr_default_branch: RefCell<Option<String>>,
+    }
+
+    impl FakeTransport {
+        fn new(repo: RepoFetch, release: ReleaseFetch, pulls: PrFetch) -> FakeTransport {
+            FakeTransport {
+                repo: RefCell::new(repo),
+                release: RefCell::new(release),
+                pulls: RefCell::new(pulls),
+                repo_calls: Cell::new(0),
+                release_calls: Cell::new(0),
+                pulls_calls: Cell::new(0),
+                last_repo_etag: RefCell::new(None),
+                last_release_etag: RefCell::new(None),
+                last_pr_etag: RefCell::new(None),
+                last_pr_default_branch: RefCell::new(None),
+            }
+        }
+        /// A repo-only fake: the repo outcome under test, sub-resources set to
+        /// Unknown (preserve; no sub-resource assertion in that test).
+        fn repo_only(repo: RepoFetch) -> FakeTransport {
+            FakeTransport::new(repo, ReleaseFetch::Unknown, PrFetch::Unknown)
+        }
+    }
+
+    impl Transport for FakeTransport {
+        async fn fetch_repo(
+            &self,
+            _coords: &RepoCoords,
+            etag: Option<&str>,
+            _token: Option<&str>,
+        ) -> RepoFetch {
+            self.repo_calls.set(self.repo_calls.get() + 1);
+            *self.last_repo_etag.borrow_mut() = etag.map(|s| s.to_string());
+            self.repo.borrow().clone()
+        }
+        async fn fetch_release(
+            &self,
+            _coords: &RepoCoords,
+            etag: Option<&str>,
+            _token: Option<&str>,
+        ) -> ReleaseFetch {
+            self.release_calls.set(self.release_calls.get() + 1);
+            *self.last_release_etag.borrow_mut() = etag.map(|s| s.to_string());
+            self.release.borrow().clone()
+        }
+        async fn fetch_pulls(
+            &self,
+            _coords: &RepoCoords,
+            default_branch: Option<&str>,
+            etag: Option<&str>,
+            _token: Option<&str>,
+        ) -> PrFetch {
+            self.pulls_calls.set(self.pulls_calls.get() + 1);
+            *self.last_pr_etag.borrow_mut() = etag.map(|s| s.to_string());
+            *self.last_pr_default_branch.borrow_mut() = default_branch.map(|s| s.to_string());
+            self.pulls.borrow().clone()
+        }
+    }
+
+    fn healthy_budget() -> RateLimit {
+        RateLimit {
+            remaining: 59,
+            limit: 60,
+            reset_at: 0,
+        }
+    }
+
+    async fn fresh_pool(dir: &std::path::Path) -> SqlitePool {
+        let pool = db::open_pool(&dir.join("gh-test.db"))
+            .await
+            .expect("open_pool");
+        db::run_migrations(&pool).await.expect("migrations");
+        pool
+    }
+
+    async fn seed_github_repo(pool: &SqlitePool) -> i64 {
+        sqlx::query(
+            "INSERT INTO repos (local_name, local_path, remote_origin_url, host_type, default_branch, created_at) \
+             VALUES ('r', 'r', 'https://github.com/owner/name', 'github', 'main', 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap()
+        .last_insert_rowid()
+    }
+
+    fn sample_metadata() -> GhMetadata {
+        GhMetadata {
+            description: Some("desc".into()),
+            default_branch: Some("main".into()),
+            topics_json: Some("[\"a\"]".into()),
+            is_archived: false,
+        }
+    }
+
+    async fn read_meta<T>(pool: &SqlitePool, id: i64, col: &str) -> T
+    where
+        T: for<'r> sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite> + Send + Unpin,
+    {
+        let sql = format!("SELECT {col} AS v FROM repo_remote_meta WHERE repo_id = ?");
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            .try_get::<T, _>("v")
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn refresh_rate_limited_surfaces_the_budget_and_reset() {
-        // A rate-limited fetch must carry the budget (incl. reset_at) back to the
-        // caller so the edge can raise an honest AppError::RateLimited { reset_at },
-        // not just the bare outcome.
+    async fn refresh_skips_non_github_repo() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = sqlx::query(
+            "INSERT INTO repos (local_name, local_path, host_type, created_at) \
+             VALUES ('r', 'r', 'unknown', 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .last_insert_rowid();
+        let t = FakeTransport::repo_only(RepoFetch::NotFound);
+        let out = refresh_one(&pool, &t, &NoToken, id, 1000).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Skipped);
+        assert_eq!(out.requests_made, 0);
+        assert_eq!(
+            t.repo_calls.get(),
+            0,
+            "a non-github repo never hits the transport"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_200_writes_all_metadata_release_and_pr_columns() {
+        // A 200 repo fetch plus a Found release plus 200 PR counts writes every column,
+        // including the E-17 pull-request columns and each resource's own ETag.
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
-        let t = FakeTransport::new(FetchOutcome::RateLimited {
+        let t = FakeTransport::new(
+            RepoFetch::Modified {
+                metadata: sample_metadata(),
+                etag: Some("\"repo\"".into()),
+                observed_sha: Some("deadbeef".into()),
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::Modified {
+                release: GhRelease {
+                    tag: Some("v1".into()),
+                    published_at: Some(1000),
+                    url: Some("https://github.com/owner/name/releases/tag/v1".into()),
+                },
+                etag: Some("\"rel\"".into()),
+                rate_limit: healthy_budget(),
+            },
+            PrFetch::Modified {
+                counts: PrCounts {
+                    open: 4,
+                    default_branch: 2,
+                },
+                etag: Some("\"pr\"".into()),
+                rate_limit: healthy_budget(),
+            },
+        );
+        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
+        assert!(!out.release_stale && !out.pr_stale);
+        assert_eq!(out.requests_made, 3, "repo + release + pulls");
+
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "description")
+                .await
+                .as_deref(),
+            Some("desc")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "latest_release_tag")
+                .await
+                .as_deref(),
+            Some("v1")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "etag")
+                .await
+                .as_deref(),
+            Some("\"repo\"")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "release_etag")
+                .await
+                .as_deref(),
+            Some("\"rel\"")
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
+            Some(4)
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "default_branch_pr_count").await,
+            Some(2)
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "pr_etag")
+                .await
+                .as_deref(),
+            Some("\"pr\"")
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "pr_last_checked_at").await,
+            Some(5000)
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "release_last_checked_at").await,
+            Some(5000)
+        );
+        assert_eq!(
+            t.last_pr_default_branch.borrow().as_deref(),
+            Some("main"),
+            "the pulls fetch is told the default branch for the subset count"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_inside_window_serves_cache_without_network() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta (repo_id, last_fetched_at, etag) VALUES (?, ?, '\"e\"')",
+        )
+        .bind(id)
+        .bind(9900_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
+        let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Cached);
+        assert_eq!(out.requests_made, 0);
+        assert_eq!(t.repo_calls.get(), 0, "inside the window, no network call");
+        assert_eq!(t.release_calls.get(), 0);
+        assert_eq!(t.pulls_calls.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn refresh_sends_each_stored_etag_and_304_bumps_only_last_fetched_at() {
+        // The repo, release, and PR ETags are each forwarded as If-None-Match, and a
+        // repo 304 leaves the cached metadata intact while still hitting the sub-resources.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, description, last_fetched_at, etag, release_etag, pr_etag) \
+             VALUES (?, 'cached desc', ?, '\"repo-e\"', '\"rel-e\"', '\"pr-e\"')",
+        )
+        .bind(id)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::NotModified {
+                rate_limit: RateLimit {
+                    remaining: 50,
+                    limit: 60,
+                    reset_at: 0,
+                },
+            },
+            ReleaseFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+            PrFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+        );
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::NotModified);
+        assert_eq!(t.last_repo_etag.borrow().as_deref(), Some("\"repo-e\""));
+        assert_eq!(t.last_release_etag.borrow().as_deref(), Some("\"rel-e\""));
+        assert_eq!(t.last_pr_etag.borrow().as_deref(), Some("\"pr-e\""));
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "description")
+                .await
+                .as_deref(),
+            Some("cached desc"),
+            "a 304 leaves the cached metadata intact"
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "last_fetched_at").await,
+            Some(now),
+            "a 304 bumps only last_fetched_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_repo_304_still_refreshes_pull_requests() {
+        // BL-NI-15b: a repo-resource 304 must NOT suppress a NEW pull-request refresh -
+        // the PR fetch has its own ETag and runs regardless of the repo result.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta (repo_id, open_pr_count, last_fetched_at, etag) \
+             VALUES (?, 1, ?, '\"repo-e\"')",
+        )
+        .bind(id)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::Unknown,
+            PrFetch::Modified {
+                counts: PrCounts {
+                    open: 5,
+                    default_branch: 3,
+                },
+                etag: Some("\"pr-new\"".into()),
+                rate_limit: healthy_budget(),
+            },
+        );
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::NotModified);
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
+            Some(5),
+            "a repo-304 does NOT suppress a new PR count (BL-NI-15b decoupling)"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_pr_404_or_403_preserves_cached_counts() {
+        // E-17 AC5 / BL-NI-15a: an ambiguous 404/403 on the pulls endpoint is Unknown -
+        // it PRESERVES the cached counts, never a destructive zero.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, open_pr_count, default_branch_pr_count, pr_etag, last_fetched_at) \
+             VALUES (?, 7, 3, '\"pr-e\"', 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::Modified {
+                metadata: sample_metadata(),
+                etag: Some("\"repo\"".into()),
+                observed_sha: None,
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::Unknown,
+            // Unknown models the 404/403 the transport maps for the pulls endpoint.
+            PrFetch::Unknown,
+        );
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert!(out.pr_stale, "an Unknown PR fetch is surfaced as stale");
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
+            Some(7),
+            "a private/inaccessible repo must NOT read as 0 PRs - the cached count is preserved"
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "default_branch_pr_count").await,
+            Some(3),
+            "the default-branch subset count is preserved too"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_pr_304_bumps_pr_last_checked_only() {
+        // A PR-endpoint 304 bumps only pr_last_checked_at and leaves the counts intact.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, open_pr_count, default_branch_pr_count, pr_etag, pr_last_checked_at, last_fetched_at) \
+             VALUES (?, 2, 1, '\"pr-e\"', 100, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::Unknown,
+            PrFetch::NotModified {
+                rate_limit: healthy_budget(),
+            },
+        );
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
+            Some(2),
+            "a PR 304 leaves the counts intact"
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "pr_last_checked_at").await,
+            Some(now),
+            "a PR 304 bumps only pr_last_checked_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_network_error_does_not_corrupt_cache_or_hit_subresources() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta (repo_id, description, open_pr_count, last_fetched_at) \
+             VALUES (?, 'keep', 9, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::NetworkLost);
+        assert_eq!(
+            t.release_calls.get(),
+            0,
+            "no sub-fetch after a repo failure"
+        );
+        assert_eq!(t.pulls_calls.get(), 0);
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "description")
+                .await
+                .as_deref(),
+            Some("keep"),
+            "a network error leaves the cached row intact"
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "open_pr_count").await,
+            Some(9),
+            "a network error leaves the cached PR count intact"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_200_release_unknown_preserves_cached_release() {
+        // BL-NI-15a: a 200 repo fetch whose release sub-fetch failed (Unknown) must NOT
+        // erase the previously-cached release; it preserves the release fields.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, description, latest_release_tag, latest_release_at, latest_release_url, last_fetched_at) \
+             VALUES (?, 'old desc', 'v0', 500, 'https://github.com/owner/name/releases/tag/v0', 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::Modified {
+                metadata: GhMetadata {
+                    description: Some("fresh desc".into()),
+                    default_branch: Some("main".into()),
+                    topics_json: Some("[]".into()),
+                    is_archived: false,
+                },
+                etag: Some("\"new\"".into()),
+                observed_sha: None,
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::Unknown,
+            PrFetch::Unknown,
+        );
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
+        assert!(out.release_stale, "an Unknown release sub-fetch is stale");
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "latest_release_tag")
+                .await
+                .as_deref(),
+            Some("v0"),
+            "an Unknown release sub-fetch preserves the cached release tag"
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "latest_release_at").await,
+            Some(500),
+            "an Unknown release sub-fetch preserves the cached release timestamp"
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "description")
+                .await
+                .as_deref(),
+            Some("fresh desc"),
+            "the repo-resource columns still refresh on a 200"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_200_release_no_release_clears_cached_release() {
+        // BL-NI-15a: a CONFIRMED no-release (404 -> NoRelease) legitimately clears a
+        // stale cached release. NoRelease is authoritative; only Unknown preserves.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, latest_release_tag, latest_release_at, last_fetched_at) \
+             VALUES (?, 'v0', 500, 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::new(
+            RepoFetch::Modified {
+                metadata: sample_metadata(),
+                etag: None,
+                observed_sha: None,
+                rate_limit: healthy_budget(),
+            },
+            ReleaseFetch::NoRelease {
+                rate_limit: healthy_budget(),
+            },
+            PrFetch::Unknown,
+        );
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
+        assert!(!out.release_stale, "a confirmed NoRelease is not stale");
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "latest_release_tag").await,
+            None,
+            "a confirmed no-release clears the stale cached release"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_rate_limited_surfaces_the_budget_and_reset() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        let t = FakeTransport::repo_only(RepoFetch::RateLimited {
             rate_limit: RateLimit {
                 remaining: 0,
                 limit: 60,
@@ -1099,427 +2177,37 @@ mod tests {
             }),
             "the rate-limited outcome carries the budget + reset back to the caller"
         );
-    }
-
-    // --- TokenProvider seam (AC5) -------------------------------------------
-
-    #[test]
-    fn v1_token_provider_is_always_none() {
-        assert_eq!(NoToken.token(), None, "V1 runs the unauthenticated path");
-    }
-
-    #[test]
-    fn token_provider_seam_is_real() {
-        // A stub provider returning a token proves the seam is real (the keyring
-        // PAT is a second impl in V1.1, not a client rewrite).
-        struct StubToken;
-        impl TokenProvider for StubToken {
-            fn token(&self) -> Option<String> {
-                Some("ghp_stub".into())
-            }
-        }
-        assert_eq!(StubToken.token().as_deref(), Some("ghp_stub"));
-    }
-
-    // --- refresh_one orchestration (AC3, AC6) against a fake transport -------
-
-    struct FakeTransport {
-        outcome: std::cell::RefCell<Option<FetchOutcome>>,
-        calls: std::cell::RefCell<u32>,
-        last_etag: std::cell::RefCell<Option<String>>,
-    }
-    impl FakeTransport {
-        fn new(outcome: FetchOutcome) -> FakeTransport {
-            FakeTransport {
-                outcome: std::cell::RefCell::new(Some(outcome)),
-                calls: std::cell::RefCell::new(0),
-                last_etag: std::cell::RefCell::new(None),
-            }
-        }
-    }
-    impl Transport for FakeTransport {
-        async fn fetch(
-            &self,
-            _coords: &RepoCoords,
-            etag: Option<&str>,
-            _token: Option<&str>,
-        ) -> FetchOutcome {
-            *self.calls.borrow_mut() += 1;
-            *self.last_etag.borrow_mut() = etag.map(|s| s.to_string());
-            self.outcome.borrow().clone().expect("outcome set")
-        }
-    }
-
-    async fn fresh_pool(dir: &std::path::Path) -> SqlitePool {
-        let pool = db::open_pool(&dir.join("gh-test.db"))
-            .await
-            .expect("open_pool");
-        db::run_migrations(&pool).await.expect("migrations");
-        pool
-    }
-
-    async fn seed_github_repo(pool: &SqlitePool) -> i64 {
-        sqlx::query(
-            "INSERT INTO repos (local_name, local_path, remote_origin_url, host_type, created_at) \
-             VALUES ('r', 'r', 'https://github.com/owner/name', 'github', 0)",
-        )
-        .execute(pool)
-        .await
-        .unwrap()
-        .last_insert_rowid()
-    }
-
-    fn sample_metadata() -> GhMetadata {
-        GhMetadata {
-            description: Some("desc".into()),
-            default_branch: Some("main".into()),
-            topics_json: Some("[\"a\"]".into()),
-            is_archived: false,
-        }
-    }
-
-    #[tokio::test]
-    async fn refresh_skips_non_github_repo() {
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = sqlx::query(
-            "INSERT INTO repos (local_name, local_path, host_type, created_at) \
-             VALUES ('r', 'r', 'unknown', 0)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap()
-        .last_insert_rowid();
-        let t = FakeTransport::new(FetchOutcome::NotFound);
-        let out = refresh_one(&pool, &t, &NoToken, id, 1000).await.unwrap();
-        assert_eq!(out.outcome, RefreshOutcome::Skipped);
-        assert_eq!(
-            *t.calls.borrow(),
-            0,
-            "a non-github repo never hits the transport"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_200_writes_all_metadata_columns() {
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = seed_github_repo(&pool).await;
-        let t = FakeTransport::new(FetchOutcome::Modified {
-            metadata: sample_metadata(),
-            etag: Some("\"abc\"".into()),
-            observed_sha: Some("deadbeef".into()),
-            rate_limit: RateLimit {
-                remaining: 59,
-                limit: 60,
-                reset_at: 0,
-            },
-            release: ReleaseState::Found(GhRelease {
-                tag: Some("v1".into()),
-                published_at: Some(1000),
-                url: Some("https://github.com/owner/name/releases/tag/v1".into()),
-            }),
-        });
-        let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
-        assert_eq!(out.outcome, RefreshOutcome::Updated);
-        assert!(!out.release_stale, "a Found release is not stale");
-
-        let row = sqlx::query(
-            "SELECT m.description, m.topics_json, m.latest_release_tag, m.latest_release_at, \
-                    m.latest_release_url, m.is_archived, m.last_remote_sha, m.last_fetched_at, \
-                    m.etag, r.default_branch \
-             FROM repo_remote_meta m JOIN repos r ON r.id = m.repo_id WHERE m.repo_id = ?",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            row.try_get::<Option<String>, _>("description")
-                .unwrap()
-                .as_deref(),
-            Some("desc")
-        );
-        assert_eq!(
-            row.try_get::<Option<String>, _>("default_branch")
-                .unwrap()
-                .as_deref(),
-            Some("main")
-        );
-        assert_eq!(
-            row.try_get::<Option<String>, _>("latest_release_tag")
-                .unwrap()
-                .as_deref(),
-            Some("v1")
-        );
-        assert_eq!(
-            row.try_get::<Option<i64>, _>("latest_release_at").unwrap(),
-            Some(1000)
-        );
-        assert_eq!(
-            row.try_get::<Option<String>, _>("etag").unwrap().as_deref(),
-            Some("\"abc\"")
-        );
-        assert_eq!(
-            row.try_get::<Option<String>, _>("last_remote_sha")
-                .unwrap()
-                .as_deref(),
-            Some("deadbeef")
-        );
-        assert_eq!(
-            row.try_get::<Option<i64>, _>("last_fetched_at").unwrap(),
-            Some(5000)
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_inside_window_serves_cache_without_network() {
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = seed_github_repo(&pool).await;
-        // Seed a recent fetch (last_fetched_at = now-100, inside the 24h window).
-        sqlx::query(
-            "INSERT INTO repo_remote_meta (repo_id, last_fetched_at, etag) VALUES (?, ?, '\"e\"')",
-        )
-        .bind(id)
-        .bind(9900_i64)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let t = FakeTransport::new(FetchOutcome::NetworkLost);
-        let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
-        assert_eq!(out.outcome, RefreshOutcome::Cached);
-        assert_eq!(
-            *t.calls.borrow(),
-            0,
-            "inside the refresh window, no network call"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_sends_stored_etag_and_304_bumps_only_last_fetched_at() {
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = seed_github_repo(&pool).await;
-        // Seed an OLD fetch (outside the window) with a stored etag + metadata.
-        sqlx::query(
-            "INSERT INTO repo_remote_meta (repo_id, description, last_fetched_at, etag) \
-             VALUES (?, 'cached desc', ?, '\"stored-etag\"')",
-        )
-        .bind(id)
-        .bind(1_i64)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let t = FakeTransport::new(FetchOutcome::NotModified {
-            rate_limit: RateLimit {
-                remaining: 50,
-                limit: 60,
-                reset_at: 0,
-            },
-        });
-        let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
-        assert_eq!(out.outcome, RefreshOutcome::NotModified);
-        assert_eq!(
-            t.last_etag.borrow().as_deref(),
-            Some("\"stored-etag\""),
-            "the stored ETag is sent as If-None-Match"
-        );
-        let row = sqlx::query(
-            "SELECT description, last_fetched_at FROM repo_remote_meta WHERE repo_id = ?",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            row.try_get::<Option<String>, _>("description")
-                .unwrap()
-                .as_deref(),
-            Some("cached desc"),
-            "a 304 leaves the cached metadata intact"
-        );
-        assert_eq!(
-            row.try_get::<Option<i64>, _>("last_fetched_at").unwrap(),
-            Some(now),
-            "a 304 bumps only last_fetched_at"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_network_error_does_not_corrupt_cache() {
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = seed_github_repo(&pool).await;
-        sqlx::query(
-            "INSERT INTO repo_remote_meta (repo_id, description, last_fetched_at) VALUES (?, 'keep', 1)",
-        )
-        .bind(id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let t = FakeTransport::new(FetchOutcome::NetworkLost);
-        let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
-        assert_eq!(out.outcome, RefreshOutcome::NetworkLost);
-        let desc: Option<String> =
-            sqlx::query("SELECT description FROM repo_remote_meta WHERE repo_id = ?")
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .unwrap()
-                .try_get("description")
-                .unwrap();
-        assert_eq!(
-            desc.as_deref(),
-            Some("keep"),
-            "a network error leaves the cached row intact"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_200_release_unknown_preserves_cached_release() {
-        // BL-NI-15a: a 200 repo fetch whose latest-release SUB-fetch failed
-        // (ReleaseInfo::Unknown) must NOT erase the previously-cached release - it
-        // preserves the release fields while still refreshing the repo-resource columns.
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = seed_github_repo(&pool).await;
-        sqlx::query(
-            "INSERT INTO repo_remote_meta \
-             (repo_id, description, latest_release_tag, latest_release_at, latest_release_url, last_fetched_at) \
-             VALUES (?, 'old desc', 'v0', 500, 'https://github.com/owner/name/releases/tag/v0', 1)",
-        )
-        .bind(id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let t = FakeTransport::new(FetchOutcome::Modified {
-            metadata: GhMetadata {
-                description: Some("fresh desc".into()),
-                default_branch: Some("main".into()),
-                topics_json: Some("[]".into()),
-                is_archived: false,
-            },
-            etag: Some("\"new\"".into()),
-            observed_sha: None,
-            rate_limit: RateLimit {
-                remaining: 59,
-                limit: 60,
-                reset_at: 0,
-            },
-            release: ReleaseState::Unknown,
-        });
-        let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
-        assert_eq!(out.outcome, RefreshOutcome::Updated);
-        assert!(
-            out.release_stale,
-            "an Unknown release sub-fetch is surfaced as stale (BL-NI-15c)"
-        );
-        let row = sqlx::query(
-            "SELECT description, latest_release_tag, latest_release_at \
-             FROM repo_remote_meta WHERE repo_id = ?",
-        )
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            row.try_get::<Option<String>, _>("latest_release_tag")
-                .unwrap()
-                .as_deref(),
-            Some("v0"),
-            "an Unknown release sub-fetch preserves the cached release tag"
-        );
-        assert_eq!(
-            row.try_get::<Option<i64>, _>("latest_release_at").unwrap(),
-            Some(500),
-            "an Unknown release sub-fetch preserves the cached release timestamp"
-        );
-        assert_eq!(
-            row.try_get::<Option<String>, _>("description")
-                .unwrap()
-                .as_deref(),
-            Some("fresh desc"),
-            "the repo-resource columns still refresh on a 200"
-        );
-    }
-
-    #[tokio::test]
-    async fn refresh_200_release_known_none_clears_cached_release() {
-        // BL-NI-15a: a CONFIRMED no-release (404 -> ReleaseInfo::Known with None fields)
-        // legitimately clears a stale cached release (e.g. the release was deleted
-        // upstream). Known + None is authoritative; only Unknown preserves.
-        let tmp = TempDir::new().unwrap();
-        let pool = fresh_pool(tmp.path()).await;
-        let id = seed_github_repo(&pool).await;
-        sqlx::query(
-            "INSERT INTO repo_remote_meta \
-             (repo_id, latest_release_tag, latest_release_at, last_fetched_at) \
-             VALUES (?, 'v0', 500, 1)",
-        )
-        .bind(id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let t = FakeTransport::new(FetchOutcome::Modified {
-            metadata: GhMetadata {
-                description: Some("d".into()),
-                default_branch: None,
-                topics_json: None,
-                is_archived: false,
-            },
-            etag: None,
-            observed_sha: None,
-            rate_limit: RateLimit {
-                remaining: 59,
-                limit: 60,
-                reset_at: 0,
-            },
-            release: ReleaseState::NoRelease,
-        });
-        let now = 1 + REFRESH_WINDOW_SECS + 10;
-        let out = refresh_one(&pool, &t, &NoToken, id, now).await.unwrap();
-        assert!(
-            !out.release_stale,
-            "a confirmed NoRelease is authoritative, not stale"
-        );
-        let tag: Option<String> =
-            sqlx::query("SELECT latest_release_tag FROM repo_remote_meta WHERE repo_id = ?")
-                .bind(id)
-                .fetch_one(&pool)
-                .await
-                .unwrap()
-                .try_get("latest_release_tag")
-                .unwrap();
-        assert_eq!(
-            tag, None,
-            "a confirmed no-release clears the stale cached release"
-        );
+        assert_eq!(t.release_calls.get(), 0, "no sub-fetch after a rate limit");
     }
 
     #[tokio::test]
     async fn refresh_surfaces_rate_limit_budget_for_backoff() {
-        // BL-NI-15c: refresh_one surfaces the observed rate-limit budget so the deferred
-        // refresh-pass orchestrator can call should_backoff and pause. A near-exhausted
-        // budget on a 200 must reach the caller (the old code discarded it).
+        // A near-exhausted budget on any read must reach the caller so should_backoff
+        // fires. Here the PR read carries the tightest budget.
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
-        let t = FakeTransport::new(FetchOutcome::Modified {
-            metadata: sample_metadata(),
-            etag: None,
-            observed_sha: None,
-            // 3 of 60 remaining = 5%, below the 10% backoff floor.
-            rate_limit: RateLimit {
-                remaining: 3,
-                limit: 60,
-                reset_at: 0,
+        let t = FakeTransport::new(
+            RepoFetch::Modified {
+                metadata: sample_metadata(),
+                etag: None,
+                observed_sha: None,
+                rate_limit: healthy_budget(),
             },
-            release: ReleaseState::NoRelease,
-        });
+            ReleaseFetch::NoRelease {
+                rate_limit: healthy_budget(),
+            },
+            PrFetch::Modified {
+                counts: PrCounts::default(),
+                etag: None,
+                // 3 of 60 remaining = 5%, below the 10% backoff floor.
+                rate_limit: RateLimit {
+                    remaining: 3,
+                    limit: 60,
+                    reset_at: 0,
+                },
+            },
+        );
         let out = refresh_one(&pool, &t, &NoToken, id, 5000).await.unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Updated);
         let budget = out
@@ -1527,13 +2215,12 @@ mod tests {
             .expect("a 200 surfaces the observed rate-limit budget");
         assert!(
             should_backoff(&budget),
-            "a near-exhausted budget reaches the caller so the orchestrator backs off"
+            "the tightest budget reaches the caller so the orchestrator backs off"
         );
     }
 
     #[tokio::test]
     async fn refresh_from_cache_surfaces_no_budget() {
-        // A cache hit makes no network call, so there is no budget to report (None).
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
@@ -1542,9 +2229,144 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let t = FakeTransport::new(FetchOutcome::NetworkLost);
+        let t = FakeTransport::repo_only(RepoFetch::NetworkLost);
         let out = refresh_one(&pool, &t, &NoToken, id, 10000).await.unwrap();
         assert_eq!(out.outcome, RefreshOutcome::Cached);
         assert_eq!(out.rate_limit, None, "a cache hit reports no budget");
+    }
+
+    // --- refresh_pass + the budgeter (E-17 AC16) ----------------------------
+
+    /// A fake that always 200s the repo + release + pulls with a healthy budget, so a
+    /// cold backfill is bounded only by the request budgeter, never a rate limit.
+    struct AlwaysOkTransport;
+    impl Transport for AlwaysOkTransport {
+        async fn fetch_repo(
+            &self,
+            _c: &RepoCoords,
+            _e: Option<&str>,
+            _t: Option<&str>,
+        ) -> RepoFetch {
+            RepoFetch::Modified {
+                metadata: GhMetadata {
+                    default_branch: Some("main".into()),
+                    ..Default::default()
+                },
+                etag: Some("\"e\"".into()),
+                observed_sha: None,
+                rate_limit: RateLimit {
+                    remaining: 59,
+                    limit: 60,
+                    reset_at: 0,
+                },
+            }
+        }
+        async fn fetch_release(
+            &self,
+            _c: &RepoCoords,
+            _e: Option<&str>,
+            _t: Option<&str>,
+        ) -> ReleaseFetch {
+            ReleaseFetch::NoRelease {
+                rate_limit: RateLimit {
+                    remaining: 59,
+                    limit: 60,
+                    reset_at: 0,
+                },
+            }
+        }
+        async fn fetch_pulls(
+            &self,
+            _c: &RepoCoords,
+            _db: Option<&str>,
+            _e: Option<&str>,
+            _t: Option<&str>,
+        ) -> PrFetch {
+            PrFetch::Modified {
+                counts: PrCounts {
+                    open: 1,
+                    default_branch: 1,
+                },
+                etag: Some("\"pr\"".into()),
+                rate_limit: RateLimit {
+                    remaining: 59,
+                    limit: 60,
+                    reset_at: 0,
+                },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn budgeted_100_repo_backfill_never_exceeds_the_ceiling_and_reaches_full_coverage() {
+        // E-17 AC16: a 100-repo library reaches full PR-intelligence coverage without
+        // ever exceeding 60 requests in any rolling hour, with no rate-limit error, via
+        // the request budgeter + oldest-metadata-first refresh, over an injected clock.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        for i in 0..100 {
+            sqlx::query(
+                "INSERT INTO repos (local_name, local_path, remote_origin_url, host_type, created_at) \
+                 VALUES (?, ?, ?, 'github', 0)",
+            )
+            .bind(format!("repo-{i}"))
+            .bind(format!("C:/repos/repo-{i}"))
+            .bind(format!("https://github.com/owner/repo-{i}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let transport = AlwaysOkTransport;
+        let mut budgeter = RateBudgeter::new(); // 30 / hour
+                                                // Record (now, requests_made) for each productive pass so we can prove the
+                                                // rolling-hour ceiling was respected.
+        let mut history: Vec<(i64, usize)> = Vec::new();
+        let mut now: i64 = 1_000_000;
+        // Advance the clock by 30 min between passes so two consecutive passes fall in
+        // one rolling hour - the budgeter must still hold the line.
+        let step = 1800;
+        for _ in 0..40 {
+            let report = refresh_pass(&pool, &transport, &NoToken, &mut budgeter, now)
+                .await
+                .unwrap();
+            assert!(!report.rate_limited, "no rate-limit error must surface");
+            if report.requests_made > 0 {
+                history.push((now, report.requests_made));
+            }
+            now += step;
+        }
+
+        // Full coverage: every repo has a last_fetched_at (its metadata was refreshed).
+        let covered: i64 = sqlx::query(
+            "SELECT COUNT(*) AS c FROM repo_remote_meta WHERE last_fetched_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .try_get("c")
+        .unwrap();
+        assert_eq!(
+            covered, 100,
+            "the cold 100-repo backfill reached full coverage"
+        );
+
+        // Rolling-hour ceiling: for every pass start t, the requests in [t, t+3600)
+        // must never exceed 60 (in fact the 30/hour budgeter keeps it at or under 30).
+        for &(t, _) in &history {
+            let in_window: usize = history
+                .iter()
+                .filter(|(u, _)| *u >= t && *u < t + RATE_WINDOW_SECS)
+                .map(|(_, made)| *made)
+                .sum();
+            assert!(
+                in_window <= 60,
+                "no rolling hour may exceed 60 requests; window at {t} had {in_window}"
+            );
+            assert!(
+                in_window <= MAX_REQUESTS_PER_HOUR,
+                "the 30/hour budgeter must hold; window at {t} had {in_window}"
+            );
+        }
     }
 }

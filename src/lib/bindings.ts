@@ -394,6 +394,18 @@ export type RepoDetail = {
 	isArchived: boolean,
 	lastRemoteSha: string | null,
 	lastFetchedAt: number | null,
+	/**
+	 *  Open pull-request count. `None` = un-refreshed / non-GitHub / unknown (a
+	 *  404-or-403 on a private repo preserves the cache; it is NEVER a fabricated 0).
+	 */
+	openPrCount: number | null,
+	/**  Open pull requests targeting the default branch (a subset of `open_pr_count`). */
+	defaultBranchPrCount: number | null,
+	/**
+	 *  When the PR counts were last confirmed against GitHub, for the drawer's
+	 *  "as of <time>" staleness marker when offline / rate-limited (E-17 AC8).
+	 */
+	prLastCheckedAt: number | null,
 };
 
 /**  Filter for `repo_list`. All fields optional; absent means "no constraint". */
@@ -436,6 +448,16 @@ export type RepoSummary = {
 	lastCheckedAt: number | null,
 	lastErrorCode: string | null,
 	latestReleaseTag: string | null,
+	/**
+	 *  Open pull-request count (E-17). `None` = un-refreshed or non-GitHub repo (a
+	 *  clean unknown, never a fabricated zero). Rides the single `repo_list` join.
+	 */
+	openPrCount: number | null,
+	/**
+	 *  The HEAD commit's committer time (E-17), distinct from `last_checked_at`
+	 *  ("when RepoSync last looked"). `None` when the inspect never read it.
+	 */
+	lastLocalCommitAt: number | null,
 };
 
 /**  A candidate repository found while scanning a parent folder. */

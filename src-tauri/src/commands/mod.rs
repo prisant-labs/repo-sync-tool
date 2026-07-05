@@ -776,6 +776,8 @@ mod tests {
             outcome,
             rate_limit,
             release_stale: false,
+            pr_stale: false,
+            requests_made: 0,
         }
     }
 

@@ -209,6 +209,8 @@ function DetailBody({
         <Focal r={r} status={status} busy={busy} run={run} />
       </div>
 
+      <IntelSection r={r} />
+
       <div className="flex flex-wrap gap-2">
         <Button
           variant="outline"
@@ -443,6 +445,46 @@ function Focal({
           : "Nothing to do. RepoSync keeps watching on schedule."}
       </p>
     </>
+  );
+}
+
+/**
+ * The branch and PR intelligence block (E-17): ahead/behind vs upstream, last-commit
+ * recency (local intel, always available for any git remote), and the open
+ * pull-request counts (remote intel, GitHub-only). Degrades gracefully:
+ *   - a non-GitHub remote shows local intel and "unavailable" for PRs;
+ *   - an un-refreshed or private-inaccessible repo shows "not yet checked", NEVER a
+ *     fabricated "0 PRs" (E-17 AC5);
+ *   - offline / rate-limited keeps the last-known counts and shows an "as of <time>"
+ *     staleness marker from prLastCheckedAt (E-17 AC8);
+ *   - a missing upstream reports "No upstream" rather than a fabricated 0 ahead/behind.
+ */
+function IntelSection({ r }: { r: RepoDetailData }) {
+  const isGithub = r.hostType === "github";
+  const aheadBehind =
+    r.aheadCount === null && r.behindCount === null
+      ? "No upstream"
+      : `${r.aheadCount ?? 0} ahead · ${r.behindCount ?? 0} behind`;
+  const prValue = !isGithub
+    ? "Unavailable (non-GitHub remote)"
+    : r.openPrCount === null
+      ? "Not yet checked"
+      : r.defaultBranchPrCount !== null && r.defaultBranchPrCount > 0
+        ? `${r.openPrCount} open · ${r.defaultBranchPrCount} to ${r.defaultBranch ?? "default"}`
+        : `${r.openPrCount} open`;
+
+  return (
+    <section>
+      <SectionLabel>Branch & PR intelligence</SectionLabel>
+      <dl className="overflow-hidden rounded-md border border-border">
+        <KvRow label="Ahead / behind" value={aheadBehind} />
+        <KvRow label="Last commit" value={relativeTime(r.lastLocalCommitAt)} />
+        <KvRow label="Open PRs" value={prValue} />
+        {isGithub && r.openPrCount !== null && (
+          <KvRow label="PRs as of" value={relativeTime(r.prLastCheckedAt)} />
+        )}
+      </dl>
+    </section>
   );
 }
 

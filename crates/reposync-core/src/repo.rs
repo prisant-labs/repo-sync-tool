@@ -121,11 +121,14 @@ pub async fn add(
         }
     };
 
-    // 6. Insert the initial repo_local_state row from the inspection.
+    // 6. Insert the initial repo_local_state row from the inspection. E-17: persist
+    //    the HEAD committer time into last_local_commit_at (the column existed since
+    //    migration 0001 but nothing wrote it).
     sqlx::query(
         "INSERT INTO repo_local_state \
-         (repo_id, active_branch, head_sha, upstream_branch, is_dirty, is_detached) \
-         VALUES (?, ?, ?, ?, ?, ?)",
+         (repo_id, active_branch, head_sha, upstream_branch, is_dirty, is_detached, \
+          last_local_commit_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(repo_id)
     .bind(&inspect.active_branch)
@@ -133,6 +136,7 @@ pub async fn add(
     .bind(&inspect.upstream_branch)
     .bind(inspect.is_dirty as i64)
     .bind(inspect.is_detached as i64)
+    .bind(inspect.last_commit_at)
     .execute(pool)
     .await?;
 
@@ -229,7 +233,8 @@ pub async fn check_now(
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
-         head_sha = ?, upstream_branch = ?, last_checked_at = ?, last_attempted_at = ? \
+         head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
+         last_attempted_at = ? \
          WHERE repo_id = ?",
     )
     .bind(&inspect.active_branch)
@@ -239,6 +244,7 @@ pub async fn check_now(
     .bind(inspect.is_detached as i64)
     .bind(&inspect.head_sha)
     .bind(&upstream)
+    .bind(inspect.last_commit_at)
     .bind(now)
     .bind(now)
     .bind(repo_id)
@@ -406,8 +412,8 @@ async fn run_update_inner(
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
-         head_sha = ?, upstream_branch = ?, last_checked_at = ?, last_attempted_at = ?, \
-         last_updated_at = COALESCE(?, last_updated_at) \
+         head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
+         last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at) \
          WHERE repo_id = ?",
     )
     .bind(&post.active_branch)
@@ -417,6 +423,7 @@ async fn run_update_inner(
     .bind(post.is_detached as i64)
     .bind(&post.head_sha)
     .bind(&upstream)
+    .bind(post.last_commit_at)
     .bind(now)
     .bind(now)
     .bind(updated_at_col)
@@ -972,6 +979,7 @@ mod tests {
             is_dirty: false,
             is_detached: false,
             upstream_branch: Some("origin/main".into()),
+            last_commit_at: Some(1_700_000_000),
         };
         assert_eq!(
             classify_upstream(&with_up, true),
