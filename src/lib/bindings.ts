@@ -22,6 +22,20 @@ export const commands = {
 	 *  [`CheckResult`] to the caller.
 	 */
 	repoCheckNow: (id: number) => typedError<CheckResult, AppErrorPayload>(__TAURI_INVOKE("repo_check_now", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  Run a "check now" over every ENABLED repo (E-13 tray "Check All Now").
+	 * 
+	 *  The additive E-13 backend command behind the tray "Check All Now" item (also
+	 *  callable from the frontend). Selects the enabled repos (the pure
+	 *  [`reposync_core::store::select_check_all_targets`]) and runs each through the
+	 *  SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
+	 *  never launch two `git` processes in one working tree. Returns the number of repos
+	 *  checked. Per-repo events fire like a manual check (`check-started` /
+	 *  `check-completed`); a per-repo failure is surfaced via `error:raised` (the tray
+	 *  action is fire-and-forget, so there is no synchronous caller to receive it) and
+	 *  does not abort the run.
+	 */
+	repoCheckAll: () => typedError<number, AppErrorPayload>(__TAURI_INVOKE("repo_check_all")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  List tracked repos (summary view), filtered. */
 	repoList: (filter: RepoFilter) => typedError<RepoSummary[], AppErrorPayload>(__TAURI_INVOKE("repo_list", { filter })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Get the full detail of a single tracked repo. */
@@ -112,6 +126,7 @@ export const commands = {
 /** Events */
 export const events = {
 	errorRaised: makeEvent<ErrorRaised>("error:raised", (v) => ({...v,error:({...v.error,context:v.error.context==null?v.error.context:v.error.context})}), (v) => ({...v,error:({...v.error,context:v.error.context==null?v.error.context:v.error.context})})),
+	navigateRequested: makeEvent<NavigateRequested>("navigate:requested"),
 	notificationFired: makeEvent<NotificationFired>("notification:fired"),
 	repoCheckCompleted: makeEvent<CheckCompleted>("repo:check-completed"),
 	repoCheckStarted: makeEvent<CheckStarted>("repo:check-started"),
@@ -263,6 +278,27 @@ export type GroupSummary = {
 	name: string,
 	color: string | null,
 	repoCount: number,
+};
+
+/**
+ *  Typed `navigate:requested` event (E-13 tray): the shell asks the UI to switch
+ *  views.
+ * 
+ *  Emitted by the tray "Settings" item so it can open + focus the window ON the
+ *  settings view; the frontend app-shell listens (`events.navigateRequested`) and
+ *  routes to the named target.
+ */
+export type NavigateRequested = NavigateRequestedPayload;
+
+/**
+ *  Payload for the `navigate:requested` event (E-13 tray): the shell asks the
+ *  frontend to switch to a named view. `target` is a view id the app-shell router understands
+ *  (`"dashboard"` / `"repos"` / `"activity"` / `"settings"`); an unknown target is
+ *  ignored by the frontend. Used by the tray "Settings" item to open + focus the
+ *  window on the settings view.
+ */
+export type NavigateRequestedPayload = {
+	target: string,
 };
 
 /**  Typed `notification:fired` event (a desktop notification was raised). */

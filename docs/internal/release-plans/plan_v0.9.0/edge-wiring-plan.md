@@ -24,10 +24,11 @@ Every core effort to date was verified test-first: a failing unit test, then min
 
 ## Inventory (grounded in `src-tauri`, last regrounded 2026-07-04)
 
-### Commands - 18 of 19 real; only `summary_week` remains an intentional stub:
+### Commands - 19 of 20 real; only `summary_week` remains an intentional stub:
 
 | Command | State | Edge-wiring task |
 |---------|-------|------------------|
+| `repo_check_all` | **DONE 2026-07-05 (P3-C)** | additive E-13 command behind the tray "Check All Now": selects enabled repos (pure `store::select_check_all_targets`) and checks each under the shared per-repo lock (so it never double-runs against a scheduled check); per-repo `check-started`/`check-completed` events fire and a per-repo failure surfaces on `error:raised` without aborting the run. Returns the count checked |
 | `activity_list` | **DONE 2026-06-30** | wired to new `activity::list` core read (test-first) |
 | `summary_today` | **DONE 2026-06-30** | wired via a new edge `localtime` helper (the `time` crate, jp's call); the local-day window math is unit-tested |
 | `repo_refresh_metadata` | **DONE 2026-06-30** | wired over `refresh_one` (NoToken path); engine outcome -> `AppError` via a pure **unit-tested** mapper (Offline / NotFound / RateLimited{reset_at}; cache/200/Skipped = success -> re-read detail). Prerequisite landed test-first: the engine now captures `X-RateLimit-Reset` into `RateLimit.reset_at` and `FetchOutcome::RateLimited` carries the budget, so the rate-limited error is honest (not a guessed reset). Manual refresh is unaffected by the BL-NI-15b cadence caveat |
@@ -39,7 +40,7 @@ Every core effort to date was verified test-first: a failing unit test, then min
 | Piece | Owner | Task |
 |-------|-------|------|
 | Scheduler spawn | **DONE 2026-07-03 (commit 81c96af)** | the tokio scheduler spawns resident in `lib.rs` setup, with manual `check_now`/`update_now` routed through the same per-repo mutex as the scheduled path, so manual and scheduled work never collide on one repo. Known gap (audit finding 6): if git is unavailable at startup, no scheduler is spawned at all, so even a later live git re-probe (BL-NI-19) has no running loop to pick it up, a gap wider than BL-NI-23's backlog description assumes. The daily activity-sweep also only runs at startup, not attached to the tick. Both are Phase 1 fixes |
-| Tray + menu | E-13 (**PARTIAL**, commit bb353f9, 2026-07-03) | Show RepoSync, Quit, and left-click-show are wired. Check All Now, Pause/Resume, Open recent (submenu), the Settings menu item, and close-to-tray are NOT built (AC1/AC2 mostly unmet, AC3 entirely unmet per [E-13-tray-menu/spec.md](E-13-tray-menu/spec.md)). The frameless popover window stays V1.1 as planned. Completion is Phase 3 of [execution-plan.md](execution-plan.md) |
+| Tray + menu | E-13 (**CODE-COMPLETE 2026-07-05, P3-C; dogfood-pending**) | The full native menu is built (Show RepoSync, Check All Now, Pause all/Resume all with a live label, Open recent submenu, Settings, Quit) plus left-click-show; close-to-tray + visibility live in `windows/mod.rs` (window declared `visible:false`, shown on a normal launch, hidden on autostart, close button hides to tray). AC1-AC5 implemented; launch verification is the smoke checklist below. Frameless popover stays V1.1. `repo:state-changed`/`check-started`/`error:raised` emit sites also landed here (BL-NI-31) |
 | Notification emit | E-14 core ready | add `tauri-plugin-notification`; call `notify::decide`/`coalesce` at the scheduler's check-completion; emit `notification:fired`. Not yet built; Phase 3 |
 | Autostart | E-15 core ready | add `tauri-plugin-autostart`; `reconcile` on startup against the OS state; start-minimized on the autostart launch arg. Not yet built; Phase 3 |
 
@@ -71,11 +72,16 @@ Slices land independently behind the headless gate; the smoke-test checklist acc
 
 > Note: the frameless left-click popover window is cut to V1.1 (see `features-and-outcomes.md` Section 9). The tray surface to verify is the native right-click menu, not a popover.
 
-- [ ] App launches; tray icon appears; the native right-click menu opens with all six items (Show, Check All Now, Pause/Resume, Open recent, Settings, Quit).
+- [ ] App launches; tray icon appears; the native right-click menu opens with all six items (Show, Check All Now, Pause all/Resume all, Open recent, Settings, Quit).
+- [ ] **Show RepoSync** (and left-click on the icon) unminimizes + focuses the main window.
+- [ ] **Check All Now** kicks a check across every enabled repo; rows/drawer update as each completes; a repo error raises an error toast (via `error:raised`) without aborting the rest.
+- [ ] **Pause all** flips the item label to "Resume all" and the next scheduled tick runs nothing; **Resume all** flips it back and the still-due repos run on the next tick. (Pause resets to running on relaunch - it is in-memory by design.)
+- [ ] **Open recent** lists the most-recently-active repos (or a disabled "No recent repos" on a fresh profile); selecting one opens that repo's folder on its real (non-canonicalized) path.
+- [ ] **Settings** shows + focuses the window on the Settings view (via `navigate:requested`).
 - [ ] A manual "check now" updates the UI and (on a real change) fires one toast.
-- [ ] A scheduled cycle fires; quiet-hours suppresses toasts in-window.
+- [ ] A scheduled cycle fires; quiet-hours suppresses toasts in-window; the open repo-detail drawer refreshes on a background completion (via `repo:state-changed`).
 - [ ] `summary_today` shows the correct local day.
 - [ ] `repo_refresh_metadata` populates release/topics/archived.
 - [ ] `repo_open_*` open the folder / terminal / editor / remote, on their real (non-canonicalized) paths.
-- [ ] Autostart toggle registers; app starts minimized on a reboot launch.
+- [ ] Autostart toggle registers; app starts minimized on a reboot launch (window stays hidden in the tray).
 - [ ] Closing the main window hides it to the tray; only Quit fully exits.

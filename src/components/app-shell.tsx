@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { Activity, LayoutDashboard, List, Moon, Settings, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { events } from "@/lib/bindings";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { GroupsNav } from "@/components/groups-nav";
 import { useGroups } from "@/hooks/queries";
@@ -11,6 +13,12 @@ import { ActivityScreen } from "@/screens/activity";
 import { SettingsScreen } from "@/screens/settings";
 
 type View = "dashboard" | "repos" | "activity" | "settings";
+
+const VIEWS: readonly View[] = ["dashboard", "repos", "activity", "settings"];
+
+function isView(value: string): value is View {
+  return (VIEWS as readonly string[]).includes(value);
+}
 
 const NAV: { id: View; label: string; Icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
@@ -55,6 +63,31 @@ export function AppShell() {
   const active = NAV.find((n) => n.id === view);
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
+  const toast = useToast();
+
+  // Backend-driven shell events (E-13 tray, BL-NI-31):
+  //   - `navigate:requested` routes the shell to a named view (the tray "Settings"
+  //     item opens the window on the settings view).
+  //   - `error:raised` surfaces a background failure that has no synchronous caller
+  //     (e.g. a tray "Check All Now" / "Open recent" failure) as an error toast.
+  // `setView` (useState) and `toast` (context) are referentially stable, so the
+  // subscription is set up once.
+  useEffect(() => {
+    const subscriptions = [
+      events.navigateRequested.listen((e) => {
+        if (isView(e.payload.target)) setView(e.payload.target);
+      }),
+      events.errorRaised.listen((e) => {
+        toast("error", e.payload.error.message, e.payload.error.remediation);
+      }),
+    ];
+    return () => {
+      void Promise.all(subscriptions).then((unlisteners) => {
+        for (const off of unlisteners) off();
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function selectGroup(id: number | null) {
     setActiveGroupId(id);

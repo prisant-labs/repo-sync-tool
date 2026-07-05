@@ -272,6 +272,50 @@ impl Jitter for SystemJitter {
 }
 
 // =============================================================================
+// The global pause flag (shared with the tray Pause/Resume control).
+// =============================================================================
+
+/// The process-wide "pause all scheduled checks" flag (E-13 tray Pause/Resume).
+///
+/// A cheap, shared [`AtomicBool`] the edge toggles from the tray menu and the
+/// resident scheduler reads at the START of every cycle: while paused, the
+/// scheduler selects nothing and runs no jobs (see [`Scheduler::run_due`]), so no
+/// `next_check_at` advances and no failures accrue - resuming picks the due set up
+/// on the next tick, exactly like the git-absent gate.
+///
+/// The state is IN-MEMORY by design (V1): pause is a "quiet down for now" control,
+/// not a persisted preference, so it resets to running on the next launch. A manual
+/// "Check All Now" is an explicit override and ignores this flag. Cloning shares the
+/// same underlying flag (it is `Arc`-backed), so the tray handle and the scheduler
+/// handle stay in lockstep.
+#[derive(Clone, Default)]
+pub struct GlobalPause(Arc<AtomicBool>);
+
+impl GlobalPause {
+    /// A fresh, UNPAUSED (running) global-pause handle.
+    pub fn new() -> GlobalPause {
+        GlobalPause::default()
+    }
+
+    /// Whether scheduled checks are currently paused.
+    pub fn is_paused(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Set the paused state explicitly.
+    pub fn set_paused(&self, paused: bool) {
+        self.0.store(paused, Ordering::SeqCst);
+    }
+
+    /// Flip the paused state and return the NEW value (`true` == now paused). Used
+    /// by the tray Pause/Resume item, which reflects the returned state in its label.
+    pub fn toggle(&self) -> bool {
+        // `fetch_xor(true)` returns the PREVIOUS value; the new value is its negation.
+        !self.0.fetch_xor(true, Ordering::SeqCst)
+    }
+}
+
+// =============================================================================
 // The per-repo lock map (shared with the manual command path).
 // =============================================================================
 
@@ -451,6 +495,10 @@ pub struct Scheduler<Q, J, W> {
     outcome_writer: Arc<W>,
     semaphore: Arc<Semaphore>,
     locks: RepoLocks,
+    /// The shared global-pause flag (E-13 tray Pause/Resume). Read at the start of
+    /// each cycle; while paused the whole cycle is skipped. Defaults to unpaused;
+    /// the edge injects the shared handle via [`Scheduler::with_pause`].
+    pause: GlobalPause,
     /// Deduplicates the "no git engine" skip log so a long-resident git-less
     /// session emits one clear line per absence episode, not one every minute.
     git_absent_logged: AtomicBool,
@@ -482,8 +530,18 @@ where
             outcome_writer: Arc::new(outcome_writer),
             semaphore: Arc::new(Semaphore::new(concurrency.max(1))),
             locks: RepoLocks::default(),
+            pause: GlobalPause::default(),
             git_absent_logged: AtomicBool::new(false),
         }
+    }
+
+    /// Inject the shared global-pause flag (E-13 tray Pause/Resume). The edge owns
+    /// ONE [`GlobalPause`] handle in its managed state and hands a clone to the
+    /// scheduler here, so a tray toggle and the scheduler's per-cycle pause gate read
+    /// the same flag. Without this call the scheduler defaults to never-paused.
+    pub fn with_pause(mut self, pause: GlobalPause) -> Scheduler<Q, J, W> {
+        self.pause = pause;
+        self
     }
 
     /// The shared per-repo lock map, so the manual command path can contend the
@@ -509,6 +567,14 @@ where
     }
 
     async fn run_due(&self, startup: bool) -> Result<usize, AppError> {
+        // Global-pause gate (E-13 tray Pause/Resume): while paused, select nothing
+        // and run no jobs, so no `next_check_at` advances and no failures accrue. The
+        // check is the same short-circuit shape as the git-absent gate below; resuming
+        // makes the still-due set selectable on the very next tick. A manual "Check All
+        // Now" bypasses this flag entirely (it does not go through the scheduler).
+        if self.pause.is_paused() {
+            return Ok(0);
+        }
         // Live git gate (BL-NI-23 / finding 6): read the CURRENT engine from the
         // shared handle each cycle. If no usable git is available right now, skip
         // the WHOLE cycle - no due query, no jobs, no `next_check_at` writes - so
@@ -1657,6 +1723,61 @@ mod tests {
         );
         let n = sched.tick_once().await.expect("tick");
         assert_eq!(n, 2, "outside quiet hours, the due repos run");
+    }
+
+    // --- global pause (E-13 tray Pause/Resume) --------------------------------
+
+    #[test]
+    fn global_pause_toggle_and_set_track_state() {
+        // A fresh handle is running; toggle flips it and returns the NEW state (the
+        // value the tray label reflects); clones share one underlying flag.
+        let pause = GlobalPause::new();
+        assert!(!pause.is_paused(), "starts running");
+        assert!(pause.toggle(), "first toggle returns now-paused == true");
+        assert!(pause.is_paused());
+        let clone = pause.clone();
+        assert!(clone.is_paused(), "a clone observes the same flag");
+        assert!(
+            !pause.toggle(),
+            "second toggle returns now-running == false"
+        );
+        assert!(!clone.is_paused(), "the clone sees the resume too");
+        pause.set_paused(true);
+        assert!(
+            clone.is_paused(),
+            "set_paused is observed through the clone"
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_scheduler_selects_and_runs_nothing() {
+        // While paused, the whole cycle is skipped: no due query result reaches any
+        // job, so the instrument sees zero git work and the tick reports 0 - even
+        // with git present and repos due.
+        let inst = Instrument::default();
+        let runner = FakeJobRunner::new(inst.clone());
+        let dq = FakeDueQuery {
+            selection: selection(vec![due(1), due(2)]),
+        };
+        let pause = GlobalPause::new();
+        pause.set_paused(true);
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            dq,
+            runner,
+            FakeOutcomeWriter::new(),
+            4,
+        )
+        .with_pause(pause.clone());
+        let n = sched.tick_once().await.expect("tick");
+        assert_eq!(n, 0, "a paused scheduler runs nothing");
+        assert_eq!(inst.max(), 0, "no git work starts while paused");
+        // Resuming makes the same due set run on the very next tick.
+        pause.set_paused(false);
+        let n = sched.tick_once().await.expect("tick");
+        assert_eq!(n, 2, "resuming picks the still-due repos up next tick");
     }
 
     // =========================================================================

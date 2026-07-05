@@ -191,14 +191,20 @@ impl CycleNotifications {
 /// and auth failures. Release toasts fire on the manual metadata refresh instead
 /// (a durable background release cadence is the deferred BL-NI-15b work).
 pub struct CollectingOutcomeWriter {
+    app: AppHandle,
     inner: DbOutcomeWriter,
     pool: SqlitePool,
     collector: CycleNotifications,
 }
 
 impl CollectingOutcomeWriter {
-    pub fn new(pool: SqlitePool, collector: CycleNotifications) -> CollectingOutcomeWriter {
+    pub fn new(
+        app: AppHandle,
+        pool: SqlitePool,
+        collector: CycleNotifications,
+    ) -> CollectingOutcomeWriter {
         CollectingOutcomeWriter {
+            app,
             inner: DbOutcomeWriter::new(pool.clone()),
             pool,
             collector,
@@ -214,8 +220,14 @@ impl OutcomeWriter for CollectingOutcomeWriter {
         status: RepoStatus,
     ) -> Result<(), AppError> {
         // Persist FIRST (the schedule + failure-counter write is load-bearing);
-        // the notification buffer is a best-effort side effect after it.
+        // the event emit + notification buffer are best-effort side effects after it.
         self.inner.record(repo, now_unix, status).await?;
+        // Emit `repo:state-changed` for this scheduled completion (BL-NI-31 / finding
+        // 11). The scheduled path is the only per-repo completion that otherwise emits
+        // NOTHING the frontend hears, so this is what makes the dashboard rows and the
+        // open repo-detail drawer refresh on a BACKGROUND check. The manual command
+        // paths emit their own check/update-completed events. Best-effort.
+        crate::events::emit_state_changed(&self.app, repo.id.0, status_error_code(status));
         if let Some(kind) = note_kind_for(status) {
             // Resolve the repo name for a human toast body. Only the exceptional
             // FAILURE path pays this read; a successful job never queries here.
@@ -242,6 +254,20 @@ fn note_kind_for(status: RepoStatus) -> Option<NoteKind> {
         RepoStatus::Active => None,
         RepoStatus::PausedOnAuth => Some(NoteKind::Auth),
         RepoStatus::Retry { .. } | RepoStatus::AutoPaused => Some(NoteKind::Failure),
+    }
+}
+
+/// The stable error code carried on a scheduled `repo:state-changed` payload for a
+/// finished job, derived from its persisted [`RepoStatus`]: `None` for a healthy run,
+/// and the matching [`AppError`](reposync_core::error::AppError) code for a failing
+/// one (an auth pause vs a transient/auto-paused failure). The frontend re-reads
+/// authoritative state on the refetch, so this is an informational hint on the event,
+/// kept consistent with the frozen error-code vocabulary rather than an invented one.
+fn status_error_code(status: RepoStatus) -> Option<String> {
+    match status {
+        RepoStatus::Active => None,
+        RepoStatus::PausedOnAuth => Some("git.auth_failed".to_string()),
+        RepoStatus::Retry { .. } | RepoStatus::AutoPaused => Some("git.fetch_failed".to_string()),
     }
 }
 
@@ -295,6 +321,28 @@ mod tests {
         assert_eq!(
             note_kind_for(RepoStatus::PausedOnAuth),
             Some(NoteKind::Auth)
+        );
+    }
+
+    #[test]
+    fn status_error_code_maps_status_to_the_frozen_vocabulary() {
+        // A healthy run carries no error code; an auth pause and a transient/auto-pause
+        // failure map to their frozen AppError codes (BL-NI-31 state-changed hint).
+        assert!(status_error_code(RepoStatus::Active).is_none());
+        assert_eq!(
+            status_error_code(RepoStatus::PausedOnAuth).as_deref(),
+            Some("git.auth_failed")
+        );
+        assert_eq!(
+            status_error_code(RepoStatus::Retry {
+                consecutive_failures: 2
+            })
+            .as_deref(),
+            Some("git.fetch_failed")
+        );
+        assert_eq!(
+            status_error_code(RepoStatus::AutoPaused).as_deref(),
+            Some("git.fetch_failed")
         );
     }
 

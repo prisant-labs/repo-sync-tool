@@ -16,7 +16,7 @@
         "title": "RepoSync",
         "width": 900,
         "height": 600,
-        "visible": true
+        "visible": false
       }
     ],
     "security": {

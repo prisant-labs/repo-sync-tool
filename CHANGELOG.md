@@ -22,13 +22,13 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 - The full desktop GUI: Dashboard, Repos, Activity, and Settings screens, a repo detail drawer, add/scan flows, and editable settings.
 - Groups: user-defined, colored labels for repos, with filtering by group.
 - Open-in actions: open a repo's folder, terminal, editor, or GitHub remote from the app (known defects tracked in `docs/backlog.md`; see Notes).
-- A system tray icon with Show and Quit (the full native menu is still in progress; see Notes).
+- A system tray icon with the full native menu - Show RepoSync, Check All Now (checks every enabled repo), Pause all / Resume all (suspends and resumes scheduled checks), Open recent (a submenu of recently-active repos), Settings, and Quit - plus left-click-to-show and close-to-tray (the close button hides to the tray; only Quit exits). On an autostart launch the window starts hidden in the tray (E-13).
 - Release scaffolding: version-scoped release plans under `docs/internal/release-plans/`, the cut-tag runbook, and this changelog.
 
 ### Notes
 - Pre-release; this repo is private. See `docs/internal/program-roadmap.md` for the effort breakdown and `docs/internal/release-plans/plan_v0.9.0/plan_v0.9.0.md` for the release plan and readiness checks.
 - Desktop notifications and autostart have their core logic built but are not yet wired to the OS (`tauri-plugin-notification` / `tauri-plugin-autostart`); their Settings toggles do not yet have a runtime effect.
-- The tray menu is partial: Show and Quit are wired; Check All Now, Pause/Resume, Open recent, Settings, and close-to-tray are still to come.
+- The tray menu is code-complete for V1; its launch-only behavior (menu actions, close-to-tray, autostart-hidden) is verified in the dogfood pass, not by automated tests.
 - Open-in has known defects on Windows (path handling, remote URL validation, and more); see `docs/backlog.md`.
 
 <!--

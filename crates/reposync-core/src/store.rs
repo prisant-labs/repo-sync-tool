@@ -725,6 +725,92 @@ fn is_foreign_key_violation(err: &sqlx::Error) -> bool {
     false
 }
 
+// =============================================================================
+// Tray-support reads (E-13): recent-repos submenu + Check All Now targets.
+//
+// These back the native tray menu (a Tauri edge concern) but stay in the
+// Tauri-free core: the DB reads live here and the SELECTION logic is factored into
+// pure functions so it is unit-tested with no database or webview.
+// =============================================================================
+
+/// A minimal repo reference for the tray menus: the id, display name, and local
+/// clone path the "Open recent" submenu needs to label an item and open its folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRef {
+    pub id: i64,
+    pub local_name: String,
+    pub local_path: String,
+}
+
+/// Select the `limit` most-recently-active repos, newest first (E-13 "Open recent").
+///
+/// Pure: the caller pairs each [`RepoRef`] with its last-active unix time (the most
+/// recent of update / check / creation). Ranking is by that time DESC, breaking ties
+/// on the higher id (the more recently ADDED repo) so the order is deterministic, then
+/// truncated to `limit`. Unit-tested without a DB.
+pub fn select_recent(mut repos: Vec<(RepoRef, i64)>, limit: usize) -> Vec<RepoRef> {
+    repos.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.id.cmp(&a.0.id)));
+    repos.into_iter().take(limit).map(|(r, _)| r).collect()
+}
+
+/// Select the ids of the repos a manual "Check All Now" targets (E-13): every
+/// ENABLED repo, in the given order. A manual check-all is an explicit user override,
+/// so it INCLUDES auto-paused repos (checking one is how a user sees it recovered) -
+/// the `enabled` flag is the only gate. Pure over `(id, enabled)`, unit-tested.
+pub fn select_check_all_targets(repos: &[(i64, bool)]) -> Vec<i64> {
+    repos
+        .iter()
+        .filter(|(_, enabled)| *enabled)
+        .map(|(id, _)| *id)
+        .collect()
+}
+
+/// The `limit` most-recently-active repos for the tray "Open recent" submenu.
+///
+/// Reads every repo with a computed last-active time (the most recent of
+/// `last_updated_at` / `last_checked_at` / `created_at`) and ranks + truncates via the
+/// pure [`select_recent`]. Reads all rows and ranks in Rust (repo counts are in the
+/// tens-to-low-hundreds), mirroring [`repo_list`]'s fetch-then-filter approach.
+pub async fn recent_repos(pool: &SqlitePool, limit: usize) -> Result<Vec<RepoRef>, AppError> {
+    let rows = sqlx::query(
+        "SELECT r.id AS id, r.local_name AS local_name, r.local_path AS local_path, \
+                COALESCE(s.last_updated_at, s.last_checked_at, r.created_at, 0) AS last_active \
+         FROM repos r \
+         LEFT JOIN repo_local_state s ON s.repo_id = r.id",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut paired = Vec::with_capacity(rows.len());
+    for r in &rows {
+        paired.push((
+            RepoRef {
+                id: r.try_get("id")?,
+                local_name: r.try_get("local_name")?,
+                local_path: r.try_get("local_path")?,
+            },
+            r.try_get::<i64, _>("last_active")?,
+        ));
+    }
+    Ok(select_recent(paired, limit))
+}
+
+/// The `(id, enabled)` flag for every tracked repo, ordered by id, for the tray
+/// "Check All Now" target selection (fed to the pure [`select_check_all_targets`]).
+pub async fn repo_enabled_flags(pool: &SqlitePool) -> Result<Vec<(i64, bool)>, AppError> {
+    let rows = sqlx::query("SELECT id, enabled FROM repos ORDER BY id ASC")
+        .fetch_all(pool)
+        .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        out.push((
+            r.try_get::<i64, _>("id")?,
+            int_to_bool(r.try_get::<i64, _>("enabled")?),
+        ));
+    }
+    Ok(out)
+}
+
 /// SQLite stores booleans as 0/1 INTEGERs; map to Rust `bool`.
 fn int_to_bool(v: i64) -> bool {
     v != 0
@@ -744,6 +830,55 @@ mod tests {
     use crate::db;
     use std::path::Path;
     use tempfile::TempDir;
+
+    // --- Pure tray-support selection (no DB) ----------------------------------
+
+    fn rref(id: i64) -> RepoRef {
+        RepoRef {
+            id,
+            local_name: format!("repo-{id}"),
+            local_path: format!("/repos/repo-{id}"),
+        }
+    }
+
+    #[test]
+    fn select_recent_ranks_by_last_active_then_id_and_truncates() {
+        // Newest last-active first; a tie on time breaks on the higher id; the list
+        // is truncated to `limit`.
+        let repos = vec![
+            (rref(1), 100), // oldest
+            (rref(2), 300), // newest time
+            (rref(3), 200),
+            (rref(4), 200), // ties repo 3 on time -> higher id (4) ranks first
+        ];
+        let got = select_recent(repos, 3);
+        let ids: Vec<i64> = got.iter().map(|r| r.id).collect();
+        assert_eq!(
+            ids,
+            vec![2, 4, 3],
+            "time DESC, id DESC tie-break, capped at 3"
+        );
+    }
+
+    #[test]
+    fn select_recent_handles_empty_and_small_inputs() {
+        assert!(select_recent(vec![], 5).is_empty(), "empty stays empty");
+        let one = select_recent(vec![(rref(7), 42)], 5);
+        assert_eq!(one.len(), 1, "fewer than limit returns them all");
+        assert_eq!(one[0].id, 7);
+    }
+
+    #[test]
+    fn select_check_all_targets_keeps_only_enabled_in_order() {
+        // Only enabled repos are targeted (auto-pause is NOT an exclusion here - a
+        // manual check-all is an override), and the input order is preserved.
+        let flags = vec![(1, true), (2, false), (3, true), (4, false), (5, true)];
+        assert_eq!(select_check_all_targets(&flags), vec![1, 3, 5]);
+        assert!(
+            select_check_all_targets(&[(1, false), (2, false)]).is_empty(),
+            "no enabled repos yields no targets"
+        );
+    }
 
     /// A migrated, on-disk SQLite pool in a fresh tempdir.
     async fn fresh_pool(dir: &Path) -> SqlitePool {

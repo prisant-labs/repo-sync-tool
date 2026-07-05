@@ -378,6 +378,17 @@ pub struct NotificationFiredPayload {
     pub body: String,
 }
 
+/// Payload for the `navigate:requested` event (E-13 tray): the shell asks the
+/// frontend to switch to a named view. `target` is a view id the app-shell router understands
+/// (`"dashboard"` / `"repos"` / `"activity"` / `"settings"`); an unknown target is
+/// ignored by the frontend. Used by the tray "Settings" item to open + focus the
+/// window on the settings view.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NavigateRequestedPayload {
+    pub target: String,
+}
+
 // NOTE: the `error:raised` event payload is intentionally NOT defined here as a
 // separate `ErrorRaisedPayload { error: AppErrorPayload }` struct. The owning
 // `ErrorRaised` event in `src-tauri` carries `error: AppErrorPayload` as a NAMED

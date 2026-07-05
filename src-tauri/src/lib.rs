@@ -25,14 +25,14 @@ use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
     activity_list, group_assign, group_create, group_delete, group_list, group_rename,
-    group_unassign, groups_for_repo, repo_add_path, repo_check_now, repo_get,
+    group_unassign, groups_for_repo, repo_add_path, repo_check_all, repo_check_now, repo_get,
     repo_group_memberships, repo_list, repo_open_editor, repo_open_folder, repo_open_remote,
     repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_enabled,
     repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
 };
 use events::{
-    CheckCompleted, CheckStarted, ErrorRaised, NotificationFired, SchedulerTick, StateChanged,
-    UpdateCompleted, UpdateStarted,
+    CheckCompleted, CheckStarted, ErrorRaised, NavigateRequested, NotificationFired, SchedulerTick,
+    StateChanged, UpdateCompleted, UpdateStarted,
 };
 
 /// Shared, managed application state injected into every command.
@@ -79,6 +79,11 @@ pub struct AppState {
     /// probe/swap sequence (BL-NI-35), so overlapping saves cannot race on which
     /// probe result wins the final engine swap.
     pub settings_write_lock: tokio::sync::Mutex<()>,
+    /// The shared, in-memory global-pause flag (E-13 tray Pause/Resume). The tray
+    /// menu toggles it and the resident scheduler reads the SAME handle at the start
+    /// of every cycle, so a tray pause suppresses scheduled checks with no restart.
+    /// In-memory by design: pause resets to running on the next launch.
+    pub pause: reposync_core::scheduler::GlobalPause,
     pub db_recovered: bool,
     pub db_backup_path: Option<std::path::PathBuf>,
 }
@@ -102,6 +107,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             // tracer (E-12)
             repo_add_path,
             repo_check_now,
+            // E-13 tray "Check All Now" (additive)
+            repo_check_all,
             // E-06 full surface
             repo_list,
             repo_get,
@@ -141,6 +148,8 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             SchedulerTick,
             NotificationFired,
             ErrorRaised,
+            // E-13 tray "Settings" navigation (additive)
+            NavigateRequested,
         ])
         // The IPC payloads carry `i64` repo ids, ahead/behind counts, and unix
         // second timestamps. specta-typescript refuses to emit i64/u64 by
@@ -189,22 +198,17 @@ pub fn run() {
             // Register the event registry so typed emit/listen resolve names.
             builder.mount_events(app);
 
-            // E-15 AC3: when this process was launched by autostart, start hidden to
-            // the tray (no focused window) so an autostart launch does not pop a
-            // window in the user's face. The main window is config-declared visible,
-            // so hide it as early as possible in setup; the tray icon + "Show
-            // RepoSync" item (built just below) is the restore path. Only the
-            // launch-argument HANDLING lives here - close-to-tray on the window's
-            // own close button is P3-C's (tray completion); see the handoff note on
-            // `autostart::AUTOSTART_LAUNCH_FLAG`.
-            if crate::autostart::launched_by_autostart() {
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.hide();
-                }
-            }
-
-            // Build the tray icon + menu (E-01 stub replaced by the GUI effort).
-            tray::init(app)?;
+            // Window lifecycle (E-13 AC3 + E-15 AC3, P3-C): reconcile the main
+            // window's initial visibility with how we were launched (a normal launch
+            // shows + focuses it; an autostart launch leaves it hidden in the tray)
+            // and wire close-to-tray (the close button hides to the tray; only the
+            // tray "Quit" item exits). The window is config-declared `visible: false`
+            // so a normal launch shows it explicitly, avoiding a startup flash. No DB
+            // is needed here, so it runs before the async pool init below; the tray
+            // (built after the pool, for its "Open recent" submenu) is the restore
+            // path. This consumes the autostart start-minimized seam
+            // (`autostart::launched_by_autostart`).
+            windows::init(app.handle());
 
             // E-14: reconcile the notification permission once (Granted by default
             // for an installed Windows app; a denial is logged, never fatal).
@@ -302,6 +306,13 @@ pub fn run() {
                 let git_handle: reposync_core::scheduler::SharedGitEngine =
                     std::sync::Arc::new(tokio::sync::RwLock::new(initial_git));
 
+                // E-13 tray Pause/Resume: the shared, in-memory global-pause flag. The
+                // tray menu toggles it and the scheduler reads the SAME handle at the
+                // start of every cycle (skipping the whole cycle while paused), so a
+                // tray pause suppresses scheduled checks with no restart. Handed to the
+                // scheduler via `with_pause` below and to AppState for the tray handler.
+                let pause = reposync_core::scheduler::GlobalPause::new();
+
                 // Edge-wiring: spawn the resident scheduler UNCONDITIONALLY
                 // (finding 6 / BL-NI-23) and build the shared per-repo lock map.
                 // Even when git is absent at startup, the loop runs and its live
@@ -342,11 +353,14 @@ pub fn run() {
                         DbDueQuery::new(pool.clone()),
                         UpdateNowJobRunner::new(pool.clone()),
                         crate::notify::CollectingOutcomeWriter::new(
+                            handle.clone(),
                             pool.clone(),
                             cycle_notes.clone(),
                         ),
                         DEFAULT_CONCURRENCY,
-                    );
+                    )
+                    // E-13: the scheduler honors the shared global-pause flag.
+                    .with_pause(pause.clone());
                     let locks = scheduler.locks();
                     let tick_handle = handle.clone();
                     // The firing site reads settings (the notify toggles + quiet
@@ -394,14 +408,30 @@ pub fn run() {
                     locks
                 };
 
+                // Seed the tray's "Open recent" submenu from the most-recently-active
+                // repos (E-13) BEFORE the pool moves into AppState. `recent` is owned
+                // (it borrows nothing), so it outlives the move below.
+                let recent = reposync_core::store::recent_repos(&pool, tray::RECENT_LIMIT)
+                    .await
+                    .unwrap_or_default();
+
                 handle.manage(AppState {
                     pool,
                     git: git_handle,
                     locks,
                     settings_write_lock: tokio::sync::Mutex::new(()),
+                    pause,
                     db_recovered,
                     db_backup_path,
                 });
+
+                // Build the tray AFTER AppState is managed so a menu click can never
+                // race an unmanaged state (the menu handlers read `app.state`). A tray
+                // build failure is logged, not fatal - the window lifecycle
+                // (show/close-to-tray) is already wired above.
+                if let Err(e) = tray::init(&handle, &recent) {
+                    eprintln!("tray: failed to build the tray icon/menu: {e}");
+                }
             });
 
             Ok(())

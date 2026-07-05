@@ -15,8 +15,13 @@ use reposync_core::ipc::{
     UpdatePolicy, UpdateResult, WeeklySummary,
 };
 use reposync_core::notify::{NoteKind, NotifiableEvent};
+use reposync_core::scheduler::{RepoLocks, SharedGitEngine};
+use sqlx::SqlitePool;
 
-use crate::events::{emit_check_completed, emit_update_completed, emit_update_started};
+use crate::events::{
+    emit_check_completed, emit_check_started, emit_error_raised, emit_update_completed,
+    emit_update_started,
+};
 use crate::AppState;
 
 /// Add a repository to the registry by absolute local path.
@@ -56,9 +61,70 @@ pub async fn repo_check_now(
     // lock: hold it across the whole check so a manual and a scheduled git op
     // never run two `git` processes in one working tree at once.
     let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
+    // Announce the check start (BL-NI-31) before the git work runs, then broadcast
+    // the completion after.
+    emit_check_started(&app, id);
     let result = reposync_core::repo::check_now(&state.pool, &git, RepoId(id)).await?;
     emit_check_completed(&app, &result);
     Ok(result)
+}
+
+/// Run a "check now" over every ENABLED repo (E-13 tray "Check All Now").
+///
+/// The additive E-13 backend command behind the tray "Check All Now" item (also
+/// callable from the frontend). Selects the enabled repos (the pure
+/// [`reposync_core::store::select_check_all_targets`]) and runs each through the
+/// SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
+/// never launch two `git` processes in one working tree. Returns the number of repos
+/// checked. Per-repo events fire like a manual check (`check-started` /
+/// `check-completed`); a per-repo failure is surfaced via `error:raised` (the tray
+/// action is fire-and-forget, so there is no synchronous caller to receive it) and
+/// does not abort the run.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_check_all(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<u32, AppError> {
+    check_all_enabled(&app, &state.pool, &state.git, &state.locks).await
+}
+
+/// Shared "check all enabled repos" implementation, called by [`repo_check_all`] and
+/// directly by the tray menu handler. Resolves git ONCE up front (a check-all with no
+/// usable git is a single clear `GitNotFound`, not N repeats) and reuses that engine
+/// for every repo in the burst, mirroring how a scheduler tick pins the engine it
+/// resolved at tick start. Each repo is checked under its shared per-repo lock so the
+/// burst serializes against the scheduler per repo.
+pub(crate) async fn check_all_enabled(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    git: &SharedGitEngine,
+    locks: &RepoLocks,
+) -> Result<u32, AppError> {
+    // Resolve the live engine once (cloned out of the read lock, guard dropped
+    // immediately, per BL-NI-19); a check-all with no git is one clear error.
+    let git = { git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
+
+    let flags = reposync_core::store::repo_enabled_flags(pool).await?;
+    let targets = reposync_core::store::select_check_all_targets(&flags);
+
+    let mut checked = 0u32;
+    for id in targets {
+        // Serialize per repo against the scheduler via the SAME per-repo lock.
+        let _lock = locks.lock_handle(RepoId(id)).lock_owned().await;
+        emit_check_started(app, id);
+        match reposync_core::repo::check_now(pool, &git, RepoId(id)).await {
+            Ok(result) => {
+                emit_check_completed(app, &result);
+                checked += 1;
+            }
+            // A single repo's failure must not abort the whole check-all; surface it
+            // on the global error event (no synchronous caller to receive it) and move
+            // on to the next repo.
+            Err(e) => emit_error_raised(app, &e),
+        }
+    }
+    Ok(checked)
 }
 
 // =============================================================================

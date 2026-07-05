@@ -12,10 +12,11 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_specta::Event;
 
-use reposync_core::error::AppErrorPayload;
+use reposync_core::error::{AppError, AppErrorPayload};
 use reposync_core::ipc::{
-    CheckCompletedPayload, CheckResult, CheckStartedPayload, NotificationFiredPayload,
-    SchedulerTickPayload, StateChangedPayload, UpdateCompletedPayload, UpdateStartedPayload,
+    CheckCompletedPayload, CheckResult, CheckStartedPayload, NavigateRequestedPayload,
+    NotificationFiredPayload, SchedulerTickPayload, StateChangedPayload, UpdateCompletedPayload,
+    UpdateStartedPayload,
 };
 
 /// Typed "check completed" event, broadcast after every `repo_check_now`.
@@ -91,6 +92,16 @@ pub struct ErrorRaised {
     pub error: AppErrorPayload,
 }
 
+/// Typed `navigate:requested` event (E-13 tray): the shell asks the UI to switch
+/// views.
+///
+/// Emitted by the tray "Settings" item so it can open + focus the window ON the
+/// settings view; the frontend app-shell listens (`events.navigateRequested`) and
+/// routes to the named target.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Event)]
+#[tauri_specta(event_name = "navigate:requested")]
+pub struct NavigateRequested(pub NavigateRequestedPayload);
+
 /// Emit a [`CheckCompleted`] event derived from a finished [`CheckResult`].
 ///
 /// Best-effort: an emit failure (e.g. no webview yet) is swallowed so a check
@@ -136,4 +147,49 @@ pub fn emit_update_completed(app: &AppHandle, repo_id: i64, outcome: &str) {
 /// other emits: a missing webview must never tear down the scheduler loop.
 pub fn emit_scheduler_tick(app: &AppHandle, checked: i64, due: i64, at: i64) {
     let _ = SchedulerTick(SchedulerTickPayload { checked, due, at }).emit(app);
+}
+
+/// Emit the `repo:check-started` event when a check begins for a repo (BL-NI-31).
+///
+/// Fired by the manual check paths (`repo_check_now` and tray "Check All Now") so a
+/// future UI spinner can reflect an in-flight check. Best-effort like every emit.
+pub fn emit_check_started(app: &AppHandle, repo_id: i64) {
+    let _ = CheckStarted(CheckStartedPayload { repo_id }).emit(app);
+}
+
+/// Emit the `repo:state-changed` event when a repo's cached state changed as a result
+/// of a check/update (BL-NI-31). This is the event the frontend subscribes to via
+/// `repoStateChanged` (`useBackendEvents` / `useRepoBackendEvents`) to refetch, and it
+/// is the emit that unblocks finding 11: it fires on the SCHEDULED completion path
+/// (the only per-repo completion that otherwise emits nothing), so the dashboard rows
+/// and the open repo-detail drawer refresh on a background check. `last_error_code`
+/// carries the repo's current error code (or `None` for a healthy outcome); the
+/// frontend re-reads authoritative state on the refetch either way. Best-effort.
+pub fn emit_state_changed(app: &AppHandle, repo_id: i64, last_error_code: Option<String>) {
+    let _ = StateChanged(StateChangedPayload {
+        repo_id,
+        last_error_code,
+    })
+    .emit(app);
+}
+
+/// Emit the `error:raised` global-error event for a backend error that has no
+/// synchronous caller to receive it (BL-NI-31) - e.g. a failure inside the tray
+/// "Check All Now" or "Open recent", which are fire-and-forget. A command that
+/// returns its error to the invoking frontend does NOT go through here (the caller
+/// toasts the returned error). Best-effort.
+pub fn emit_error_raised(app: &AppHandle, err: &AppError) {
+    let _ = ErrorRaised {
+        error: err.to_payload(),
+    }
+    .emit(app);
+}
+
+/// Emit the `nav:requested` event asking the frontend to switch to `target` (E-13
+/// tray "Settings"). Best-effort; a missing webview just means no navigation.
+pub fn emit_navigate(app: &AppHandle, target: &str) {
+    let _ = NavigateRequested(NavigateRequestedPayload {
+        target: target.to_string(),
+    })
+    .emit(app);
 }
