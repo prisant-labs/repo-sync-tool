@@ -10,8 +10,8 @@
 
 use reposync_core::error::AppError;
 use reposync_core::ipc::{
-    ActivityFilter, ActivityRecord, CheckResult, DailySummary, GroupSummary, RepoDetail, RepoFilter,
-    RepoId, RepoSummary, ScanResult, Settings, UpdateMode, UpdatePolicy, UpdateResult,
+    ActivityFilter, ActivityRecord, CheckResult, DailySummary, GroupSummary, RepoDetail,
+    RepoFilter, RepoId, RepoSummary, ScanResult, Settings, UpdateMode, UpdatePolicy, UpdateResult,
     WeeklySummary,
 };
 

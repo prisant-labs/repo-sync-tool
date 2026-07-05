@@ -1126,8 +1126,12 @@ mod tests {
         // Assign two repos to backend so its count reflects the memberships.
         let r1 = insert_repo(&pool, "alpha", "C:/repos/alpha").await;
         let r2 = insert_repo(&pool, "beta", "C:/repos/beta").await;
-        group_assign(&pool, r1, backend.id).await.expect("assign r1");
-        group_assign(&pool, r2, backend.id).await.expect("assign r2");
+        group_assign(&pool, r1, backend.id)
+            .await
+            .expect("assign r1");
+        group_assign(&pool, r2, backend.id)
+            .await
+            .expect("assign r2");
 
         // list is name-ordered and carries the counts.
         let groups = groups_list(&pool).await.expect("list");
@@ -1182,17 +1186,27 @@ mod tests {
         // Assign to both groups; assigning twice is idempotent (INSERT OR IGNORE).
         group_assign(&pool, repo, g1).await.expect("assign g1");
         group_assign(&pool, repo, g2).await.expect("assign g2");
-        group_assign(&pool, repo, g1).await.expect("assign g1 again");
+        group_assign(&pool, repo, g1)
+            .await
+            .expect("assign g1 again");
 
         // groups_for_repo is ascending and de-duplicated by the primary key.
         let mut expected = vec![g1, g2];
         expected.sort_unstable();
-        assert_eq!(groups_for_repo(&pool, repo).await.expect("for repo"), expected);
+        assert_eq!(
+            groups_for_repo(&pool, repo).await.expect("for repo"),
+            expected
+        );
 
         // Unassign one; the other remains. Unassigning again is a no-op.
         group_unassign(&pool, repo, g1).await.expect("unassign g1");
-        group_unassign(&pool, repo, g1).await.expect("unassign g1 again");
-        assert_eq!(groups_for_repo(&pool, repo).await.expect("for repo"), vec![g2]);
+        group_unassign(&pool, repo, g1)
+            .await
+            .expect("unassign g1 again");
+        assert_eq!(
+            groups_for_repo(&pool, repo).await.expect("for repo"),
+            vec![g2]
+        );
     }
 
     #[tokio::test]
