@@ -499,14 +499,59 @@ pub async fn settings_set(
     let previous = reposync_core::store::settings_get(&state.pool).await.ok();
     let previous_global = previous.as_ref().map(|s| s.global_check_minutes);
     let previous_autostart = previous.as_ref().map(|s| s.autostart);
+    let previous_git_path = previous
+        .as_ref()
+        .and_then(|s| s.git_executable_path.clone());
 
     reposync_core::store::settings_set(&state.pool, &settings).await?;
 
+    // Finding 1: only reconcile the LIVE git engine when `git_executable_path`
+    // ACTUALLY changed from the previously persisted value. The git re-probe, the
+    // autostart actuation, and the inherit-cadence reschedule are INDEPENDENT
+    // subsystems; a machine with no git - or any save that does not touch the git
+    // path - must not re-probe and reject, which previously (the BL-NI-26 early
+    // return plus the Phase 3 autostart wiring landing AFTER it) made EVERY save on a
+    // git-less machine skip the autostart actuation and falsely report
+    // InvalidSetting for an unrelated notify/quiet-hours/autostart change. When the
+    // path is unchanged the last-known-working engine stands untouched.
+    let git = if settings.git_executable_path != previous_git_path {
+        // The path changed: rebuild the engine from the newly-saved path. Re-read the
+        // persisted settings so this mirrors the startup construction EXACTLY (same
+        // source, same infallible `new`).
+        let configured_git_path = reposync_core::store::settings_get(&state.pool)
+            .await
+            .ok()
+            .and_then(|s| s.git_executable_path);
+        let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
+        // BL-NI-26 / finding 5: a changed path that resolves to no usable git keeps
+        // the last-known-working engine (DO NOT swap to None) and is reported as a
+        // structured InvalidSetting so the UI toasts honestly instead of a false
+        // "Settings saved". A usable git is swapped in live so both the command path
+        // and the resident scheduler (same shared handle each cycle) pick it up.
+        if git_swap_rejection(engine.availability()).is_some() {
+            GitReconcile::RejectUnavailable
+        } else {
+            *state.git.write().await = Some(engine);
+            GitReconcile::Swapped
+        }
+    } else {
+        GitReconcile::Unchanged
+    };
+
+    // Derive the rest of the reconciliation PURELY (so finding 1's ordering rule is
+    // unit-testable without a Tauri harness, see `plan_settings_reconcile`): which
+    // independent subsystems to actuate and whether the save ends in a git rejection.
+    let plan = plan_settings_reconcile(
+        git,
+        previous_autostart != Some(settings.autostart),
+        previous_global != Some(settings.global_check_minutes),
+    );
+
     // BL-NI-25 / finding 4: a changed global cadence takes effect on already-
     // scheduled INHERIT repos immediately, without waiting out their stale
-    // `next_check_at`. Only recompute when the value actually changed, so saving
-    // an unrelated setting never disturbs every repo's schedule.
-    if previous_global != Some(settings.global_check_minutes) {
+    // `next_check_at`. Only recompute when the value actually changed, so saving an
+    // unrelated setting never disturbs every repo's schedule.
+    if plan.reschedule_inherit {
         reposync_core::scheduler::reschedule_inherit_repos(
             &state.pool,
             crate::localtime::now_unix(),
@@ -515,44 +560,29 @@ pub async fn settings_set(
         .await?;
     }
 
-    // Live git re-probe (BL-NI-19): rebuild the engine from the newly-saved
-    // `git_executable_path`. Re-read the persisted settings so this mirrors the
-    // startup construction EXACTLY (same source, same infallible `new`).
-    let configured_git_path = reposync_core::store::settings_get(&state.pool)
-        .await
-        .ok()
-        .and_then(|s| s.git_executable_path);
-    let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
+    // E-15 AC1: actuate launch-on-login when the `autostart` setting changed. ORDERING
+    // (finding 1): this runs REGARDLESS of the git outcome and BEFORE any git-path
+    // rejection is returned, so a bad git path in the same save never SKIPS an
+    // autostart toggle (the pre-fix early return did exactly that). Persist-then-apply
+    // (commit 71a0f7b): the value is already stored, so a plugin failure returns a
+    // structured `InvalidSetting { field: "autostart" }` without rollback, and
+    // `reconcile_on_launch` self-heals it on the next launch.
+    let autostart_result = if plan.apply_autostart {
+        crate::autostart::apply(&app, settings.autostart)
+    } else {
+        Ok(())
+    };
 
-    // BL-NI-26 / finding 5: if the new git path resolves to no usable git (the bad
-    // explicit path ALSO fails the PATH and well-known fallbacks), DO NOT swap the
-    // working engine to None. Keep the last-known-working engine so git-dependent
-    // actions keep functioning, and surface the failure as a structured error so
-    // the UI can toast it honestly instead of falsely reporting "Settings saved".
-    // The other settings ARE already persisted, so unrelated changes in the same
-    // save are not lost; only activating this git path is reported as failed. The
-    // early return leaves `state.git` untouched, which IS "keep last-known-working".
-    if let Some(err) = git_swap_rejection(engine.availability()) {
-        return Err(err);
+    // A changed git path that probed unusable is reported LAST, after the independent
+    // subsystems above have been actuated - preserving the git error's precedence
+    // (BL-NI-26) while no longer skipping autostart/cadence. If git was fine but the
+    // autostart actuation failed, surface that instead.
+    if plan.reject_git_path {
+        return Err(AppError::InvalidSetting {
+            field: "git_executable_path".into(),
+        });
     }
-
-    // The new git is usable: swap it in live so the command path and the resident
-    // scheduler (which reads this same shared handle each cycle) both pick it up.
-    *state.git.write().await = Some(engine);
-
-    // E-15 AC1: when the `autostart` setting changed, actuate launch-on-login live
-    // via the plugin. Only on a real change (the previous read matched neither the
-    // Some(new) nor a first-time None), so an unrelated save never touches the OS
-    // registration. This runs AFTER the git swap on purpose: the git re-probe keeps
-    // its existing behavior and precedence (a bad git path still returns first, and
-    // the autostart value is already persisted above, so `reconcile_on_launch` will
-    // converge it on the next launch). On a plugin failure `apply` returns a
-    // structured `InvalidSetting { field: "autostart" }` - persist-then-apply, the
-    // same contract the git swap uses (commit 71a0f7b): the value stands, the UI
-    // toasts an honest failure, and startup reconciliation self-heals.
-    if previous_autostart != Some(settings.autostart) {
-        crate::autostart::apply(&app, settings.autostart)?;
-    }
+    autostart_result?;
     Ok(())
 }
 
@@ -570,6 +600,51 @@ fn git_swap_rejection(availability: &reposync_core::git::GitAvailability) -> Opt
         })
     } else {
         None
+    }
+}
+
+/// The git-path portion of a settings save, classified for [`plan_settings_reconcile`]
+/// (finding 1). The LIVE engine is only touched when the git path actually changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitReconcile {
+    /// The git path did not change: the live engine stands untouched (no re-probe),
+    /// so a git-less machine never fails an unrelated save.
+    Unchanged,
+    /// The git path changed to a usable git: the engine was swapped in live.
+    Swapped,
+    /// The git path changed to an unusable git: the last-known-working engine is kept
+    /// and the save is rejected AFTER the independent subsystems have run.
+    RejectUnavailable,
+}
+
+/// Which live subsystems a settings save actuates, and whether it ends in a git-path
+/// rejection - derived PURELY (so finding 1's ordering rule is unit-testable without a
+/// Tauri harness). The rule: the git re-probe, the autostart actuation, and the
+/// inherit-cadence reschedule are INDEPENDENT. autostart is actuated whenever it
+/// changed - EVEN when a changed git path probed unusable, so a git-path typo never
+/// skips an autostart toggle in the same save - and a save that does not change the git
+/// path never rejects on git, so a git-less machine never fails an unrelated
+/// notify/quiet-hours/autostart/cadence save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SettingsReconcilePlan {
+    /// Reschedule already-scheduled inherit repos (the global cadence changed).
+    reschedule_inherit: bool,
+    /// Actuate launch-on-login (the autostart setting changed).
+    apply_autostart: bool,
+    /// Reject the save with `InvalidSetting(git_executable_path)` after the
+    /// independent subsystems above were actuated (a changed git path probed unusable).
+    reject_git_path: bool,
+}
+
+fn plan_settings_reconcile(
+    git: GitReconcile,
+    autostart_changed: bool,
+    global_cadence_changed: bool,
+) -> SettingsReconcilePlan {
+    SettingsReconcilePlan {
+        reschedule_inherit: global_cadence_changed,
+        apply_autostart: autostart_changed,
+        reject_git_path: matches!(git, GitReconcile::RejectUnavailable),
     }
 }
 
@@ -782,6 +857,54 @@ mod tests {
             .is_none(),
             "a below-floor git is still usable, so the swap proceeds"
         );
+    }
+
+    #[test]
+    fn plan_settings_reconcile_keeps_subsystems_independent() {
+        // Finding 1 regression: the git re-probe, the autostart actuation, and the
+        // inherit-cadence reschedule are INDEPENDENT. On a git-less machine (or any
+        // save that does not touch the git path) the git portion is Unchanged, so the
+        // save NEVER rejects on git and STILL actuates an autostart toggle and a
+        // global-cadence change - the exact regression this fix closes.
+        let p = plan_settings_reconcile(GitReconcile::Unchanged, true, true);
+        assert!(
+            !p.reject_git_path,
+            "an unchanged git path must not reject the save (git-less machine)"
+        );
+        assert!(
+            p.apply_autostart,
+            "an autostart toggle applies when the git path is untouched"
+        );
+        assert!(
+            p.reschedule_inherit,
+            "a global-cadence change reschedules when the git path is untouched"
+        );
+
+        // A changed-but-unusable git path rejects (BL-NI-26) but STILL actuates the
+        // independent autostart toggle first: a git-path typo never skips autostart.
+        let p = plan_settings_reconcile(GitReconcile::RejectUnavailable, true, false);
+        assert!(p.reject_git_path, "a changed unusable git path rejects");
+        assert!(
+            p.apply_autostart,
+            "autostart still applies even though the git path is rejected"
+        );
+        assert!(
+            !p.reschedule_inherit,
+            "an unchanged cadence does not reschedule"
+        );
+
+        // A rejection with no autostart / cadence change still rejects and actuates
+        // nothing extra.
+        let p = plan_settings_reconcile(GitReconcile::RejectUnavailable, false, false);
+        assert!(p.reject_git_path);
+        assert!(!p.apply_autostart);
+        assert!(!p.reschedule_inherit);
+
+        // A changed usable git path swaps in and does not reject.
+        let p = plan_settings_reconcile(GitReconcile::Swapped, false, false);
+        assert!(!p.reject_git_path, "a usable git swap does not reject");
+        assert!(!p.apply_autostart);
+        assert!(!p.reschedule_inherit);
     }
 
     #[test]

@@ -78,18 +78,30 @@ export function useRepoGroupMemberships() {
 }
 
 /**
- * Call `onChange` whenever the backend broadcasts a state-affecting event
- * (a check or update finished, a repo's cached state changed, or the scheduler
- * ticked). This is how screens stay live without polling. Pass a stable
- * callback (e.g. a `refetch` from `useAsync`).
+ * Call `onChange` when the backend broadcasts a state-affecting event, for the
+ * AGGREGATE screens (dashboard, repos list) that refetch a whole-library view.
+ * This is how those screens stay live without polling. Pass a stable callback
+ * (e.g. a `refetch` from `useAsync`).
+ *
+ * Coalescing (finding 3): a scheduled cycle emits ONE `scheduler:tick` after all
+ * its per-repo jobs have joined, PLUS one `repo:state-changed` per completed repo.
+ * Refetching on both fanned an N-repo cycle into N+1 aggregate refetches. So the
+ * aggregate refetch uses `scheduler:tick` as the single per-cycle batch trigger and
+ * deliberately does NOT subscribe to `repo:state-changed` (that per-repo event is
+ * only for the focused repo-detail drawer, `useRepoBackendEvents`, correctly scoped
+ * to one repo id - finding 11). A zero-work tick (`checked === 0`: nothing was due)
+ * carries no state change and is ignored. `repo:check-completed` / `-update-completed`
+ * stay subscribed because those fire only on MANUAL, user-initiated single actions,
+ * so refetching immediately keeps the screen responsive without any per-cycle storm.
  */
 export function useBackendEvents(onChange: () => void) {
   useEffect(() => {
     const subscriptions = [
       events.repoCheckCompleted.listen(() => onChange()),
       events.repoUpdateCompleted.listen(() => onChange()),
-      events.repoStateChanged.listen(() => onChange()),
-      events.schedulerTick.listen(() => onChange()),
+      events.schedulerTick.listen((e) => {
+        if (e.payload.checked > 0) onChange();
+      }),
     ];
     return () => {
       void Promise.all(subscriptions).then((unlisteners) => {

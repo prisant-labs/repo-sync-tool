@@ -203,21 +203,15 @@ pub fn run() {
             // Register the event registry so typed emit/listen resolve names.
             builder.mount_events(app);
 
-            // Window lifecycle (E-13 AC3 + E-15 AC3, P3-C): reconcile the main
-            // window's initial visibility with how we were launched (a normal launch
-            // shows + focuses it; an autostart launch leaves it hidden in the tray)
-            // and wire close-to-tray (the close button hides to the tray; only the
-            // tray "Quit" item exits). The window is config-declared `visible: false`
-            // so a normal launch shows it explicitly, avoiding a startup flash. No DB
-            // is needed here, so it runs before the async pool init below; the tray
-            // (built after the pool, for its "Open recent" submenu) is the restore
-            // path. This consumes the autostart start-minimized seam
-            // (`autostart::launched_by_autostart`).
-            windows::init(app.handle());
-
             // E-14: reconcile the notification permission once (Granted by default
             // for an installed Windows app; a denial is logged, never fatal).
             notify::ensure_permission(app.handle());
+
+            // Window lifecycle (E-13 AC3 + E-15 AC3, P3-C) is wired AFTER the tray is
+            // built (below, in the async block), because close-to-tray and start-
+            // minimized are only safe when the tray - the sole restore/quit path -
+            // actually built (finding 2). The window stays config-declared
+            // `visible: false` until then, so nothing flashes in the meantime.
 
             // Initialize the pool + git engine synchronously during setup. The
             // tracer accepts a blocking init; later efforts can move this off
@@ -461,12 +455,28 @@ pub fn run() {
                 });
 
                 // Build the tray AFTER AppState is managed so a menu click can never
-                // race an unmanaged state (the menu handlers read `app.state`). A tray
-                // build failure is logged, not fatal - the window lifecycle
-                // (show/close-to-tray) is already wired above.
-                if let Err(e) = tray::init(&handle, &recent) {
-                    eprintln!("tray: failed to build the tray icon/menu: {e}");
-                }
+                // race an unmanaged state (the menu handlers read `app.state`). Its
+                // success GATES the window lifecycle below: the tray is the only
+                // restore/quit path, so close-to-tray and start-minimized are only safe
+                // when it actually built (finding 2). A build failure is logged, not
+                // fatal.
+                let tray_available = match tray::init(&handle, &recent) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        eprintln!("tray: failed to build the tray icon/menu: {e}");
+                        false
+                    }
+                };
+
+                // Window lifecycle (E-13 AC3 + E-15 AC3, P3-C), now that the tray's
+                // status is known: WITH a tray, a NORMAL launch shows + focuses the
+                // window and an AUTOSTART launch stays hidden in the tray, and the close
+                // button hides-to-tray (only the tray "Quit" exits). WITHOUT a tray
+                // there is no restore path, so we never start hidden and never intercept
+                // the close - even an autostart launch ends visible and quittable
+                // (finding 2). The window is config-declared `visible: false`, so it
+                // stays hidden until this shows it, avoiding a startup flash.
+                windows::init(&handle, tray_available);
             });
 
             Ok(())
