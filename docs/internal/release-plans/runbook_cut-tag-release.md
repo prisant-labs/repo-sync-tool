@@ -55,6 +55,18 @@ This is the EXECUTE + NOTES layer. The PLAN layer is the release plan (`plan_vX.
 - [ ] Push the tag: `git push origin vX.Y.Z`.
 - [ ] `.github/workflows/release.yml` fires on the `v*` tag: builds Windows + macOS with the `dist` profile (full LTO) and creates a DRAFT GitHub Release with both platform artifacts attached, plus the `latest.json` updater manifest (E-18 (auto-update and distribution), see `plan_v0.9.0/E-18-auto-update/spec.md`). **Ship-dark note:** the updater artifacts + `latest.json` are produced ONLY when the `TAURI_SIGNING_PRIVATE_KEY` secret is present (the workflow's "Compute updater build args" step merges `tauri.updater-prod.conf.json` to flip `createUpdaterArtifacts` on). If jp has not yet done the human-only production-key step (generate the keypair -> Actions secrets + commit the real pubkey into `tauri.conf.json`, replacing the ship-dark placeholder), the updater ships DARK: the installers still build and the Release still cuts, but there is no `latest.json`. Verify `latest.json` is present on the draft's assets before moving to G4 IF the key is in place; if shipping dark, note it and move on (updater activation moves to the public-flip checklist).
 
+### G3 fallback: manual cut when `release.yml` cannot run
+
+If `release.yml` cannot run (GitHub Actions unavailable, billing exhausted, or the workflow fails to start), cut the Release by hand instead of waiting on CI:
+
+- [ ] Build installers locally: `pnpm tauri build`. A keyless build ships dark (`createUpdaterArtifacts` stays off), the same ship-dark posture as the CI path without the signing secret.
+- [ ] Cut the Release directly:
+  ```
+  gh release create v<x.y.z> --prerelease --title "RepoSync v<x.y.z> (private)" --notes-file <changelog-body-file> target/release/bundle/nsis/*-setup.exe target/release/bundle/msi/*.msi
+  ```
+- [ ] This manual path is permitted for a private/pre-public cut (an agent may do it, per `EXECUTION.md`); it is not available once the repo goes public, where cutting a release is human-only.
+- [ ] Record the manual cut and its reason (which precondition was unavailable and why) as a waiver in the release plan's Open Questions / Decisions section, per the No-bypass policy below. v0.9.0's own waiver is decision D4 in `plan_v0.9.0/plan_v0.9.0.md`.
+
 **One version, both platforms.** The single bumped version stamps both the Windows MSI/NSIS and the macOS `.app`/`.dmg`. The platform lives in the artifact filename, not the version. macOS is unsigned until signing is unblocked (human-only per `EXECUTION.md`); say so in the Release notes rather than blocking the Windows cut.
 
 **Private repo, agent-cuttable.** While RepoSync stays private, cutting this tag and Release is agent-autonomous under the ratified v0.9.0 ship decision and `EXECUTION.md`'s private/pre-public merge policy: `EXECUTION.md`'s human-only line is scoped to a *public* release tag specifically ("Cutting a public release tag / GitHub Release"). The moment the repo goes public (its own, separate, human-only decision), cutting a release tag becomes human-only too. See the Public flip checklist appendix.
@@ -62,7 +74,7 @@ This is the EXECUTE + NOTES layer. The PLAN layer is the release plan (`plan_vX.
 ## G4: Post-tag hygiene
 
 - [ ] **Installer smoke test, from the download, not the local build.** Download the Windows installer (and `latest.json`, if present) directly from the draft Release's asset URLs, the same way a real user would fetch them, not from local build output. Run the installer end to end on the downloaded artifact: install, launch, confirm the app starts, and confirm the update check reads `latest.json` cleanly if the updater has landed. A green local build only tells you the code works; only the downloaded artifact tells you the upload and packaging pipeline works.
-- [ ] Edit the draft Release: paste the `CHANGELOG.md` vX.Y.Z section as the body; confirm both artifacts (and `latest.json`, once applicable) are attached; state the macOS posture (shipped-unsigned-beta or deferred).
+- [ ] Edit the draft Release: paste the `CHANGELOG.md` vX.Y.Z section as the body; confirm both artifacts (and `latest.json`, once applicable) are attached; state BOTH platforms' signing posture, not just macOS's: macOS (shipped-unsigned-beta or deferred) AND Windows (installers signed with Authenticode, or unsigned - state which).
 - [ ] Publish the Release.
 - [ ] Set the release plan frontmatter `status: released`.
 - [ ] Open a fresh `[Unreleased]` section in `CHANGELOG.md` (if not already).
@@ -81,6 +93,9 @@ If a published release is broken: delete the tag (`git push origin :vX.Y.Z`) and
 This is the readiness bar for the separate, later, human-only milestone where RepoSync's repo goes from private to public (`EXECUTION.md`: "Flipping the repo from private to public"). It does not happen at a version tag, is not gated by G0 through G4 above, and is not something an agent runs autonomously end to end: jp decides when RepoSync is ready for the world, on whatever version is current at the time. Some rows below assume v0.9.0 as the private-ship baseline; update the specifics if a later version ships first.
 
 - [ ] **Repo visibility change.** jp flips the GitHub repo from private to public (human-only, `EXECUTION.md`). From this point on, merges to `main` require human review (`EXECUTION.md` merge policy); the private-era agent self-merge autonomy ends here.
+- [ ] **GitHub Actions billing fixed.** The `product-on-purpose` org's Actions billing must be restored (it was exhausted at the v0.9.0 cut, per decision D4 in `plan_v0.9.0/plan_v0.9.0.md`), so that `release.yml` and CI can actually run on the tag that activates the public flip; the v0.9.0 cut worked around this with the G3 manual fallback above, which is not a substitute for working CI going forward.
+- [ ] **Windows Authenticode code-signing.** Procure a code-signing certificate (or adopt Azure Trusted Signing) and wire the secret into CI so Windows installers stop shipping unsigned. Human-only and money-gated (a CA identity-validation cost); tracked as BL-DEC-01 (Windows code-signing) in `docs/backlog.md`.
+- [ ] **macOS notarization and signing.** Unblock Apple Developer Program enrollment and notarization credentials so the macOS `.app`/`.dmg` can ship signed instead of the compile-verified-only posture decided for v0.9.0 (decision D2 in `plan_v0.9.0/plan_v0.9.0.md`).
 - [ ] **License and community files verified current.**
   - [ ] `LICENSE` (MIT, already present at the repo root) still matches the intended terms.
   - [ ] `CONTRIBUTING.md` (already present) reflects the actual contribution workflow at flip time, not the pre-launch internal one.

@@ -178,6 +178,8 @@ Target the whole PR gate (fmt, clippy with `-D warnings`, the fast test tier, th
 
 ## 4. Release pipeline plan (`release.yml`)
 
+> **As-built note (2026-07-05).** E-18 (auto-update and distribution) landed in Phase 4 (commit `c7eff64`) and was verified ship-dark-safe in `_LOCAL/gates/2026-07-05_phase-5-release-readiness.md`. The rest of this section is the forward-looking plan written before that build; it is now historical. In practice, `release.yml` never ran for the v0.9.0 cut at all: GitHub Actions billing on the org was exhausted at ship time, so the tag-triggered workflow was rejected before starting, and the Release was cut manually with `gh release create` instead (see decision D4 in `plan_v0.9.0/plan_v0.9.0.md`). The updater, signing, and winget-manifest behavior this section describes is accurate as a description of what `release.yml` is built to do once Actions billing is restored; see the E-18 spec's Task Summary (`plan_v0.9.0/E-18-auto-update/spec.md`) for the as-shipped state.
+
 `release.yml` is a self-described stub: it fires on `v*` tags, builds Windows and macOS with `--profile dist` via `tauri-apps/tauri-action@v0`, and creates a draft prerelease. Its own header flags that the tauri-action inputs and the `--profile dist` threading are unvalidated. Hardening it is E-18 (auto-update and distribution) work in Phase 4, not Phase 0; this section specifies the target so the runbook's G3 and G4 have something concrete to consume.
 
 ### 4.1 Windows artifacts: ship both NSIS and MSI

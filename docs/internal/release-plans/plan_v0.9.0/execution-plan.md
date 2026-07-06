@@ -252,6 +252,10 @@ Run twice - once under `pnpm tauri dev` (fast iteration, real runtime) and once 
 - Every defect found is fixed or filed with a BL ID and an owning phase.
 - Full-suite sweep green after the fixes. Doc-update protocol satisfied (CHANGELOG, backlog).
 
+### 2.5 Phase record
+
+- **Completed 2026-07-05.** Commit `005481c` (dogfood fallout fixes: honest version badge switched to a runtime `getVersion()` read, clean activity text, copy + a11y nits). Both launches walked live via CDP-driven WebView2; the full add -> behind -> fast-forward-update -> in-sync loop verified end to end; 18 checklist items passed, 5 paper cuts found and fixed in this commit. Dogfood report: `_LOCAL/dogfood/2026-07-05_phase-2-dogfood.md`.
+
 ---
 
 ## Phase 3 - OS integration completion
@@ -291,6 +295,10 @@ Everything of substance here is on the chain (plugins + native menu + a command)
 - Per-repo cadence is settable from the drawer and takes effect.
 - The edge-wiring smoke-test checklist is filled in and saved. Full-suite sweep green. Codex adversarial review run and dispositioned. Doc-update protocol satisfied (E-13/E-14/E-15 Task Summaries -> done/wired, feature-inventory, edge-wiring inventory, CHANGELOG).
 
+### 3.5 Phase record
+
+- **Completed 2026-07-05.** Commits `1a5eff9` (E-14 notifications wiring), `189443a` (E-15 autostart wiring), `deec0bf` (E-13 tray completion: full six-item menu + close-to-tray), `0b8de16` (per-repo cadence write path + UI, sweep-on-tick, db-recovery notice), `dd04587` (Codex Phase 1+3 review fixes: settings-save git-gating regression, tray strand, refetch storm). Gate record: `_LOCAL/gates/2026-07-05_phase-3-gate.md` (all 9 gates green). Review: `_LOCAL/audit/2026-07-05_phase-1-3-codex-review.md`.
+
 ---
 
 ## Phase 4 - New features
@@ -321,6 +329,10 @@ E-17's core builds in parallel; its commands take the chokepoint; its frontend f
 - Full-suite sweep green. Codex adversarial review run and dispositioned. Doc-update protocol satisfied (E-17/E-18 Task Summaries, feature-inventory, program-roadmap rows, CHANGELOG, backlog for winget-submission-deferred).
 - **If descoped:** the phase's DoD is instead "E-17 and/or E-18 cleanly parked to v0.9.1 - spec/plan status set to deferred, no half-wired code on the release branch, backlog and roadmap reflect the slip." (See Descope levers.)
 
+### 4.4 Phase record
+
+- **Completed 2026-07-05.** Neither descope lever was pulled; both features shipped. Commits `4efb0ab` (E-17 branch and PR intelligence with a rate budgeter), `c7eff64` (E-18 auto-update and distribution, ships dark), `1543d4d` (E-17 Codex review fixes: cache freshness, shared rate budget, live UI refresh). Gate record: `_LOCAL/gates/2026-07-05_phase-4-gate.md` (all 10 gates green, 348 tests). Review: `_LOCAL/audit/2026-07-05_phase-4-codex-review.md`.
+
 ---
 
 ## Phase 5 - Ship (private)
@@ -348,6 +360,10 @@ E-17's core builds in parallel; its commands take the chokepoint; its frontend f
 - All four version sources read 0.9.0; CHANGELOG has a dated 0.9.0 section; README and public-facing docs reflect the shipped state.
 - PR #2 merged; annotated `v0.9.0` tag on the release-prep sha; private GitHub Release published with Windows artifacts (and unsigned macOS if green), macOS posture and private-release constraints stated.
 - Release plan `status: released`; closing session log written; fresh `[Unreleased]` opened.
+
+### 5.4 Phase record
+
+- **Completed 2026-07-05.** Commits `f6332eb` (version bump to 0.9.0 across all four sources + `CHANGELOG.md` finalized), `baec834` (`docs/user-guide.md`, the enhanced explanatory user guide), `afddcc5` (doc reconcile: taxonomy fixes + BL-NI-43/44/45 deferred-UI gaps logged), `e21cf0e` (merge PR #2 into `main`), and the annotated tag `v0.9.0` on `e21cf0e`. The GitHub Release published as a private prerelease, cut manually via `gh release create` (NSIS + MSI installers attached) because GitHub Actions billing on the org was exhausted and CI/`release.yml` could not run; this precondition was waived per decision D4 in `plan_v0.9.0.md`. Release-readiness record: `_LOCAL/gates/2026-07-05_phase-5-release-readiness.md`. Closing session log: `_LOCAL/session-logs/2026-07-05_fable_ship-v0.9.0-private-release.md`.
 
 ---
 
