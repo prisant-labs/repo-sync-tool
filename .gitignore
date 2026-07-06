@@ -9,6 +9,7 @@ src-tauri/gen/
 **/node_modules/
 dist/
 build/
+.vite/
 
 # Logs
 *.log
