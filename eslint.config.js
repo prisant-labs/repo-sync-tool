@@ -9,7 +9,11 @@ import reactRefresh from "eslint-plugin-react-refresh";
 // We register the plugin object ourselves and reuse only its rule set.
 export default tseslint.config(
   {
-    ignores: ["dist", "src-tauri"],
+    // `target` is the Cargo workspace build directory at the repo root; it holds
+    // Tauri codegen assets (non-source `.js` files) that must never be linted.
+    // Without this, `eslint .` fails on any machine that has built the Rust side
+    // (CI passes only because it lints a fresh checkout with no `target/` yet).
+    ignores: ["dist", "src-tauri", "target"],
   },
   {
     files: ["**/*.{ts,tsx}"],

@@ -49,6 +49,13 @@ tauri-plugin-autostart = "2"
 # provides the post-install relaunch surface.
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# BL-NI-46 native folder picker for "Add repositories": the "Add repo" / "Scan parent"
+# flow uses tauri-plugin-dialog to pick a folder (Explorer on Windows, Finder on macOS)
+# instead of forcing the user to type a path. Edge-only, like the other plugins -
+# reposync-core never depends on it; only the webview open() call and the plugin
+# registration live at the edge. Pre-specced in
+# docs/internal/v1-architecture-and-decisions.md ("Scoped FS for the folder picker").
+tauri-plugin-dialog = "2"
 
 # Shared logic-crate dependencies.
 serde = { version = "1.0.228", features = ["derive"] }

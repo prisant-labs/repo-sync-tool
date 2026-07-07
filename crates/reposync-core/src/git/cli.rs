@@ -33,6 +33,18 @@ pub(crate) async fn run_git(
     for a in args {
         cmd.arg(a);
     }
+    // On Windows, spawning the console-mode git.exe without CREATE_NO_WINDOW
+    // attaches a fresh console to each child, which flashes on screen. Every
+    // network/CLI git op funnels through here and the scheduler fans these out
+    // per repo each minute, so this flag is what stops the tray app from popping
+    // a burst of black git.exe windows. Same idiom as src-tauri/src/opener.rs;
+    // tokio::process::Command exposes creation_flags as an inherent method on
+    // Windows, so no CommandExt import is needed here.
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
     let pretty_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let raw_command = format!(

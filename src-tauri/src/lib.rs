@@ -220,6 +220,11 @@ pub fn run() {
         // committed `plugins.updater.pubkey` is the integrity boundary.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // BL-NI-46 native folder picker: the "Add repositories" dialog calls the dialog
+        // plugin's open({ directory: true }) to browse for a folder (Explorer on Windows /
+        // Finder on macOS). Frontend-driven; no core dependency. The `dialog:allow-open`
+        // capability permission gates the open command.
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             // Register the event registry so typed emit/listen resolve names.
