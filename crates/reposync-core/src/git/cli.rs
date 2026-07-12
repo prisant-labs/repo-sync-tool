@@ -5,7 +5,7 @@
 //! code, and duration for the activity log.
 
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::process::Command;
 
@@ -21,18 +21,57 @@ pub(crate) struct Captured {
     pub duration_ms: i64,
 }
 
-/// Run `git -C <repo_path> <args...>`, capturing output, exit code, and wall
-/// time. A spawn failure (e.g. git missing) maps to [`AppError::GitNotFound`].
-pub(crate) async fn run_git(
-    git_exe: &Path,
-    repo_path: &Path,
-    args: &[&str],
-) -> Result<Captured, AppError> {
+/// Wall-clock cap on any single git subprocess. A watched repo can point at a
+/// remote that accepts the TCP connection and then never responds (a dead or
+/// hostile "slowloris" remote); with no bound, `output().await` blocks for the OS
+/// TCP timeout (minutes). Because the scheduler awaits each job, and each tick in
+/// turn, one hung git op would wedge the whole background loop. This is a liveness
+/// bound, not a performance knob: RepoSync fetches are incremental, so 120s sits
+/// far above any legitimate op yet well under a user-noticeable hang. On elapse the
+/// child is killed and the op is surfaced as a network-class failure (see
+/// [`run_git`]). Security review R2 / correctness CC-1 (2026-07).
+const GIT_OP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Build the hardened git command RepoSync runs on the user's behalf.
+///
+/// RepoSync shells out to git AUTONOMOUSLY (on the scheduler tick) inside repo
+/// directories the user assembled from arbitrary origins, so the target repo's
+/// `.git/config` is attacker-controlled. Several git config keys EXECUTE a command
+/// during a plain fetch/pull with no user action - `core.fsmonitor`, a
+/// `core.hooksPath` hook, and the `ext::<cmd>` remote-helper protocol. We
+/// neutralize those repo-local execution vectors here: a `-c key=value` on the
+/// command line has the highest config precedence, so it overrides whatever the
+/// repo set (worst case the override is a benign no-op, never the attacker's
+/// command). We also suppress interactive credential prompting so a background op
+/// fails fast instead of popping a GUI dialog or hanging on input that can never
+/// arrive in a windowless tray context.
+///
+/// We deliberately do NOT null the user's global/system git config: that config is
+/// the user's own and is trusted, and nulling it would break legitimate proxy,
+/// `insteadOf`, and credential-helper setups. Two repo-local vectors that only fire
+/// for an auth-demanding or ssh remote (`credential.helper=!cmd`, `core.sshCommand`)
+/// are left as a documented residual, because overriding them without breaking
+/// legitimate private-repo credentials needs a separate decision (see
+/// `docs/backlog.md`). Security review R1 (2026-07).
+fn build_git_command(git_exe: &Path, repo_path: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new(git_exe);
+    // Neutralize repo-local, config-driven code execution (highest precedence wins).
+    cmd.arg("-c").arg("core.fsmonitor=");
+    cmd.arg("-c").arg("core.hooksPath=/dev/null");
+    cmd.arg("-c").arg("protocol.ext.allow=never");
     cmd.arg("-C").arg(repo_path);
     for a in args {
         cmd.arg(a);
     }
+    // Fail fast rather than prompt or hang for credentials in a windowless context.
+    // With no cached credential-helper result, git emits "terminal prompts
+    // disabled", which classify_fetch reads as an auth failure (paused-on-auth).
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("SSH_ASKPASS", "");
+    cmd.env("GCM_INTERACTIVE", "never");
+    // If the GIT_OP_TIMEOUT future is dropped, kill the child rather than leak it.
+    cmd.kill_on_drop(true);
     // On Windows, spawning the console-mode git.exe without CREATE_NO_WINDOW
     // attaches a fresh console to each child, which flashes on screen. Every
     // network/CLI git op funnels through here and the scheduler fans these out
@@ -45,6 +84,21 @@ pub(crate) async fn run_git(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
+    cmd
+}
+
+/// Run `git -C <repo_path> <args...>` (hardened; see [`build_git_command`]),
+/// capturing output, exit code, and wall time, bounded by [`GIT_OP_TIMEOUT`]. A
+/// spawn failure (e.g. git missing) maps to [`AppError::GitNotFound`]; a timeout is
+/// surfaced as a synthetic non-zero capture whose stderr classifies as a network
+/// failure, so the existing failure state machine retries and then auto-pauses
+/// rather than poisoning the caller with a hard error.
+pub(crate) async fn run_git(
+    git_exe: &Path,
+    repo_path: &Path,
+    args: &[&str],
+) -> Result<Captured, AppError> {
+    let mut cmd = build_git_command(git_exe, repo_path, args);
 
     let pretty_args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
     let raw_command = format!(
@@ -55,7 +109,26 @@ pub(crate) async fn run_git(
     );
 
     let started = Instant::now();
-    let output = cmd.output().await.map_err(|_| AppError::GitNotFound)?;
+    let output = match tokio::time::timeout(GIT_OP_TIMEOUT, cmd.output()).await {
+        Ok(result) => result.map_err(|_| AppError::GitNotFound)?,
+        Err(_elapsed) => {
+            // Exceeded GIT_OP_TIMEOUT; kill_on_drop terminated the child when the
+            // output() future was dropped. Surface a synthetic capture: exit_code
+            // None plus an "operation timed out" stderr, which classify_fetch and
+            // classify_pull map to a NetworkFailure (retry, then 3-strikes pause) -
+            // never a hard error that would surface as a spurious GitNotFound.
+            return Ok(Captured {
+                raw_command,
+                raw_stdout: String::new(),
+                raw_stderr: format!(
+                    "reposync: git operation timed out after {}s and was terminated",
+                    GIT_OP_TIMEOUT.as_secs()
+                ),
+                exit_code: None,
+                duration_ms: started.elapsed().as_millis() as i64,
+            });
+        }
+    };
     let duration_ms = started.elapsed().as_millis() as i64;
 
     Ok(Captured {
@@ -452,6 +525,87 @@ mod tests {
     use super::{classify_fetch, parse_left_right_count};
     use crate::error::AppError;
     use crate::git::FetchClass;
+
+    // --- git command hardening (security R1/R2) -------------------------------
+    //
+    // run_git funnels every autonomous git op. These assert the hardening is
+    // actually applied to the constructed command: repo-local config-driven
+    // execution vectors are overridden, and interactive credential prompting is
+    // disabled. The argv/env are introspected via std::process::Command's getters
+    // (the command is never spawned), so the checks are deterministic and offline.
+
+    #[test]
+    fn run_git_command_neutralizes_repo_local_execution() {
+        use super::build_git_command;
+        use std::path::Path;
+
+        let cmd = build_git_command(
+            Path::new("git"),
+            Path::new("some/repo"),
+            &["fetch", "--all"],
+        );
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        // A `-c key=value` override (highest config precedence) for each vector.
+        let has_override = |val: &str| args.windows(2).any(|w| w[0] == "-c" && w[1] == val);
+        assert!(
+            has_override("core.fsmonitor="),
+            "fsmonitor not disabled: {args:?}"
+        );
+        assert!(
+            has_override("core.hooksPath=/dev/null"),
+            "hooks not disabled: {args:?}"
+        );
+        assert!(
+            has_override("protocol.ext.allow=never"),
+            "ext:: protocol not blocked: {args:?}"
+        );
+        // The actual op and target repo survive the hardening.
+        assert!(args.iter().any(|a| a == "-C"), "missing -C: {args:?}");
+        assert!(args.iter().any(|a| a == "fetch"), "missing op: {args:?}");
+        assert!(
+            args.iter().any(|a| a == "--all"),
+            "missing op arg: {args:?}"
+        );
+    }
+
+    #[test]
+    fn run_git_command_disables_interactive_credential_prompts() {
+        use super::build_git_command;
+        use std::path::Path;
+
+        let cmd = build_git_command(Path::new("git"), Path::new("some/repo"), &["fetch"]);
+        let envs: Vec<(String, Option<String>)> = cmd
+            .as_std()
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let env_is = |key: &str, want: &str| {
+            envs.iter()
+                .any(|(k, v)| k == key && v.as_deref() == Some(want))
+        };
+        assert!(
+            env_is("GIT_TERMINAL_PROMPT", "0"),
+            "terminal prompt not disabled: {envs:?}"
+        );
+        assert!(
+            env_is("GCM_INTERACTIVE", "never"),
+            "GCM UI not disabled: {envs:?}"
+        );
+        assert!(
+            envs.iter().any(|(k, _)| k == "GIT_ASKPASS"),
+            "GIT_ASKPASS not overridden: {envs:?}"
+        );
+    }
 
     // --- fetch classification (AC10 / BL-NI-05) -------------------------------
     //
