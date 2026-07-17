@@ -29,7 +29,15 @@
 name: CI
 
 on:
+  # Pull requests (any branch) get the full matrix via `pull_request` below.
+  # `push` is scoped to main ONLY: an unrestricted `push` trigger re-runs the
+  # entire matrix a SECOND time on every PR-branch push (once for `push`, once
+  # for `pull_request`), which doubled CI spend per iteration. Scoping `push`
+  # to main keeps main's own commits gated while dropping the redundant
+  # per-branch run. Branch-protection required checks come from the
+  # `pull_request` run, so PR gating is unaffected.
   push:
+    branches: [main]
   pull_request:
 
 # A newer push to the same ref cancels the older in-flight run.
@@ -68,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # --- Verify git meets the E-03 floor (>= 2.30) -------------------------------------
       # Both hosted runners ship a recent git well above the floor, so we VERIFY the floor
@@ -236,7 +244,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # The fixture harness spawns real git subprocesses, so verify the floor here too - this is
       # the job that actually exercises git heavily.
