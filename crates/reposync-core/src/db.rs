@@ -65,17 +65,21 @@ pub struct DbInit {
     pub backup_path: Option<PathBuf>,
 }
 
-/// Open the pool and apply migrations, recovering from a migration failure
-/// instead of crashing (AC7).
+/// Open the pool and apply migrations, recovering from a genuinely CORRUPT
+/// database instead of crashing (AC7), while REFUSING to reset a database that is
+/// merely locked or that hit a migration/version error.
 ///
 /// Happy path: open the db at `paths.db_path()`, run migrations, return a
-/// non-recovered [`DbInit`]. On a migration error: log it, CLOSE the pool (so the
-/// `-wal`/`-shm` sidecars are released on Windows), move the database and its
-/// sidecars to `corrupt-backups/reposync-<timestamp>.db`, create a FRESH database,
-/// re-run migrations on it, and return a recovered [`DbInit`] carrying the backup
-/// path and the notice flag. If the move fails (e.g. a locked file), we fall back
-/// to a uniquely-named fresh database rather than crashing. Data is never silently
-/// deleted.
+/// non-recovered [`DbInit`]. On failure the error is classified
+/// ([`classify_init_failure`]): only a corruption signature moves the database and
+/// its `-wal`/`-shm` sidecars to `corrupt-backups/reposync-<timestamp>.db`, creates
+/// a FRESH database, and returns a recovered [`DbInit`] (with the backup path + the
+/// one-time notice flag; if the move fails on a locked file it falls back to a
+/// uniquely-named fresh sibling). A transient lock is retried a few times and then
+/// surfaced as an error; a version/checksum mismatch, a buggy migration, or an I/O
+/// error fails LOUD and leaves the database untouched - because resetting cannot fix
+/// those and would silently discard the user's data. Data is never silently deleted,
+/// and (DS-1 / BL-NI-41) never silently RESET on a non-corruption failure either.
 pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppError> {
     // The data + log dirs must exist before we touch the db file.
     paths.ensure_dirs().map_err(|e| AppError::Db {
@@ -84,76 +88,171 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
 
     let db_path = paths.db_path();
 
-    // Try the happy path: open the pool, then migrate. EITHER step can fail on a
-    // corrupt/incompatible database (a non-SQLite file fails at connect with
-    // "file is not a database"; a half-applied or checksum-mismatched migration
-    // fails in the runner), and both are recoverable the same way: move the bad
-    // file aside and start fresh. So we treat any error from this block uniformly.
-    //
-    // When the pool opened but migration failed, we hold the pool in
-    // `opened_pool` so it can be CLOSED before the move: a held -wal/-shm keeps
-    // the file locked on Windows, which would fail the rename.
-    let mut opened_pool: Option<SqlitePool> = None;
-    let result: Result<SqlitePool, AppError> = match open_pool(&db_path).await {
-        Ok(pool) => match run_migrations(&pool).await {
-            Ok(()) => Ok(pool),
-            Err(e) => {
-                opened_pool = Some(pool);
-                Err(e)
+    // Try the happy path, retrying ONLY a transient lock. On failure the error is
+    // classified: only a genuine corruption signature moves the database aside and
+    // starts fresh; a lock is retried and then surfaced; a version/checksum
+    // mismatch, a buggy migration, or an I/O error fails LOUD and leaves the
+    // database untouched. A database is never silently reset on a non-corruption
+    // failure (DS-1 / BL-NI-41). open_pool already sets a 5s busy_timeout, so the
+    // retry only re-tries a lock that outlives one window (an AV / cloud-sync scan).
+    const MAX_LOCK_RETRIES: u32 = 2;
+    let mut lock_retries = 0u32;
+    loop {
+        let (err, opened_pool) = match try_init_once(&db_path).await {
+            Ok(pool) => {
+                return Ok(DbInit {
+                    pool,
+                    recovered: false,
+                    backup_path: None,
+                });
             }
-        },
-        Err(e) => Err(e),
-    };
+            Err(failure) => failure,
+        };
 
-    match result {
-        Ok(pool) => Ok(DbInit {
-            pool,
-            recovered: false,
-            backup_path: None,
-        }),
-        Err(err) => {
-            eprintln!(
-                "warning: database open/migration failed ({err}); moving the existing \
-                 database aside and creating a fresh one"
-            );
+        // Release any half-open handle before deciding, so a move can rename the
+        // file on Windows and a retry re-opens cleanly.
+        if let Some(pool) = opened_pool {
+            pool.close().await;
+        }
 
-            // Release file handles before moving (Windows lock release).
-            if let Some(pool) = opened_pool {
-                pool.close().await;
+        match classify_init_failure(init_failure_cause(&err)) {
+            // The ONLY case that resets data.
+            InitFailure::Corrupt => return recover_with_fresh_db(paths, &db_path, &err).await,
+            InitFailure::Locked if lock_retries < MAX_LOCK_RETRIES => {
+                let backoff = Duration::from_millis(500);
+                eprintln!(
+                    "warning: the database is locked ({err}); retrying in {}ms (attempt {}/{})",
+                    backoff.as_millis(),
+                    lock_retries + 1,
+                    MAX_LOCK_RETRIES
+                );
+                tokio::time::sleep(backoff).await;
+                lock_retries += 1;
             }
-
-            let backup_dir = paths.corrupt_backups_dir();
-            let backup_path = move_db_aside(&db_path, &backup_dir);
-            match &backup_path {
-                Some(moved) => eprintln!(
-                    "info: the previous database was preserved at {}",
-                    moved.display()
-                ),
-                None => eprintln!(
-                    "warning: could not move the existing database aside (it may be \
-                     locked); starting a fresh database under a unique name instead"
-                ),
+            // A persistent lock: the database is healthy, just held by another
+            // process. Fail LOUD; never reset.
+            InitFailure::Locked => {
+                eprintln!(
+                    "error: the database is still locked after {MAX_LOCK_RETRIES} retries; \
+                     refusing to reset a healthy database (is RepoSync already running?)"
+                );
+                return Err(err);
             }
-
-            // If the move failed, the original file is still in place and likely
-            // locked, so a fresh pool at the SAME path would re-hit the bad file.
-            // Open the fresh database at a unique sibling path in that case.
-            let fresh_path = if backup_path.is_some() {
-                db_path.clone()
-            } else {
-                unique_fresh_db_path(&db_path)
-            };
-
-            let fresh_pool = open_pool(&fresh_path).await?;
-            run_migrations(&fresh_pool).await?;
-
-            Ok(DbInit {
-                pool: fresh_pool,
-                recovered: true,
-                backup_path,
-            })
+            // A version/checksum mismatch, a buggy migration, or an I/O error.
+            // Resetting cannot fix it and would silently discard data, so fail LOUD
+            // and leave the database untouched.
+            InitFailure::Fatal => {
+                eprintln!(
+                    "error: the database could not be opened or migrated ({err}); refusing \
+                     to reset it (this is not corruption). It is preserved untouched at {}.",
+                    db_path.display()
+                );
+                return Err(err);
+            }
         }
     }
+}
+
+/// The recovery action for an open/migrate failure.
+#[derive(Debug, PartialEq, Eq)]
+enum InitFailure {
+    /// The database file is genuinely corrupt (not a database / malformed). The
+    /// ONLY case that moves the file aside and starts fresh.
+    Corrupt,
+    /// The database is healthy but transiently locked by another process. Retry;
+    /// never reset.
+    Locked,
+    /// A version/checksum mismatch, a buggy migration, or an I/O error. Resetting
+    /// cannot fix it and would silently discard data, so fail loud.
+    Fatal,
+}
+
+/// The cause string carried by a DB open/migrate error (empty for other variants,
+/// which classify as `Fatal`).
+fn init_failure_cause(err: &AppError) -> &str {
+    match err {
+        AppError::Db { cause } | AppError::MigrationFailed { cause } => cause,
+        _ => "",
+    }
+}
+
+/// Classify an open/migrate failure from its cause text. The AppError variants
+/// carry only a cause string - the SQLite extended result code is not preserved
+/// through the `From<sqlx::Error>` seam - so we match on the message. The default is
+/// `Fatal` (fail loud): a database is reset ONLY on an explicit corruption
+/// signature, never by default (DS-1 / BL-NI-41).
+fn classify_init_failure(cause: &str) -> InitFailure {
+    let c = cause.to_ascii_lowercase();
+    // SQLITE_NOTADB ("file is [encrypted or is] not a database") and SQLITE_CORRUPT
+    // ("database disk image is malformed") are the genuine on-disk-damage signals.
+    if c.contains("not a database") || c.contains("disk image is malformed") {
+        InitFailure::Corrupt
+    } else if c.contains("database is locked")
+        || c.contains("database table is locked")
+        || c.contains("(code: 5)")
+        || c.contains("(code: 6)")
+    {
+        // SQLITE_BUSY (5) / SQLITE_LOCKED (6): a healthy but contended file.
+        InitFailure::Locked
+    } else {
+        // A version/checksum mismatch, a buggy migration ("no such column ..."), an
+        // I/O error ("unable to open database file"), or anything unrecognized.
+        InitFailure::Fatal
+    }
+}
+
+/// Run the happy path once: open the pool, then migrate. On a migration failure the
+/// opened pool is returned alongside the error so the caller can CLOSE it before any
+/// file move (a held `-wal`/`-shm` keeps the file locked on Windows).
+async fn try_init_once(db_path: &Path) -> Result<SqlitePool, (AppError, Option<SqlitePool>)> {
+    match open_pool(db_path).await {
+        Ok(pool) => match run_migrations(&pool).await {
+            Ok(()) => Ok(pool),
+            Err(e) => Err((e, Some(pool))),
+        },
+        Err(e) => Err((e, None)),
+    }
+}
+
+/// Move a corrupt database aside and start fresh, returning a recovered [`DbInit`].
+/// The caller has already closed any open pool. If the move fails (a locked file),
+/// fall back to a uniquely-named fresh sibling rather than re-opening the bad file.
+async fn recover_with_fresh_db(
+    paths: &AppPaths,
+    db_path: &Path,
+    err: &AppError,
+) -> Result<DbInit, AppError> {
+    eprintln!("warning: the database is corrupt ({err}); moving it aside and creating a fresh one");
+
+    let backup_dir = paths.corrupt_backups_dir();
+    let backup_path = move_db_aside(db_path, &backup_dir);
+    match &backup_path {
+        Some(moved) => eprintln!(
+            "info: the previous database was preserved at {}",
+            moved.display()
+        ),
+        None => eprintln!(
+            "warning: could not move the existing database aside (it may be locked); \
+             starting a fresh database under a unique name instead"
+        ),
+    }
+
+    // If the move failed, the original file is still in place, so a fresh pool at the
+    // SAME path would re-hit the bad file; open the fresh database at a unique sibling.
+    let fresh_path = if backup_path.is_some() {
+        db_path.to_path_buf()
+    } else {
+        unique_fresh_db_path(db_path)
+    };
+
+    let fresh_pool = open_pool(&fresh_path).await?;
+    run_migrations(&fresh_pool).await?;
+
+    Ok(DbInit {
+        pool: fresh_pool,
+        recovered: true,
+        backup_path,
+    })
 }
 
 /// Move a database file and its `-wal`/`-shm` sidecars into `backup_dir`, named
@@ -489,6 +588,76 @@ mod tests {
             .await
             .expect("query");
         assert!(row.is_some(), "the fresh db must be migrated");
+    }
+
+    #[test]
+    fn classify_init_failure_resets_only_on_corruption() {
+        // DS-1 / BL-NI-41: the decision that gates a destructive reset. Only a
+        // genuine corruption signature is Corrupt; a lock is Locked (retry, never
+        // reset); a buggy migration / version-checksum mismatch / I/O error / any
+        // unrecognized cause is Fatal (fail loud, preserve data) - the cases the
+        // previous "reset on ANY error" code wrongly discarded.
+        assert_eq!(
+            classify_init_failure(
+                "error returned from database: (code: 26) file is not a database"
+            ),
+            InitFailure::Corrupt
+        );
+        assert_eq!(
+            classify_init_failure("database disk image is malformed"),
+            InitFailure::Corrupt
+        );
+        assert_eq!(
+            classify_init_failure("error returned from database: (code: 5) database is locked"),
+            InitFailure::Locked
+        );
+        assert_eq!(
+            classify_init_failure("error returned from database: no such column: foo"),
+            InitFailure::Fatal
+        );
+        assert_eq!(
+            classify_init_failure("migration 7 was previously applied but has been modified"),
+            InitFailure::Fatal
+        );
+        assert_eq!(
+            classify_init_failure("unable to open database file"),
+            InitFailure::Fatal
+        );
+        assert_eq!(classify_init_failure(""), InitFailure::Fatal);
+    }
+
+    #[tokio::test]
+    async fn init_pool_with_recovery_fails_loud_on_non_corruption() {
+        // DS-1 / BL-NI-41: a NON-corruption open failure must fail LOUD and leave
+        // the db path untouched, NOT silently move it aside and start fresh. Trigger
+        // a cant-open I/O error (not a corruption signature) by putting a DIRECTORY
+        // where the db file should be.
+        let tmp = TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().join("RepoSync"));
+        paths.ensure_dirs().expect("ensure dirs");
+        let db_path = paths.db_path();
+        std::fs::create_dir_all(&db_path).expect("seed a directory at the db path");
+
+        let result = init_pool_with_recovery(&paths).await;
+
+        assert!(
+            result.is_err(),
+            "a non-corruption failure must fail loud, not recover"
+        );
+        assert!(
+            db_path.is_dir(),
+            "the db path must be left untouched (not reset)"
+        );
+        // No reset happened: nothing was moved into corrupt-backups/.
+        let backups = paths.corrupt_backups_dir();
+        let moved_anything = backups.exists()
+            && std::fs::read_dir(&backups)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+        assert!(
+            !moved_anything,
+            "no data may be moved aside on a non-corruption failure"
+        );
     }
 
     #[tokio::test]

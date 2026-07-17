@@ -697,7 +697,11 @@ async fn execute_action(
             // `git pull --ff-only` only refuses a CONFLICTING dirty tree, so the
             // "never fast-forward a dirty tree" guarantee is enforced HERE, in our
             // code, not git's internals. A tree dirtied since the decide skips.
-            if git.inspect(path).map(|i| i.is_dirty).unwrap_or(false) {
+            // PS-1: fail CLOSED - an inspect error (the tree became unreadable at
+            // this instant) resolves to "dirty" and skips, never proceeding to the
+            // pull. This matches every other unknown-state site in the engine
+            // (inspect.rs treats a status-read error as dirty, not clean).
+            if git.inspect(path).map(|i| i.is_dirty).unwrap_or(true) {
                 return Ok(from_fetch(
                     "skipped",
                     "success",
@@ -1495,6 +1499,49 @@ mod tests {
         assert!(
             raw.as_deref().map(|s| !s.contains("fetch")).unwrap_or(true),
             "no-upstream fetch_only skips without fetching, got {raw:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a real git engine (ignored tier): run with --ignored"]
+    async fn execute_action_h1_recheck_fails_closed_on_inspect_error() {
+        // PS-1: the H-1 dirty re-check must FAIL CLOSED. If git2 cannot inspect the
+        // tree at the pull moment (here the path is not a git repo, so inspect
+        // errors), the guard treats it as dirty and SKIPS - it must NOT proceed to
+        // the mutating `pull --ff-only`. This matches every other unknown-state site
+        // in the engine (a status-read error reads as dirty, not clean).
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping execute_action_h1_recheck_fails_closed_on_inspect_error: git missing"
+            );
+            return;
+        };
+        // A path that is NOT a git repo, so git.inspect(...) returns Err here.
+        let tmp = TempDir::new().unwrap();
+        let not_a_repo = tmp.path();
+        assert!(
+            git.inspect(not_a_repo).is_err(),
+            "precondition: inspect must error on a non-repo path"
+        );
+
+        let exec = execute_action(
+            &git,
+            not_a_repo,
+            None,
+            PolicyDecision::Act(Action::PullFastForward),
+            None,
+        )
+        .await
+        .expect("execute_action ok");
+
+        assert_eq!(
+            exec.outcome, "skipped",
+            "an unreadable tree at H-1 must skip (fail closed), not fast-forward"
+        );
+        assert_eq!(
+            exec.reason_code.as_deref(),
+            Some("git.dirty_tree"),
+            "the fail-closed skip records the dirty reason code"
         );
     }
 

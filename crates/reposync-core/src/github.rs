@@ -1209,6 +1209,18 @@ impl ReqwestTransport {
     pub fn new() -> Result<ReqwestTransport, AppError> {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            // Bound every request. reqwest has NO default request timeout, so a
+            // half-open or silently-dropped socket would block the refresh task for
+            // the OS TCP timeout (minutes) while it holds the shared rate-budget
+            // lock, wedging all metadata refresh. Correctness CC-1 / security R3.
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            // The API host is a compile-time constant, so a cross-host redirect is
+            // never legitimate; following one (reqwest default: up to 10) is an SSRF
+            // primitive toward an internal target (e.g. 169.254.169.254 or a
+            // localhost port). Refuse redirects; a 3xx then fails the is_success()
+            // check below and degrades to NetworkLost. Security R3.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| AppError::Unexpected {
                 context: format!("failed to build the GitHub HTTP client: {e}"),
