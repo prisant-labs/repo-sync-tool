@@ -21,7 +21,7 @@ edition = "2021"
 version = "0.9.0"
 license = "MIT"
 authors = ["RepoSync contributors"]
-repository = "https://github.com/product-on-purpose/repo-sync-tool"
+repository = "https://github.com/prisant-labs/repo-sync-tool"
 
 [workspace.dependencies]
 # Tauri stack. EXACT pins (= prefix) are load-bearing per AC7: tauri-specta v2

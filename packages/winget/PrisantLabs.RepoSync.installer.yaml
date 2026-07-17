@@ -11,7 +11,7 @@
 # valid 64-hex placeholder so `winget validate` passes offline; it is NOT the real hash.
 # At the flip: download the published NSIS installer, compute its SHA256, set both
 # fields, re-run `winget validate`, then `wingetcreate submit`.
-PackageIdentifier: ProductOnPurpose.RepoSync
+PackageIdentifier: PrisantLabs.RepoSync
 PackageVersion: 0.9.0
 InstallerType: nullsoft
 Scope: user
@@ -21,7 +21,7 @@ InstallModes:
   - silentWithProgress
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/product-on-purpose/repo-sync-tool/releases/download/v0.9.0/RepoSync_0.9.0_x64-setup.exe
+    InstallerUrl: https://github.com/prisant-labs/repo-sync-tool/releases/download/v0.9.0/RepoSync_0.9.0_x64-setup.exe
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: installer
 ManifestVersion: 1.6.0
