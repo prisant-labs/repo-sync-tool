@@ -8,7 +8,7 @@
 # microsoft/winget-pkgs is a PUBLIC-FLIP checklist item (see the runbook appendix and
 # the E-18 implementation plan). PackageVersion tracks the first release target
 # (v0.9.0); finalize it against the actual released version at the flip.
-PackageIdentifier: ProductOnPurpose.RepoSync
+PackageIdentifier: PrisantLabs.RepoSync
 PackageVersion: 0.9.0
 DefaultLocale: en-US
 ManifestType: version
