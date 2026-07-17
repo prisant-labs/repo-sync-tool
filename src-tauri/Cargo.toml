@@ -17,7 +17,7 @@ description = "RepoSync - a cross-platform repository sync tray utility"
 authors = ["RepoSync contributors"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/product-on-purpose/repo-sync-tool"
+repository = "https://github.com/prisant-labs/repo-sync-tool"
 default-run = "reposync"
 
 # Tauri v2 library pattern: the app entry point lives in the library

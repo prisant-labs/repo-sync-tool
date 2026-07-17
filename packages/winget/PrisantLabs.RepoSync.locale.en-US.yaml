@@ -4,16 +4,16 @@
 #
 # Prepared and validated OFFLINE only while the repo is private; submission is a
 # public-flip checklist item. Publisher/PackageName are the working identity
-# (ProductOnPurpose / RepoSync); confirm against the final brand at the flip.
-PackageIdentifier: ProductOnPurpose.RepoSync
+# (PrisantLabs / RepoSync); confirm against the final brand at the flip.
+PackageIdentifier: PrisantLabs.RepoSync
 PackageVersion: 0.9.0
 PackageLocale: en-US
-Publisher: Product on Purpose
-PublisherUrl: https://github.com/product-on-purpose
+Publisher: Prisant Labs
+PublisherUrl: https://github.com/prisant-labs
 PackageName: RepoSync
-PackageUrl: https://github.com/product-on-purpose/repo-sync-tool
+PackageUrl: https://github.com/prisant-labs/repo-sync-tool
 License: MIT
-LicenseUrl: https://github.com/product-on-purpose/repo-sync-tool/blob/main/LICENSE
+LicenseUrl: https://github.com/prisant-labs/repo-sync-tool/blob/main/LICENSE
 ShortDescription: A Windows-first tray utility that keeps a personal library of cloned Git repositories fresh and visible.
 Moniker: reposync
 Tags:
