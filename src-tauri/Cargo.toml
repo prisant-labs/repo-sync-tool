@@ -51,6 +51,10 @@ tauri-plugin-autostart = { workspace = true }
 # wrappers and the on-launch check live here.
 tauri-plugin-updater = { workspace = true }
 tauri-plugin-process = { workspace = true }
+# BL-NI-46 native folder picker: the "Add repositories" dialog uses this to open the OS
+# folder picker (Explorer / Finder). Registered in `lib.rs`; the `dialog:allow-open`
+# capability permission is granted in `capabilities/default.json`.
+tauri-plugin-dialog = { workspace = true }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
 serde = { workspace = true }

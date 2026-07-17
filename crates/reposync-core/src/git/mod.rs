@@ -434,22 +434,34 @@ fn candidate_is_runnable(candidate: &Path) -> bool {
 
 /// Whether `<exe> --version` spawns and exits zero (synchronous probe).
 fn spawn_version_ok(exe: &Path) -> bool {
-    std::process::Command::new(exe)
-        .arg("--version")
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--version")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .stderr(std::process::Stdio::null());
+    // Suppress the transient console window on Windows (see git::cli::run_git).
+    // std::process::Command needs the CommandExt trait in scope for this method.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.status().map(|s| s.success()).unwrap_or(false)
 }
 
 /// Run `<exe> --version` and parse the version. `None` if the spawn fails or
 /// the output does not parse.
 fn probe_version(exe: &Path) -> Option<GitVersion> {
-    let output = std::process::Command::new(exe)
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--version");
+    // Suppress the transient console window on Windows (see git::cli::run_git).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }

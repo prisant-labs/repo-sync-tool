@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { FolderSearch, Loader2, Plus } from "lucide-react";
+import { FolderOpen, FolderSearch, Loader2, Plus } from "lucide-react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { commands } from "@/lib/bindings";
 import type { ScanCandidate } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
@@ -30,6 +31,16 @@ export function AddReposDialog({
     setSelected(new Set());
     setBusy(null);
     onClose();
+  }
+
+  async function browse() {
+    // Native OS folder picker (Explorer on Windows / Finder on macOS) via
+    // tauri-plugin-dialog. Cancel resolves to null; a pick resolves to a single
+    // directory path string, which feeds the same `path` state Scan and Add read
+    // (so no extra wiring - Browse just populates the input). Import is aliased to
+    // openDialog because this component already binds a prop named `open`.
+    const picked = await openDialog({ directory: true, multiple: false });
+    if (typeof picked === "string") setPath(picked);
   }
 
   async function scan() {
@@ -112,7 +123,7 @@ export function AddReposDialog({
       <div className="border-b border-border px-5 py-4">
         <h2 className="text-base font-semibold">Add repositories</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          Scan a folder for git repositories, or add a single repository by path.
+          Browse for a folder or type a path, then scan it for git repositories or add a single repository directly.
         </p>
       </div>
 
@@ -127,6 +138,9 @@ export function AddReposDialog({
               if (e.key === "Enter") void scan();
             }}
           />
+          <Button variant="outline" onClick={() => void browse()}>
+            <FolderOpen /> Browse
+          </Button>
           <Button variant="secondary" disabled={!path.trim() || scanning} onClick={() => void scan()}>
             {scanning ? <Loader2 className="animate-spin" /> : <FolderSearch />} Scan
           </Button>
