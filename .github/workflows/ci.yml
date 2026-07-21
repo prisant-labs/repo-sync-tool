@@ -107,13 +107,12 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Only trunk and the active v0.9.0 release branch WRITE the shared cache; PR and
-          # feature branches READ it but never save, so a PR cannot poison or thrash the
-          # shared cache (ci-plan.md Section 2.7). The trade-off is that a PR which changes
-          # dependencies builds those cold, which is acceptable.
-          # NOTE: prune 'build/e-01-foundation' back to just 'main' once the v0.9.0 release
-          # branch merges - it is the active release branch only for the v0.9.0 push.
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/build/e-01-foundation' }}
+          # Only main WRITES the shared cache; PR and feature branches READ it but never
+          # save, so a PR cannot poison or thrash the shared cache (ci-plan.md Section
+          # 2.7). The trade-off is that a PR which changes dependencies builds those cold,
+          # which is acceptable. (The v0.9.0 release branch 'build/e-01-foundation' was a
+          # second writer during that push; it was retired once v0.9.0 merged.)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           # Never persist a target dir from a failed run.
           cache-on-failure: false
 
@@ -269,11 +268,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          # Same write policy as the build job: only main and the active v0.9.0 release branch
-          # save. rust-cache keys per job (and per OS), so this job keeps a cache distinct from
-          # the build job's and cannot clobber it. Prune 'build/e-01-foundation' to just 'main'
-          # once the release branch merges.
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/build/e-01-foundation' }}
+          # Same write policy as the build job: only main saves. rust-cache keys per job
+          # (and per OS), so this job keeps a cache distinct from the build job's and cannot
+          # clobber it. (The retired v0.9.0 release branch 'build/e-01-foundation' was a
+          # second writer during that push.)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: false
 
       # SLOW git-fixture unit tier: the #[ignore]-marked library unit tests in reposync-core -
