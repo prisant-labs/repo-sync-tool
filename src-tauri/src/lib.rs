@@ -181,6 +181,31 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
         .semantic_types(semantic)
 }
 
+/// Navigation allowlist for the main WebView (BL-NI-59). Returns `true` to permit a
+/// navigation, `false` to cancel it.
+///
+/// The CSP (BL-NI-58) restricts script-interface egress (`connect-src`) but CANNOT
+/// restrict top-level navigation, so any script running as `'self'` (most plausibly a
+/// compromised bundled dependency, not XSS - React escapes uniformly) could still
+/// `window.location` the WebView off-origin to exfiltrate. This closes that gap by
+/// allowing ONLY the app's own origin (and, in dev, the Vite dev server) and denying
+/// everything else.
+///
+/// Origins allowed (host-based where possible, so the http/https scheme on Windows does
+/// not matter):
+///   - `tauri://localhost`         - macOS/Linux production origin (scheme `tauri`)
+///   - `http(s)://tauri.localhost` - Windows production origin (host `tauri.localhost`)
+///   - `http://localhost:<port>`   - the Vite dev server, DEV runs only (host `localhost`)
+///
+/// Pure and side-effect-free so the policy is unit-testable without a Tauri runtime. The
+/// caller passes `tauri::is_dev()` for `is_dev` - true only under `tauri dev`, when the
+/// dev server actually exists. NOT `cfg!(debug_assertions)`, which is also true for a
+/// shipped `tauri build --debug` bundle that loads from `tauri.localhost`, where allowing
+/// `localhost` would be a needless hole.
+fn allow_navigation(scheme: &str, host: Option<&str>, is_dev: bool) -> bool {
+    scheme == "tauri" || host == Some("tauri.localhost") || (is_dev && host == Some("localhost"))
+}
+
 /// Application entry point invoked by `main.rs` (and the mobile entry point).
 ///
 /// Builds the `tauri-specta` command/event surface, wires the invoke handler,
@@ -234,11 +259,30 @@ pub fn run() {
             // for an installed Windows app; a denial is logged, never fatal).
             notify::ensure_permission(app.handle());
 
+            // BL-NI-59: create the main window in Rust (it was removed from
+            // tauri.conf.json `app.windows`) so we can attach an `on_navigation`
+            // allowlist - a builder-time-only guard the config path cannot express. The
+            // CSP (BL-NI-58) restricts script-interface egress (`connect-src`) but CANNOT
+            // restrict top-level navigation, so a script running as `'self'` (most
+            // plausibly a compromised bundled dependency) could still `window.location`
+            // the WebView off-origin to exfiltrate. `allow_navigation` denies that. The
+            // window is created HIDDEN (`visible(false)`, exactly as the old config
+            // declared); the lifecycle below shows it on a normal launch, so startup
+            // still never flashes.
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                .title("RepoSync")
+                .inner_size(900.0, 600.0)
+                .visible(false)
+                .on_navigation(|url| {
+                    allow_navigation(url.scheme(), url.host_str(), tauri::is_dev())
+                })
+                .build()?;
+
             // Window lifecycle (E-13 AC3 + E-15 AC3, P3-C) is wired AFTER the tray is
             // built (below, in the async block), because close-to-tray and start-
             // minimized are only safe when the tray - the sole restore/quit path -
-            // actually built (finding 2). The window stays config-declared
-            // `visible: false` until then, so nothing flashes in the meantime.
+            // actually built (finding 2). The window is created hidden above, so it
+            // stays hidden until the lifecycle shows it, and nothing flashes meanwhile.
 
             // Initialize the pool + git engine synchronously during setup. The
             // tracer accepts a blocking init; later efforts can move this off
@@ -589,8 +633,8 @@ pub fn run() {
                 // button hides-to-tray (only the tray "Quit" exits). WITHOUT a tray
                 // there is no restore path, so we never start hidden and never intercept
                 // the close - even an autostart launch ends visible and quittable
-                // (finding 2). The window is config-declared `visible: false`, so it
-                // stays hidden until this shows it, avoiding a startup flash.
+                // (finding 2). The window was created hidden (`visible(false)`) in setup
+                // (BL-NI-59), so it stays hidden until this shows it, avoiding a flash.
                 windows::init(&handle, tray_available);
 
                 // E-18 auto-update: spawn the on-launch update check in the
@@ -634,4 +678,48 @@ pub fn export_bindings(path: &str) -> Result<(), specta_typescript::Error> {
     // `ban-ts-comment` would flag that anyway.)
     let ts = specta_typescript::Typescript::default().header("/* eslint-disable */\n");
     specta_builder().export(ts, path)
+}
+
+#[cfg(test)]
+mod nav_guard_tests {
+    use super::allow_navigation;
+
+    #[test]
+    fn allows_the_app_origin_on_every_platform() {
+        // macOS/Linux production origin: tauri://localhost.
+        assert!(allow_navigation("tauri", Some("localhost"), false));
+        // Windows production origin: http(s)://tauri.localhost. Host-based, so either
+        // scheme (default http, or https when useHttpsScheme is set) is allowed.
+        assert!(allow_navigation("http", Some("tauri.localhost"), false));
+        assert!(allow_navigation("https", Some("tauri.localhost"), false));
+    }
+
+    #[test]
+    fn allows_the_dev_server_only_in_dev() {
+        // Under `tauri dev` the Vite dev server (http://localhost:1420) is the origin.
+        assert!(allow_navigation("http", Some("localhost"), true));
+        // In a shipped build (is_dev == false) the dev-server host is NOT allowed - even
+        // a `tauri build --debug` bundle (debug_assertions on) loads from tauri.localhost,
+        // so gating on is_dev rather than debug_assertions avoids a needless hole.
+        assert!(!allow_navigation("http", Some("localhost"), false));
+    }
+
+    #[test]
+    fn denies_external_navigation() {
+        assert!(!allow_navigation("https", Some("evil.example"), false));
+        assert!(!allow_navigation("https", Some("evil.example"), true));
+        // Exact host match: neither a look-alike subdomain nor a suffix/prefix slips in.
+        assert!(!allow_navigation(
+            "https",
+            Some("tauri.localhost.evil.example"),
+            false
+        ));
+        assert!(!allow_navigation(
+            "https",
+            Some("evil-tauri.localhost"),
+            false
+        ));
+        // An opaque origin with no host (e.g. data:) is denied.
+        assert!(!allow_navigation("data", None, false));
+    }
 }
