@@ -90,6 +90,12 @@ pub struct Settings {
     /// Provisional-additive per E-06's additive-revision rule; mirrors the
     /// `settings.auto_update_check` column added in migration `0006_auto_update.sql`.
     pub auto_update_check: bool,
+    /// Whether the window's close (X) button HIDES the app to the tray (`true`,
+    /// the default and prior hardcoded behavior) or QUITS it (`false`). Read live
+    /// by the close handler via a mirrored `AtomicBool` in the shell's AppState.
+    /// Mirrors the `settings.close_minimizes_to_tray` column added in migration
+    /// `0007_close_minimizes_to_tray.sql`.
+    pub close_minimizes_to_tray: bool,
 }
 
 /// The at-a-glance form of a tracked repo (list view). A flattened join of
@@ -575,6 +581,7 @@ mod tests {
             activity_retention_d: 90,
             github_token_present: false,
             auto_update_check: true,
+            close_minimizes_to_tray: true,
         };
         assert_round_trip(&settings);
 

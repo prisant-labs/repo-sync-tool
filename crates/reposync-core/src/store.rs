@@ -336,7 +336,7 @@ pub async fn settings_get(pool: &SqlitePool) -> Result<Settings, AppError> {
         "SELECT global_check_minutes, quiet_hours_start, quiet_hours_end, \
             notify_on_release, notify_on_failure, git_executable_path, \
             editor_command, terminal_command, autostart, activity_retention_d, \
-            github_token_present, auto_update_check \
+            github_token_present, auto_update_check, close_minimizes_to_tray \
          FROM settings WHERE id = 1",
     )
     .fetch_one(pool)
@@ -355,6 +355,7 @@ pub async fn settings_get(pool: &SqlitePool) -> Result<Settings, AppError> {
         activity_retention_d: r.try_get("activity_retention_d")?,
         github_token_present: int_to_bool(r.try_get("github_token_present")?),
         auto_update_check: int_to_bool(r.try_get("auto_update_check")?),
+        close_minimizes_to_tray: int_to_bool(r.try_get("close_minimizes_to_tray")?),
     })
 }
 
@@ -369,8 +370,8 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
             id, global_check_minutes, quiet_hours_start, quiet_hours_end, \
             notify_on_release, notify_on_failure, git_executable_path, \
             editor_command, terminal_command, autostart, activity_retention_d, \
-            auto_update_check) \
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+            auto_update_check, close_minimizes_to_tray) \
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET \
             global_check_minutes = excluded.global_check_minutes, \
             quiet_hours_start = excluded.quiet_hours_start, \
@@ -382,7 +383,8 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
             terminal_command = excluded.terminal_command, \
             autostart = excluded.autostart, \
             activity_retention_d = excluded.activity_retention_d, \
-            auto_update_check = excluded.auto_update_check",
+            auto_update_check = excluded.auto_update_check, \
+            close_minimizes_to_tray = excluded.close_minimizes_to_tray",
     )
     .bind(settings.global_check_minutes)
     .bind(settings.quiet_hours_start)
@@ -395,6 +397,7 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
     .bind(bool_to_int(settings.autostart))
     .bind(settings.activity_retention_d)
     .bind(bool_to_int(settings.auto_update_check))
+    .bind(bool_to_int(settings.close_minimizes_to_tray))
     .execute(pool)
     .await?;
 
@@ -636,6 +639,28 @@ pub async fn group_rename(pool: &SqlitePool, id: i64, name: &str) -> Result<(), 
             return Err(AppError::from(e));
         }
     };
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: format!("group {id}"),
+        });
+    }
+    Ok(())
+}
+
+/// Set (or clear, with `None`) a group's color. Color is stored as a raw string
+/// with no format validation (the frontend picks from a fixed palette; BL-NI
+/// group-color-edit). A missing id (0 rows affected) is [`AppError::NotFound`],
+/// matching [`group_rename`].
+pub async fn group_set_color(
+    pool: &SqlitePool,
+    id: i64,
+    color: Option<&str>,
+) -> Result<(), AppError> {
+    let updated = sqlx::query("UPDATE groups SET color = ? WHERE id = ?")
+        .bind(color)
+        .bind(id)
+        .execute(pool)
+        .await?;
     if updated.rows_affected() == 0 {
         return Err(AppError::NotFound {
             entity: format!("group {id}"),
@@ -1237,6 +1262,7 @@ mod tests {
             activity_retention_d: 30,
             github_token_present: false,
             auto_update_check: false,
+            close_minimizes_to_tray: false,
         };
         settings_set(&pool, &updated).await.expect("set");
         let back = settings_get(&pool).await.expect("get");
@@ -1247,6 +1273,8 @@ mod tests {
         assert_eq!(back.editor_command.as_deref(), Some("code"));
         // E-18: the toggle round-trips (default-on flipped to off and persisted).
         assert!(!back.auto_update_check);
+        // Close-to-tray toggle round-trips (default-on flipped to off).
+        assert!(!back.close_minimizes_to_tray);
 
         // Still exactly one settings row (singleton upsert, not insert).
         let count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM settings")

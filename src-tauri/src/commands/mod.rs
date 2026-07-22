@@ -521,6 +521,15 @@ pub async fn settings_set(
 
     reposync_core::store::settings_set(&state.pool, &settings).await?;
 
+    // Mirror the close-button behavior into the shared flag the window
+    // CloseRequested handler reads (it is synchronous and cannot query the DB).
+    // Storing unconditionally keeps the flag exactly in sync with the just-persisted
+    // value; the handler reads it fresh on the next close, so the change is live.
+    state.close_minimizes_to_tray.store(
+        settings.close_minimizes_to_tray,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     // Finding 1: only reconcile the LIVE git engine when `git_executable_path`
     // ACTUALLY changed from the previously persisted value. The git re-probe, the
     // autostart actuation, and the inherit-cadence reschedule are INDEPENDENT
@@ -762,6 +771,17 @@ pub async fn group_rename(
     name: String,
 ) -> Result<(), AppError> {
     reposync_core::store::group_rename(&state.pool, id, &name).await
+}
+
+/// Set (or clear, with null) a group's color. A missing id is NotFound.
+#[tauri::command]
+#[specta::specta]
+pub async fn group_set_color(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    color: Option<String>,
+) -> Result<(), AppError> {
+    reposync_core::store::group_set_color(&state.pool, id, color.as_deref()).await
 }
 
 /// Delete a group (idempotent; memberships cascade away).

@@ -113,6 +113,15 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           <Field label="Launch on login" hint="Start RepoSync automatically when you sign in.">
             <Switch checked={draft.autostart} onCheckedChange={(v) => set("autostart", v)} />
           </Field>
+          <Field
+            label="Close button minimizes to tray"
+            hint="When off, the close (X) button quits RepoSync instead of hiding it to the tray."
+          >
+            <Switch
+              checked={draft.closeMinimizesToTray}
+              onCheckedChange={(v) => set("closeMinimizesToTray", v)}
+            />
+          </Field>
           <Field label="Activity retention" hint="Days of activity history to keep.">
             <NumberInput
               value={draft.activityRetentionD}

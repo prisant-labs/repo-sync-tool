@@ -237,6 +237,7 @@ mod tests {
             activity_retention_d: 90,
             github_token_present: false,
             auto_update_check: true,
+            close_minimizes_to_tray: true,
         }
     }
 

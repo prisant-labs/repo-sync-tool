@@ -3,8 +3,8 @@
 //! Owning effort: E-01 (Foundation) for the stub; E-13 (tray native menu, P3-C)
 //! wires the resident-utility window lifecycle here.
 //!
-//! RepoSync is a resident tray utility with one main window (declared
-//! `visible: false` in `tauri.conf.json`). Two behaviors live here:
+//! RepoSync is a resident tray utility with one main window (created hidden
+//! (`visible: false`) in Rust `setup()` per BL-NI-59). Two behaviors live here:
 //!
 //!   - **Initial visibility (E-15 AC3):** a NORMAL launch shows + focuses the window;
 //!     an AUTOSTART launch leaves it hidden in the tray (the tray "Show RepoSync"
@@ -12,8 +12,11 @@
 //!     explicitly on a normal launch avoids the startup flash the earlier
 //!     hide-after-show approach could cause (see the handoff note on
 //!     [`crate::autostart::AUTOSTART_LAUNCH_FLAG`]).
-//!   - **Close-to-tray (E-13 AC3):** the window's close button HIDES it to the tray
-//!     instead of exiting; only the tray "Quit" item fully exits the app.
+//!   - **Close-to-tray (E-13 AC3), user-configurable:** when the
+//!     `close_minimizes_to_tray` setting is ON (the default), the window's close
+//!     button HIDES it to the tray instead of exiting, and only the tray "Quit"
+//!     item fully exits; when OFF, the close button exits the app. Read live from a
+//!     shared AtomicBool so a Settings toggle takes effect with no restart.
 //!
 //! Both behaviors are GATED on a successfully built system tray (finding 2). Because
 //! the tray is the only restore/quit path, hiding-on-close or starting-minimized
@@ -29,7 +32,11 @@ use tauri::{AppHandle, Manager, WindowEvent};
 /// wire close-to-tray, gated on whether a system tray was successfully built
 /// (`tray_available`). Called once from `lib.rs` setup AFTER `tray::init`. A missing
 /// main window is a no-op.
-pub fn init(app: &AppHandle, tray_available: bool) {
+pub fn init(
+    app: &AppHandle,
+    tray_available: bool,
+    close_minimizes_to_tray: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -58,8 +65,16 @@ pub fn init(app: &AppHandle, tray_available: bool) {
         let hide_target = window.clone();
         window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = hide_target.hide();
+                // Live `close_minimizes_to_tray` setting (default true). When ON, the
+                // close (X) button hides the window to the tray and the app keeps
+                // running; when OFF, we do NOT prevent the close, so the window closes
+                // and the app exits (this is the only window). The flag is read fresh
+                // on every close, so toggling it in Settings takes effect with no
+                // restart.
+                if close_minimizes_to_tray.load(std::sync::atomic::Ordering::Relaxed) {
+                    api.prevent_close();
+                    let _ = hide_target.hide();
+                }
             }
         });
     }
