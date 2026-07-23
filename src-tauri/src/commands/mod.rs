@@ -762,26 +762,18 @@ pub async fn group_create(
     reposync_core::store::group_create(&state.pool, &name, color.as_deref()).await
 }
 
-/// Rename a group. A duplicate name is rejected; a missing id is NotFound.
+/// Update a group's name and color atomically. A duplicate name is rejected; a
+/// missing id is NotFound. A single UPDATE, so a name clash leaves both fields
+/// unchanged - an edit never partially persists.
 #[tauri::command]
 #[specta::specta]
-pub async fn group_rename(
+pub async fn group_update(
     state: tauri::State<'_, AppState>,
     id: i64,
     name: String,
-) -> Result<(), AppError> {
-    reposync_core::store::group_rename(&state.pool, id, &name).await
-}
-
-/// Set (or clear, with null) a group's color. A missing id is NotFound.
-#[tauri::command]
-#[specta::specta]
-pub async fn group_set_color(
-    state: tauri::State<'_, AppState>,
-    id: i64,
     color: Option<String>,
 ) -> Result<(), AppError> {
-    reposync_core::store::group_set_color(&state.pool, id, color.as_deref()).await
+    reposync_core::store::group_update(&state.pool, id, &name, color.as_deref()).await
 }
 
 /// Delete a group (idempotent; memberships cascade away).

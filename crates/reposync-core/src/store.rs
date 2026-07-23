@@ -620,11 +620,22 @@ pub async fn group_create(
     })
 }
 
-/// Rename a group. A duplicate name maps to [`AppError::InvalidSetting`]
-/// (`field: "name"`); a missing id (0 rows affected) is [`AppError::NotFound`].
-pub async fn group_rename(pool: &SqlitePool, id: i64, name: &str) -> Result<(), AppError> {
-    let res = sqlx::query("UPDATE groups SET name = ? WHERE id = ?")
+/// Update a group's name and color in ONE atomic statement. A duplicate name maps
+/// to [`AppError::InvalidSetting`] (`field: "name"`); a missing id (0 rows affected)
+/// is [`AppError::NotFound`]. Because it is a single UPDATE, a name clash rejects the
+/// WHOLE change - name and color both stay unchanged - so an edit can never partially
+/// persist (Codex adversarial review, 2026-07-22, replacing a two-command
+/// rename-then-set-color edit flow). Color is a raw string with no format validation
+/// (the frontend picks from a fixed palette).
+pub async fn group_update(
+    pool: &SqlitePool,
+    id: i64,
+    name: &str,
+    color: Option<&str>,
+) -> Result<(), AppError> {
+    let res = sqlx::query("UPDATE groups SET name = ?, color = ? WHERE id = ?")
         .bind(name)
+        .bind(color)
         .bind(id)
         .execute(pool)
         .await;
@@ -639,28 +650,6 @@ pub async fn group_rename(pool: &SqlitePool, id: i64, name: &str) -> Result<(), 
             return Err(AppError::from(e));
         }
     };
-    if updated.rows_affected() == 0 {
-        return Err(AppError::NotFound {
-            entity: format!("group {id}"),
-        });
-    }
-    Ok(())
-}
-
-/// Set (or clear, with `None`) a group's color. Color is stored as a raw string
-/// with no format validation (the frontend picks from a fixed palette; BL-NI
-/// group-color-edit). A missing id (0 rows affected) is [`AppError::NotFound`],
-/// matching [`group_rename`].
-pub async fn group_set_color(
-    pool: &SqlitePool,
-    id: i64,
-    color: Option<&str>,
-) -> Result<(), AppError> {
-    let updated = sqlx::query("UPDATE groups SET color = ? WHERE id = ?")
-        .bind(color)
-        .bind(id)
-        .execute(pool)
-        .await?;
     if updated.rows_affected() == 0 {
         return Err(AppError::NotFound {
             entity: format!("group {id}"),
@@ -1547,18 +1536,38 @@ mod tests {
             "duplicate create name must map to InvalidSetting, got {dup:?}"
         );
 
-        // A rename that collides with an existing name maps the same way.
-        let clash = group_rename(&pool, other.id, "backend").await;
+        // Give the other group a known color, then attempt an update whose NAME
+        // collides. It maps to InvalidSetting AND is atomic: the rejected single
+        // UPDATE leaves BOTH name and color unchanged (Codex adversarial review
+        // 2026-07-22 - a name+color edit must never partially persist).
+        group_update(&pool, other.id, "frontend", Some("#111111"))
+            .await
+            .expect("seed a known color");
+        let clash = group_update(&pool, other.id, "backend", Some("#222222")).await;
         assert!(
             matches!(&clash, Err(AppError::InvalidSetting { field }) if field == "name"),
-            "duplicate rename name must map to InvalidSetting, got {clash:?}"
+            "duplicate update name must map to InvalidSetting, got {clash:?}"
+        );
+        let after = groups_list(&pool).await.expect("list");
+        let other_after = after
+            .iter()
+            .find(|g| g.id == other.id)
+            .expect("other group present");
+        assert_eq!(
+            other_after.name, "frontend",
+            "a clashing update must not rename"
+        );
+        assert_eq!(
+            other_after.color.as_deref(),
+            Some("#111111"),
+            "a clashing update must not change color either (atomic all-or-nothing)"
         );
 
-        // Renaming a missing group id is NotFound.
-        let missing = group_rename(&pool, 9999, "whatever").await;
+        // Updating a missing group id is NotFound.
+        let missing = group_update(&pool, 9999, "whatever", None).await;
         assert!(
             matches!(missing, Err(AppError::NotFound { .. })),
-            "rename of a missing group must be NotFound"
+            "update of a missing group must be NotFound"
         );
     }
 

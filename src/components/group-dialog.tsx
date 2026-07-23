@@ -32,7 +32,7 @@ const GROUP_COLORS = [
 const GROUP_COLOR_NAMES = ["Blue", "Green", "Amber", "Red", "Violet", "Magenta", "Teal", "Slate"];
 
 /**
- * Whether an error is `group_create` / `group_rename`'s duplicate-name
+ * Whether an error is `group_create` / `group_update`'s duplicate-name
  * rejection, keyed on the error code and the `field` it carries (E-16 Known
  * defect 4) rather than string-matching the message, so it stays robust if
  * the wire message text ever changes.
@@ -44,10 +44,10 @@ function isDuplicateNameError(e: unknown): boolean {
 }
 
 /**
- * Create or rename a group. In create mode it collects a name plus a preset
- * color; in rename mode only the name is editable (the backend `group_rename`
- * command carries no color). On success it toasts and calls `onSaved` so the
- * caller can refetch the group list.
+ * Create or edit a group. Both modes collect a name plus a preset color. Create
+ * calls `group_create`; edit calls `group_update`, which persists name + color in
+ * one atomic backend write. On success it toasts and calls `onSaved` so the caller
+ * can refetch the group list.
  */
 export function GroupDialog({
   open,
@@ -96,13 +96,10 @@ export function GroupDialog({
         await unwrap(commands.groupCreate(trimmed, color));
         toast("ok", "Group created", trimmed);
       } else if (group) {
-        // Edit: rename only when the name actually changed (so a duplicate-name
-        // error can't fire on a color-only edit), then always persist the
-        // selected color (the UPDATE is idempotent).
-        if (trimmed !== group.name) {
-          await unwrap(commands.groupRename(group.id, trimmed));
-        }
-        await unwrap(commands.groupSetColor(group.id, color));
+        // Edit: ONE atomic backend update of name + color. A single UPDATE, so a
+        // name clash can never leave the rename partially persisted while the color
+        // write fails (Codex adversarial review, 2026-07-22).
+        await unwrap(commands.groupUpdate(group.id, trimmed, color));
         toast("ok", "Group updated", trimmed);
       }
       onSaved();
@@ -110,7 +107,7 @@ export function GroupDialog({
     } catch (e) {
       toast(
         "error",
-        mode === "create" ? "Could not create group" : "Could not rename group",
+        mode === "create" ? "Could not create group" : "Could not update group",
         isDuplicateNameError(e)
           ? "That name is already taken."
           : e instanceof IpcError

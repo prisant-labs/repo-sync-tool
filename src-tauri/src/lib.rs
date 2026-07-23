@@ -26,12 +26,11 @@ use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
     activity_list, app_check_for_update, app_install_update, db_recovery_notice, group_assign,
-    group_create, group_delete, group_list, group_rename, group_set_color, group_unassign,
-    groups_for_repo, repo_add_path, repo_check_all, repo_check_now, repo_get,
-    repo_group_memberships, repo_list, repo_open_editor, repo_open_folder, repo_open_remote,
-    repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_cadence,
-    repo_set_enabled, repo_set_policy, repo_update_now, settings_get, settings_set, summary_today,
-    summary_week,
+    group_create, group_delete, group_list, group_unassign, group_update, groups_for_repo,
+    repo_add_path, repo_check_all, repo_check_now, repo_get, repo_group_memberships, repo_list,
+    repo_open_editor, repo_open_folder, repo_open_remote, repo_open_terminal,
+    repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_cadence, repo_set_enabled,
+    repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
 };
 use events::{
     CheckCompleted, CheckStarted, ErrorRaised, MetadataRefreshed, NavigateRequested,
@@ -153,8 +152,7 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             // groups / tags
             group_list,
             group_create,
-            group_rename,
-            group_set_color,
+            group_update,
             group_delete,
             group_assign,
             group_unassign,

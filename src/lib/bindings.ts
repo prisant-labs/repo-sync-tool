@@ -147,10 +147,12 @@ export const commands = {
 	groupList: () => typedError<GroupSummary[], AppErrorPayload>(__TAURI_INVOKE("group_list")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Create a group. A duplicate name is rejected as an invalid setting. */
 	groupCreate: (name: string, color: string | null) => typedError<GroupSummary, AppErrorPayload>(__TAURI_INVOKE("group_create", { name, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Rename a group. A duplicate name is rejected; a missing id is NotFound. */
-	groupRename: (id: number, name: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_rename", { id, name })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Set (or clear, with null) a group's color. A missing id is NotFound. */
-	groupSetColor: (id: number, color: string | null) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_set_color", { id, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  Update a group's name and color atomically. A duplicate name is rejected; a
+	 *  missing id is NotFound. A single UPDATE, so a name clash leaves both fields
+	 *  unchanged - an edit never partially persists.
+	 */
+	groupUpdate: (id: number, name: string, color: string | null) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_update", { id, name, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Delete a group (idempotent; memberships cascade away). */
 	groupDelete: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_delete", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Assign a repo to a group (idempotent; a missing repo/group is NotFound). */
