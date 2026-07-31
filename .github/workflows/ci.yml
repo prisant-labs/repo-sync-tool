@@ -55,12 +55,14 @@ permissions:
   contents: read
 
 env:
-  # Documented EXACT git target for the future E-04 fixture harness (Windows-only), which
-  # will cross-check git2 reads against git CLI porcelain output and needs BYTE-STABLE
-  # output. E-04 does not exist yet, and pinning an exact git on the hosted runners proved
-  # unreliable (choco's installer conflicts; MinGit PATH ordering is finicky). So CI today
-  # VERIFIES the >= 2.30 floor (the E-03 engine requirement) instead of enforcing this exact
-  # value. The robust exact-pin mechanism is tracked in docs/backlog.md (BL-NI-03).
+  # Documented EXACT git target for the E-04 fixture harness (Windows-only), which
+  # cross-checks git2 reads against git CLI porcelain output and therefore wants
+  # BYTE-STABLE output. The harness DOES exist - see crates/reposync-core/src/git/fixtures.rs
+  # and the "slow git-fixture tests (windows)" job below - but pinning an exact git on the
+  # hosted runners proved unreliable (choco's installer conflicts; MinGit PATH ordering is
+  # finicky), so CI VERIFIES the >= 2.30 floor (the E-03 engine requirement) instead of
+  # enforcing this exact value. The robust exact-pin mechanism is tracked in
+  # docs/backlog.md (BL-NI-03).
   GIT_VERSION: "2.47.1"
   # Faster, quieter cargo in CI.
   CARGO_TERM_COLOR: always
@@ -93,8 +95,9 @@ jobs:
       # rather than install an exact version. Pinning an exact git on the runner proved
       # unreliable (choco's installer conflicts with the preinstalled git; MinGit's PATH
       # ordering did not shadow it). The byte-stable EXACT pin is only needed by the E-04
-      # git fixture harness (Windows-only), which does not exist yet; GIT_VERSION above
-      # records the intended target and docs/backlog.md (BL-NI-03) tracks the mechanism.
+      # git fixture harness (Windows-only), which exists and runs in the slow tier below;
+      # GIT_VERSION above records the intended target and docs/backlog.md (BL-NI-03) tracks
+      # the pinning mechanism.
       - name: Verify git meets the >= 2.30 floor
         shell: bash
         run: |

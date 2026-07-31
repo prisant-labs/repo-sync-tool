@@ -17,16 +17,43 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   see the note at the end of that section for what has since changed.
 - Group colors can be edited after creation, not only at create time. A
   rejected duplicate name now leaves both the name and the color unchanged.
+  *(Not yet on `main`: pending PR #28, held for a packaged Windows dogfood.)*
 - The close (X) button is configurable: **Settings -> System -> "Close button
   minimizes to tray"**, on by default. Off makes the close button quit the app.
   Existing installs keep the previous behavior on upgrade. Tray **Quit** always
   exits either way.
+  *(Not yet on `main`: pending PR #28, held for a packaged Windows dogfood.)*
 
 ### Added
 - A published [security model](docs/security-model.md) describing trust
   boundaries, the controls in place, and the known weaknesses that remain.
 - A real [README](README.md), including an honest platform and signing status
   table.
+
+### Fixed
+- **Adding a repository is now atomic.** Previously the registry row and its
+  local-state row were written separately, so a failure between them left a
+  repository that would list forever, never record a check, never report an
+  error, and refuse to be re-added because the incomplete row still held the
+  unique-path constraint.
+- **A check now records its outcome and its receipt together.** Previously a
+  failure between the two could advance a repository's "last checked" time with
+  no matching entry in the activity log, which made the activity log quietly
+  incomplete rather than visibly wrong.
+- **A momentarily busy database is no longer reported as a permanent failure.**
+  SQLite lock contention is now classified as retryable, so it surfaces as "the
+  database is busy, retry" instead of a hard error with no useful next step.
+
+### Security
+- **Captured git output is now bounded.** Each stored command, stdout, and
+  stderr stream is capped at 16 KiB with an explicit truncation marker. Git's
+  output is controlled by the remote, and a check is recorded per repository per
+  cycle indefinitely, so this was an unbounded write amplifier pointed at your
+  disk.
+- **CI now runs a dependency advisory gate** on every pull request, covering
+  both the Rust and the production npm dependency graphs. Any accepted advisory
+  is recorded explicitly in `.cargo/audit.toml` with a reason, so a known
+  vulnerability cannot pass silently.
 
 ## [0.9.0] - 2026-07-05
 
