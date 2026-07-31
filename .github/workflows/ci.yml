@@ -39,6 +39,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Weekly advisory sweep. The `advisories` job below is the only one that needs
+  # this: a newly published RUSTSEC entry can make an UNCHANGED lockfile
+  # vulnerable, and with only push/pull_request triggers nothing would ever
+  # re-evaluate it until someone happened to open a PR. Monday 07:00 UTC.
+  schedule:
+    - cron: '0 7 * * 1'
 
 # A newer push to the same ref cancels the older in-flight run.
 concurrency:
@@ -68,6 +74,10 @@ jobs:
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The weekly `schedule` trigger exists ONLY for the advisories job. Building the
+    # full two-OS matrix every Monday against an unchanged tree would burn runner
+    # minutes to re-prove something already proven on the commit that landed.
+    if: github.event_name != 'schedule'
     strategy:
       # Do not cancel the macOS leg if Windows fails (or vice versa); we want both signals.
       fail-fast: false
@@ -99,9 +109,20 @@ jobs:
           echo "git $num satisfies the >= 2.30 floor."
 
       # --- Toolchains ---------------------------------------------------------------------
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml is the single source of truth for the compiler version.
+      # dtolnay/rust-toolchain does NOT read that file (it derives the toolchain from
+      # its @rev, or from an explicit `toolchain` input), so read the pin out and pass
+      # it in. Hardcoding a version here instead would create a second place to bump
+      # and a silent way for CI and local builds to diverge.
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: echo "channel=$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.rust-toolchain.outputs.channel }}
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy, rustfmt
 
       - name: Rust cache
@@ -247,6 +268,8 @@ jobs:
   slow-tests:
     name: slow git-fixture tests (windows)
     runs-on: windows-latest
+    # See the note on `build`: the weekly schedule is for advisories only.
+    if: github.event_name != 'schedule'
     timeout-minutes: 30
 
     steps:
@@ -268,9 +291,20 @@ jobs:
           fi
           echo "git $num satisfies the >= 2.30 floor."
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml is the single source of truth for the compiler version.
+      # dtolnay/rust-toolchain does NOT read that file (it derives the toolchain from
+      # its @rev, or from an explicit `toolchain` input), so read the pin out and pass
+      # it in. Hardcoding a version here instead would create a second place to bump
+      # and a silent way for CI and local builds to diverge.
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: echo "channel=$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.rust-toolchain.outputs.channel }}
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy, rustfmt
 
       - name: Rust cache
@@ -299,3 +333,74 @@ jobs:
       # full suite is exercised here regardless of the exact tiering choices in the core crate.
       - name: cargo test (integration + fixture-harness cross-check)
         run: cargo test -p reposync-core --features test-support --test git_fixture_cross_check --test policy_fixture_matrix --test scheduler_integration -- --include-ignored
+
+  # ------------------------------------------------------------------------------------------
+  # Dependency advisory gate.
+  #
+  # Before this job existed, `cargo audit` reported two high-severity advisories in the locked
+  # graph and nothing in CI noticed - vulnerability drift was invisible. This job makes a NEW
+  # advisory turn CI red while a small, explicitly documented set of existing ones is tolerated
+  # via .cargo/audit.toml (each entry carries a reachability argument, an owner, and a review
+  # date; see that file).
+  #
+  # It also runs WEEKLY on a schedule, not only on pull requests, because the interesting case
+  # is a newly published advisory against an UNCHANGED lockfile: nobody pushes, so nothing else
+  # would ever re-evaluate it.
+  #
+  # Deliberately NOT part of the `build` job: an advisory landing upstream is not a reason to
+  # block an unrelated bugfix from merging while someone investigates. It is its own signal.
+  # Whether it becomes a required check is a maintainer decision (see docs/backlog.md).
+  # ------------------------------------------------------------------------------------------
+  advisories:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: echo "channel=$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.rust-toolchain.outputs.channel }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: false
+
+      # Pinned rather than floating: a cargo-audit release that changes exit-code or config
+      # behavior should be an explicit bump, not a surprise red build on an unrelated PR.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version ^0.22 --locked
+
+      # Reads the ignore list from .cargo/audit.toml. Exits non-zero on any advisory that is
+      # not explicitly waived there. Warnings (unmaintained, unsound, yanked) are reported but
+      # do not fail the build; they are dependency debt, tracked, not release-blocking.
+      - name: cargo audit
+        run: cargo audit
+
+      # The npm side of the same question. --prod scopes to what actually ships in the bundle;
+      # a dev-only advisory is real debt but is not in the artifact a user installs.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      # Deliberately NO `cache: pnpm` here, unlike the other jobs. This job never runs
+      # `pnpm install` - `pnpm audit --prod` resolves straight from pnpm-lock.yaml - so
+      # there is no pnpm store to cache, and setup-node's cache-save post-step fails
+      # trying to save one. (Observed on the first real run of this job, PR #30: every
+      # substantive step passed and only `Post Setup Node` failed.)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: pnpm audit (production dependencies)
+        run: pnpm audit --prod

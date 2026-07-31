@@ -66,6 +66,54 @@ pub struct ActivityInput {
     pub duration_ms: Option<i64>,
 }
 
+/// Maximum bytes retained for any ONE captured stream on an activity row
+/// (`raw_command`, `raw_stdout`, `raw_stderr`).
+///
+/// These fields hold git's own output, which is attacker-influenced: a hostile
+/// or merely misconfigured remote controls what lands on stderr, and the
+/// scheduler records a row per check, per repo, forever. Uncapped, that is an
+/// unbounded write amplifier pointed at the user's disk (BL-NI-54).
+///
+/// 16 KiB is chosen to be far larger than any real git message while still
+/// bounding the worst case. Nothing legitimate gets clipped in practice.
+pub const ACTIVITY_STREAM_MAX_BYTES: usize = 16 * 1024;
+
+/// Appended to a stream that was cut, so a reader can distinguish truncated
+/// output from output that simply ended there. Silent truncation would be worse
+/// than the disk usage: it turns the activity log from evidence into a guess.
+pub const TRUNCATION_MARKER: &str = "\n... [truncated by RepoSync]";
+
+/// Bound one captured stream to [`ACTIVITY_STREAM_MAX_BYTES`].
+///
+/// The single place captured git output is size-limited; every write path goes
+/// through here rather than each caller inventing its own limit.
+///
+/// Cuts on a CHARACTER boundary, not a byte index. Git output is arbitrary UTF-8
+/// (branch names, commit subjects, localized messages), so slicing at a fixed
+/// byte offset can land inside a multi-byte character and panic - inside a writer
+/// that is documented as best-effort and must never take down the operation it is
+/// recording.
+pub fn cap_stream(value: &str) -> String {
+    if value.len() <= ACTIVITY_STREAM_MAX_BYTES {
+        return value.to_string();
+    }
+    // Walk back to the nearest character boundary at or below the limit.
+    let mut end = ACTIVITY_STREAM_MAX_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + TRUNCATION_MARKER.len());
+    out.push_str(&value[..end]);
+    out.push_str(TRUNCATION_MARKER);
+    out
+}
+
+/// [`cap_stream`] for the optional captured fields. `None` stays `None`: an
+/// absent stream is different from an empty one, and the distinction is stored.
+pub fn cap_optional(value: &Option<String>) -> Option<String> {
+    value.as_deref().map(cap_stream)
+}
+
 /// Append one fully-populated `activity_records` row (the single sink, AC1).
 ///
 /// BEST-EFFORT BY DESIGN: a logging failure must never abort the git operation
@@ -88,9 +136,12 @@ pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
     .bind(&input.reason_code)
     .bind(&input.summary)
     .bind(&input.commit_range)
-    .bind(&input.raw_command)
-    .bind(&input.raw_stdout)
-    .bind(&input.raw_stderr)
+    // The three captured streams are the only attacker-influenced fields on this
+    // row, so they are bounded HERE, at the single write sink, rather than at each
+    // of the several call sites that construct an ActivityInput.
+    .bind(cap_optional(&input.raw_command))
+    .bind(cap_optional(&input.raw_stdout))
+    .bind(cap_optional(&input.raw_stderr))
     .bind(input.exit_code)
     .bind(input.duration_ms)
     .execute(pool)
@@ -627,6 +678,79 @@ mod tests {
         assert!(
             !sweep_due(Some(1_000_000), 1_000_000),
             "swept this exact instant is not due"
+        );
+    }
+
+    // --- Captured-stream size cap (BL-NI-54, the disk-exhaustion half) ---------------
+
+    #[test]
+    fn cap_stream_leaves_ordinary_output_alone() {
+        let short = "Updating aaa..bbb\nFast-forward\n";
+        assert_eq!(
+            cap_stream(short),
+            short,
+            "output under the cap must be stored verbatim"
+        );
+        assert_eq!(cap_stream(""), "", "empty output stays empty");
+    }
+
+    #[test]
+    fn cap_stream_keeps_output_exactly_at_the_limit() {
+        let exact = "x".repeat(ACTIVITY_STREAM_MAX_BYTES);
+        let capped = cap_stream(&exact);
+        assert_eq!(
+            capped.len(),
+            ACTIVITY_STREAM_MAX_BYTES,
+            "output exactly at the cap must not be truncated (off-by-one guard)"
+        );
+        assert!(!capped.ends_with(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn cap_stream_truncates_and_marks_oversized_output() {
+        // A hostile or merely broken remote can emit unbounded stderr. Without a
+        // cap this lands in SQLite verbatim, once per failed check, forever.
+        let huge = "y".repeat(ACTIVITY_STREAM_MAX_BYTES * 4);
+        let capped = cap_stream(&huge);
+
+        assert!(
+            capped.len() <= ACTIVITY_STREAM_MAX_BYTES + TRUNCATION_MARKER.len(),
+            "capped output must be bounded, got {} bytes",
+            capped.len()
+        );
+        assert!(
+            capped.ends_with(TRUNCATION_MARKER),
+            "truncated output must SAY it was truncated, so a reader never mistakes \
+             a cut-off stream for the whole story"
+        );
+    }
+
+    /// The bug a naive `&s[..LIMIT]` would ship: git output is arbitrary UTF-8
+    /// (branch names, commit subjects, localized messages), and slicing at a byte
+    /// index that lands inside a multi-byte character PANICS. That panic would fire
+    /// inside the activity writer, which is documented as best-effort and must never
+    /// take down the operation it is recording.
+    #[test]
+    fn cap_stream_never_splits_a_multibyte_character() {
+        // Three bytes per character, so the cap lands mid-character.
+        let multibyte = "\u{4e16}".repeat(ACTIVITY_STREAM_MAX_BYTES);
+        let capped = cap_stream(&multibyte);
+
+        assert!(capped.ends_with(TRUNCATION_MARKER));
+        let body = &capped[..capped.len() - TRUNCATION_MARKER.len()];
+        assert!(
+            body.chars().all(|c| c == '\u{4e16}'),
+            "truncation must cut on a character boundary, never mid-character"
+        );
+        assert!(body.len() <= ACTIVITY_STREAM_MAX_BYTES);
+    }
+
+    #[test]
+    fn cap_optional_stream_passes_through_none() {
+        assert_eq!(cap_optional(&None), None, "absent output stays absent");
+        assert_eq!(
+            cap_optional(&Some("ok".to_string())),
+            Some("ok".to_string())
         );
     }
 }
