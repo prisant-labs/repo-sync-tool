@@ -102,14 +102,21 @@ jobs:
           pkg_version="$(node -p "require('./package.json').version")"
           tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           cargo_version="$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+          # The FOURTH source, and the easy one to forget: [workspace.package].
+          # crates/reposync-core carries `version.workspace = true`, so this is the
+          # version the core crate actually publishes as. The runbook's G2 lists all
+          # four; a check that covered only three would pass a bump that missed this
+          # one and ship a core crate whose version disagrees with the tag.
+          ws_version="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version/{print;exit}' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
 
-          echo "tag:              $tag_version"
-          echo "package.json:     $pkg_version"
-          echo "tauri.conf.json:  $tauri_version"
-          echo "src-tauri/Cargo:  $cargo_version"
+          echo "tag:                     $tag_version"
+          echo "package.json:            $pkg_version"
+          echo "tauri.conf.json:         $tauri_version"
+          echo "src-tauri/Cargo.toml:    $cargo_version"
+          echo "Cargo.toml [workspace]:  $ws_version"
 
           fail=0
-          for pair in "package.json:$pkg_version" "tauri.conf.json:$tauri_version" "src-tauri/Cargo.toml:$cargo_version"; do
+          for pair in "package.json:$pkg_version" "tauri.conf.json:$tauri_version" "src-tauri/Cargo.toml:$cargo_version" "Cargo.toml [workspace.package]:$ws_version"; do
             name="${pair%%:*}"; value="${pair#*:}"
             if [ "$value" != "$tag_version" ]; then
               echo "::error::$name declares $value but the tag is $tag_version. Run scripts/bump-version.mjs and re-tag."
