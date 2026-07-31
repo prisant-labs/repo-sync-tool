@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AsyncPanel } from "@/components/async-panel";
 import { useSettings } from "@/hooks/queries";
+import { hhMmToMinutes, minutesToHhMm } from "@/lib/time";
 import { useToast } from "@/hooks/use-toast";
 
 export function SettingsScreen() {
@@ -395,17 +396,3 @@ function TimeInput({ value, onChange }: { value: number; onChange: (value: numbe
   );
 }
 
-function minutesToHhMm(minutes: number): string {
-  const wrapped = ((Math.trunc(minutes) % 1440) + 1440) % 1440;
-  const hh = Math.floor(wrapped / 60);
-  const mm = wrapped % 60;
-  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-}
-
-function hhMmToMinutes(value: string): number {
-  const [h, m] = value.split(":");
-  const hours = Number(h);
-  const mins = Number(m);
-  if (Number.isNaN(hours) || Number.isNaN(mins)) return 0;
-  return hours * 60 + mins;
-}

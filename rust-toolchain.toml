@@ -1,9 +1,22 @@
-# Pin the Rust toolchain channel for RepoSync (effort E-01 - Foundation).
+# Pin the Rust toolchain for RepoSync (effort E-01 - Foundation; pinned exactly
+# 2026-07-30 per BL-NI-37).
 #
-# A stable channel keeps CI (Windows + macOS) and local builds on the same
-# compiler. clippy and rustfmt are required components so the CI lint gate
-# (cargo clippy --all -- -D warnings) and formatting checks always have them.
+# This file is the SINGLE SOURCE OF TRUTH for the compiler version. CI does not
+# hardcode a version: each workflow job reads the channel out of this file and
+# feeds it to dtolnay/rust-toolchain, so bumping Rust is a one-line change here.
+#
+# Why an exact version rather than "stable": the lint gate is
+# `cargo clippy --workspace --all-targets -- -D warnings`. On a floating channel,
+# a new Rust release that adds or tightens a lint turns CI red on a pull request
+# that changed nothing related, and the failure looks like the contributor's
+# fault. Pinning means a toolchain bump is its own deliberate, reviewable change
+# that can be landed and fixed on its own branch.
+#
+# The cost is that this pin must be bumped by hand. That is the intended trade.
+#
+# clippy and rustfmt are declared here so a local `rustup` install is
+# gate-complete without extra steps.
 
 [toolchain]
-channel = "stable"
+channel = "1.96.0"
 components = ["clippy", "rustfmt"]
