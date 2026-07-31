@@ -17,6 +17,7 @@ source: crates/reposync-core/migrations/0002_activity_settings.sql (frozen schem
 
 - **State:** Built 2026-07-03 (backend commit a85e0fc, frontend commit 51daaa7). The full vertical, schema, store layer, IPC commands, and every GUI surface (sidebar section, Repos filter, drawer assignment), shipped before this spec existed. This document is written retroactively on 2026-07-04 as the as-built contract, per the 2026-07-04 Fable audit (`_LOCAL/audit/2026-07-04_18-21_fable-audit.md`, finding 3: the release plan claimed groups "spec/build not started" while the full vertical had already shipped, and no spec existed anywhere under the release plan). The `groups` / `repo_groups` schema itself predates this build; it has been frozen in migration `0002_activity_settings.sql` since E-02 (persistence and paths), waiting for a store/IPC/GUI layer. **2026-07-05 update:** all six Known defects below are now fixed; see Known defects for the per-item detail and commits.
 - **Next:** all six Known defects are fixed as of 2026-07-05: five (filter false-empty during load or failure, the dialog double-submit, the misleading duplicate-name error, keyboard-invisible row buttons, the delete-active-group navigation surprise) landed in commit `4ab54bf`; the sixth, BL-NI-22 (O(N) group filter fan-out), is resolved as a single bulk `repo_group_memberships` IPC call (core store fn + additive command + frontend swap), verified in the working tree but not yet committed as of this doc-sync pass. Nothing remains open in this spec's scope; the only outstanding item is landing that last commit, which is the gate-runner's build, not this document's.
+- **2026-07-30 extension (group color editing):** a group's color is now editable after creation, closing the limitation this spec originally recorded as permanent. Delivered by an additive `group_update(id, name, color)` command that writes both fields in ONE SQLite statement, so a duplicate name rejects the whole edit and a group can never end up half-renamed. `group_rename` is retained unchanged for E-06 contract compatibility and deliberately does not delegate to `group_update`. Both paths carry tests. See the [E-06 amendment log](../E-06-ipc-contract/spec.md#amendments). Landed on branch `feat/tray-setting-and-group-color`; packaged Windows dogfood still outstanding.
 - **Blockers:** none.
 
 ## Context
@@ -28,7 +29,7 @@ That GUI finalized on 2026-07-03, and groups shipped as part of the same session
 ## In scope
 
 - The N:M `groups` / `repo_groups` schema (already frozen; described, not re-specified, in Data model below).
-- Seven IPC commands covering the full CRUD + membership surface: `group_list`, `group_create`, `group_rename`, `group_delete`, `group_assign`, `group_unassign`, `groups_for_repo`.
+- Eight IPC commands covering the full CRUD + membership surface: `group_list`, `group_create`, `group_rename`, `group_update`, `group_delete`, `group_assign`, `group_unassign`, `groups_for_repo`. (`group_update` was added additively on 2026-07-30 to make name+color editing atomic; the original seven are unchanged. See the [E-06 (IPC contract) amendment log](../E-06-ipc-contract/spec.md#amendments).)
 - Three GUI surfaces: the sidebar "Groups" section (list, create, rename, delete), the Repos screen's group filter and per-row group chips, and the repo-detail drawer's per-repo group-assignment toggles.
 - A fixed 8-swatch preset color model for new groups, with a graceful "no color" fallback everywhere a group's color renders.
 - Cascade-delete semantics: deleting a group removes its memberships, never the repos in it.
@@ -86,6 +87,7 @@ All seven commands are thin adapters in `src-tauri/src/commands/mod.rs` over the
 | `group_list` | none | `Vec<GroupSummary>`, name-ordered | none beyond a generic DB failure |
 | `group_create` | `name: String, color: Option<String>` | `GroupSummary` (fresh group, `repoCount: 0`) | `AppError::InvalidSetting { field: "name" }` on a duplicate name |
 | `group_rename` | `id: i64, name: String` | `()` | `InvalidSetting { field: "name" }` on a duplicate name; `AppError::NotFound { entity: "group {id}" }` if `id` does not exist |
+| `group_update` | `id: i64, name: String, color: Option<String>` | `()` | same as `group_rename`; see the atomicity note below |
 | `group_delete` | `id: i64` | `()` | none; idempotent (a missing `id` is not an error) |
 | `group_assign` | `repo_id: i64, group_id: i64` | `()` | `AppError::NotFound { entity: "repo {repo_id} or group {group_id}" }` if either id does not exist; otherwise idempotent (re-assigning an existing membership is a no-op) |
 | `group_unassign` | `repo_id: i64, group_id: i64` | `()` | none; idempotent (removing a nonexistent membership is not an error) |
@@ -94,10 +96,12 @@ All seven commands are thin adapters in `src-tauri/src/commands/mod.rs` over the
 Detail worth calling out:
 
 - `group_list` computes `repoCount` with a `LEFT JOIN` + `GROUP BY` over `repo_groups`, so an empty group correctly reports `0` rather than being excluded (`store.rs` lines 511-533).
-- The duplicate-name mapping on both `group_create` and `group_rename` goes through a shared `is_unique_violation` check on the SQLite error, so a raw constraint violation never reaches the caller as an opaque database error (`store.rs` lines 539-593, 656+).
+- The duplicate-name mapping on `group_create`, `group_rename`, and `group_update` goes through a shared `is_unique_violation` check on the SQLite error, so a raw constraint violation never reaches the caller as an opaque database error.
+- **`group_update` is atomic, and that is the whole point of it.** It writes name and color in ONE `UPDATE groups SET name = ?, color = ? WHERE id = ?`, so a duplicate name rejects the entire edit and leaves both fields unchanged. It must not be reimplemented as a rename followed by a color write: that ordering has a real partial-failure path where the rename commits, the color write fails, and the dialog reports an error over already-persisted state. A regression test asserts the all-or-nothing behavior directly.
+- **`group_rename` is retained and does not delegate to `group_update`.** It remains the name-only command frozen by [E-06 (IPC contract)](../E-06-ipc-contract/spec.md), and it must keep leaving color untouched: a caller on the two-argument contract has no color to supply, so delegating would clear the group's color as a side effect of a rename. New callers should prefer `group_update`; the frontend edit dialog already does.
 - `group_assign`'s idempotency is `INSERT OR IGNORE`, which swallows the primary-key collision for a duplicate membership but does **not** swallow a foreign-key violation; a missing `repo_id` or `group_id` is detected via `is_foreign_key_violation` and re-mapped to `AppError::NotFound` (`store.rs` lines 605-626).
 - `group_delete`'s idempotency and `repo_groups`'s `ON DELETE CASCADE` together mean deleting a group is always safe to call twice and always leaves zero orphaned membership rows (see Behavior on delete below).
-- Registration: all seven commands are wired into the `tauri_specta` builder in `src-tauri/src/lib.rs` (both `collect_commands!` and the `use commands::{...}` import list), so `src/lib/bindings.ts` stays generated, not hand-written, for this surface.
+- Registration: all eight commands are wired into the `tauri_specta` builder in `src-tauri/src/lib.rs` (both `collect_commands!` and the `use commands::{...}` import list), so `src/lib/bindings.ts` stays generated, not hand-written, for this surface.
 
 ### (c) UI surfaces
 
@@ -124,7 +128,7 @@ Detail worth calling out:
 ### (e) Color model
 
 - A new group's color is chosen at create time from 8 fixed preset swatches, oklch strings tuned to the Graphite palette so each reads on both light and dark card surfaces (`GROUP_COLORS` in `src/components/group-dialog.tsx`, lines 15-24). The first swatch is the default selection; the picker is a row of filled circles with `aria-pressed` on the selected one.
-- Rename mode does not expose the color picker at all: `group_rename`'s IPC signature carries only `id` and `name`, so a group's color, once set at creation, cannot be changed later short of deleting and recreating the group.
+- Edit mode exposes the same 8-swatch picker as create, pre-selected to the group's current color, and saves name and color together through `group_update` in one atomic write (added 2026-07-30). **Superseded limitation:** this spec originally recorded that "rename mode does not expose the color picker at all... a group's color, once set at creation, cannot be changed later short of deleting and recreating the group," because `group_rename` carries only `id` and `name`. That is no longer true. `group_rename` itself is unchanged and still name-only; the color-editing capability comes from the additive `group_update`.
 - `color` is stored and transmitted as a raw string with no format validation anywhere in the stack (schema, store layer, or command layer); the only writer today is the fixed preset list above, so in practice every stored value is one of the 8 known oklch strings or `null`.
 - A `null` color renders as a muted gray dot (`bg-muted-foreground/50`) rather than an inline `backgroundColor` style, consistently across the sidebar rows, the Repos-screen group chips, and the drawer's group list. There is no "no group has a color yet" empty state distinct from this per-row fallback.
 
@@ -161,7 +165,7 @@ These six were real, verified bugs in the shipped vertical, surfaced by the 2026
 ## V1.1 extension points
 
 - ~~`repos_in_group(group_id) -> Vec<i64>` (or folding group ids into `RepoSummary`) to remove the O(N) fan-out~~ - done 2026-07-05 via bulk `repo_group_memberships` instead (BL-NI-22 above).
-- A color picker (not just 8 presets) and the ability to change a group's color after creation via `group_rename` or a new command.
+- A free color picker rather than the 8 presets. (The second half of this item - the ability to change a group's color after creation - shipped 2026-07-30 via the additive `group_update` command, so only the arbitrary-color picker remains future work.)
 - Bulk assignment (drag-select or checkbox multi-select repos into a group) and a dedicated group-management screen, instead of the sidebar's inline rows.
 - Smart/dynamic groups (rule-based membership, e.g. "all repos with a failed status") layered on top of the static membership model here.
 - A per-group default check cadence or update policy, if the "policy scope" question comes up again; today groups are purely a labeling and filtering surface.

@@ -269,7 +269,11 @@ you like.
   scroll to the "Groups" section, and flip the switch next to each group you
   want it in). There's no bulk-assign in this release, you assign per repo,
   from the drawer.
-- **Rename or delete a group** by hovering its row in the sidebar; a delete
+- **Edit or delete a group** by hovering its row in the sidebar. Editing lets
+  you change the name and the color together: the same eight swatches appear,
+  pre-selected to the group's current color, and "Save changes" writes both at
+  once. If the new name is already taken, nothing changes, not the name and not
+  the color, so a rejected edit never leaves the group half-renamed. A delete
   asks for confirmation inline before it takes effect. Deleting a group only
   removes the label, it never removes or affects the repos that were in it.
 - **Filter by group** by clicking a group in the sidebar. That switches you to
@@ -325,9 +329,13 @@ covered in the next few sections.
 RepoSync is meant to run continuously in the background, so it treats the
 system tray as its home, not the main window.
 
-- **Closing the main window doesn't quit the app.** The close button hides the
-  window; RepoSync keeps running and keeps checking in the tray. **Quit** (from
-  the tray menu) is the only thing that actually exits.
+- **Closing the main window doesn't quit the app, by default.** The close
+  button hides the window; RepoSync keeps running and keeps checking in the
+  tray. **Quit** (from the tray menu) is the only thing that actually exits.
+  If you would rather the close button just quit, turn off **"Close button
+  minimizes to tray"** in **Settings -> System**. It is on by default, and
+  upgrading from an earlier version leaves it on, so nothing changes unless you
+  change it. **Quit** from the tray menu always exits either way.
 - **Left-click the tray icon** to show and focus the main window.
 - **Right-click the tray icon** for the full native menu:
   - **Show RepoSync**, show and focus the main window.
@@ -433,6 +441,9 @@ staged as a draft, "Unsaved changes" appears at the bottom until you click
 
 **System**
 - *Launch on login*: see section 10.
+- *Close button minimizes to tray*: on by default. On, the window's X hides
+  RepoSync to the tray and it keeps checking. Off, the X quits the app. Either
+  way, **Quit** from the tray menu exits. See section 8.
 - *Activity retention*: how many days of Activity-log history to keep before
   RepoSync automatically prunes older rows (default 90 days).
 - *Git executable*: leave blank to use whatever `git` is on your PATH, or set
