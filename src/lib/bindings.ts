@@ -148,6 +148,15 @@ export const commands = {
 	/**  Create a group. A duplicate name is rejected as an invalid setting. */
 	groupCreate: (name: string, color: string | null) => typedError<GroupSummary, AppErrorPayload>(__TAURI_INVOKE("group_create", { name, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**
+	 *  Rename a group without touching its color.
+	 * 
+	 *  Retained as a compatibility command under the E-06 additive IPC contract. New
+	 *  callers should use [`group_update`], which edits name and color together in one
+	 *  atomic write; this exists so a consumer on the original two-argument contract
+	 *  keeps working and does not lose the group's color as a side effect.
+	 */
+	groupRename: (id: number, name: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_rename", { id, name })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
 	 *  Update a group's name and color atomically. A duplicate name is rejected; a
 	 *  missing id is NotFound. A single UPDATE, so a name clash leaves both fields
 	 *  unchanged - an edit never partially persists.

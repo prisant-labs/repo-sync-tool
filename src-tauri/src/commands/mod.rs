@@ -762,6 +762,22 @@ pub async fn group_create(
     reposync_core::store::group_create(&state.pool, &name, color.as_deref()).await
 }
 
+/// Rename a group without touching its color.
+///
+/// Retained as a compatibility command under the E-06 additive IPC contract. New
+/// callers should use [`group_update`], which edits name and color together in one
+/// atomic write; this exists so a consumer on the original two-argument contract
+/// keeps working and does not lose the group's color as a side effect.
+#[tauri::command]
+#[specta::specta]
+pub async fn group_rename(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    name: String,
+) -> Result<(), AppError> {
+    reposync_core::store::group_rename(&state.pool, id, &name).await
+}
+
 /// Update a group's name and color atomically. A duplicate name is rejected; a
 /// missing id is NotFound. A single UPDATE, so a name clash leaves both fields
 /// unchanged - an edit never partially persists.

@@ -96,9 +96,10 @@ export function GroupDialog({
         await unwrap(commands.groupCreate(trimmed, color));
         toast("ok", "Group created", trimmed);
       } else if (group) {
-        // Edit: ONE atomic backend update of name + color. A single UPDATE, so a
-        // name clash can never leave the rename partially persisted while the color
-        // write fails (Codex adversarial review, 2026-07-22).
+        // Edit: ONE atomic backend update of name + color. Keep this a single
+        // command. Two sequential calls (rename, then set color) reintroduce a
+        // partial-failure path where the rename commits, the color write fails,
+        // and the dialog reports an error while the new name is already saved.
         await unwrap(commands.groupUpdate(group.id, trimmed, color));
         toast("ok", "Group updated", trimmed);
       }

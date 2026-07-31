@@ -620,13 +620,54 @@ pub async fn group_create(
     })
 }
 
-/// Update a group's name and color in ONE atomic statement. A duplicate name maps
-/// to [`AppError::InvalidSetting`] (`field: "name"`); a missing id (0 rows affected)
-/// is [`AppError::NotFound`]. Because it is a single UPDATE, a name clash rejects the
-/// WHOLE change - name and color both stay unchanged - so an edit can never partially
-/// persist (Codex adversarial review, 2026-07-22, replacing a two-command
-/// rename-then-set-color edit flow). Color is a raw string with no format validation
-/// (the frontend picks from a fixed palette).
+/// Rename a group, leaving its color untouched.
+///
+/// This is the name-only compatibility command frozen by the E-06 IPC contract and
+/// specified by E-16 ("rename does not edit color"). It deliberately does NOT
+/// delegate to [`group_update`]: that would require the caller to supply a color,
+/// and a caller on the old two-argument contract has none, so delegating would
+/// clear the group's color as a side effect of a rename. New callers should prefer
+/// [`group_update`], which edits name and color together atomically.
+///
+/// Error mapping matches [`group_update`]: a duplicate name is
+/// [`AppError::InvalidSetting`] (`field: "name"`), a missing id is
+/// [`AppError::NotFound`].
+pub async fn group_rename(pool: &SqlitePool, id: i64, name: &str) -> Result<(), AppError> {
+    let res = sqlx::query("UPDATE groups SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(pool)
+        .await;
+    let updated = match res {
+        Ok(updated) => updated,
+        Err(e) => {
+            if is_unique_violation(&e) {
+                return Err(AppError::InvalidSetting {
+                    field: "name".into(),
+                });
+            }
+            return Err(AppError::from(e));
+        }
+    };
+    if updated.rows_affected() == 0 {
+        return Err(AppError::NotFound {
+            entity: format!("group {id}"),
+        });
+    }
+    Ok(())
+}
+
+/// Update a group's name and color in ONE atomic statement.
+///
+/// Atomicity is the point: because it is a single UPDATE, a name clash rejects the
+/// WHOLE change, so name and color both stay unchanged and an edit can never
+/// partially persist. Do not split this into a rename followed by a color write -
+/// that reintroduces a path where the rename commits and the color write fails,
+/// leaving the row and the UI disagreeing.
+///
+/// A duplicate name maps to [`AppError::InvalidSetting`] (`field: "name"`); a
+/// missing id (0 rows affected) is [`AppError::NotFound`]. Color is a raw string
+/// with no format validation (the frontend picks from a fixed palette).
 pub async fn group_update(
     pool: &SqlitePool,
     id: i64,
@@ -1538,8 +1579,9 @@ mod tests {
 
         // Give the other group a known color, then attempt an update whose NAME
         // collides. It maps to InvalidSetting AND is atomic: the rejected single
-        // UPDATE leaves BOTH name and color unchanged (Codex adversarial review
-        // 2026-07-22 - a name+color edit must never partially persist).
+        // UPDATE leaves BOTH name and color unchanged. This is the regression
+        // guard against re-splitting the edit into rename-then-set-color, where a
+        // failed color write would strand a committed rename.
         group_update(&pool, other.id, "frontend", Some("#111111"))
             .await
             .expect("seed a known color");
@@ -1568,6 +1610,72 @@ mod tests {
         assert!(
             matches!(missing, Err(AppError::NotFound { .. })),
             "update of a missing group must be NotFound"
+        );
+    }
+
+    /// `group_rename` is the name-only compatibility command kept by the E-06 IPC
+    /// contract. Its defining guarantee, and the reason it is not just a thin call
+    /// into `group_update`, is that it must leave color ALONE: E-16 specifies that
+    /// rename does not edit color. A caller on the old contract that passes only a
+    /// name must not silently clear the group's color.
+    #[tokio::test]
+    async fn group_rename_changes_name_and_leaves_color_untouched() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let g = group_create(&pool, "backend", Some("#3b82f6"))
+            .await
+            .expect("create");
+
+        group_rename(&pool, g.id, "platform").await.expect("rename");
+
+        let after = groups_list(&pool).await.expect("list");
+        let renamed = after.iter().find(|x| x.id == g.id).expect("group present");
+        assert_eq!(renamed.name, "platform", "rename must change the name");
+        assert_eq!(
+            renamed.color.as_deref(),
+            Some("#3b82f6"),
+            "rename must NOT clear or change color (E-16: rename does not edit color)"
+        );
+    }
+
+    /// A rename onto a taken name is rejected the same way `group_update` rejects
+    /// it, and leaves the row untouched. A missing id is NotFound.
+    #[tokio::test]
+    async fn group_rename_duplicate_name_maps_to_invalid_setting() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        group_create(&pool, "backend", None).await.expect("create");
+        let other = group_create(&pool, "frontend", Some("#111111"))
+            .await
+            .expect("create other");
+
+        let clash = group_rename(&pool, other.id, "backend").await;
+        assert!(
+            matches!(&clash, Err(AppError::InvalidSetting { field }) if field == "name"),
+            "duplicate rename must map to InvalidSetting, got {clash:?}"
+        );
+
+        let after = groups_list(&pool).await.expect("list");
+        let other_after = after
+            .iter()
+            .find(|g| g.id == other.id)
+            .expect("other group present");
+        assert_eq!(
+            other_after.name, "frontend",
+            "a clashing rename must not rename"
+        );
+        assert_eq!(
+            other_after.color.as_deref(),
+            Some("#111111"),
+            "a clashing rename must not touch color"
+        );
+
+        let missing = group_rename(&pool, 9999, "whatever").await;
+        assert!(
+            matches!(missing, Err(AppError::NotFound { .. })),
+            "rename of a missing group must be NotFound"
         );
     }
 

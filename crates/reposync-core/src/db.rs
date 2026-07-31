@@ -360,6 +360,92 @@ mod tests {
         (dir, pool)
     }
 
+    /// Upgrade proof for migration 0007, not fresh-install proof.
+    ///
+    /// Every other migration test here starts from an empty file and runs the whole
+    /// set, which only ever exercises the "new user" path. That cannot catch a
+    /// migration that is fine on a blank database but wrong on a populated one - the
+    /// case that actually reaches shipped users. This test builds a database at the
+    /// LAST RELEASED schema (v0.9.0 = migrations 0001-0006), puts a settings row in
+    /// it with non-default values the way a real install would, and only then applies
+    /// the current migration set.
+    ///
+    /// It asserts the two things an upgrading user cares about: the new column
+    /// backfills to the default that preserves prior behavior, and their existing
+    /// settings are not disturbed.
+    #[tokio::test]
+    async fn upgrading_a_v0_9_0_database_backfills_close_minimizes_to_tray() {
+        use sqlx::migrate::Migrator;
+
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("upgrade.db");
+        let pool = open_pool(&db).await.expect("open_pool");
+
+        // Build the prior-release schema: 0001-0006 only. Filtering the embedded set
+        // keeps this fixture honest - it is the same SQL that shipped, not a
+        // hand-copied snapshot that can silently drift from the real migrations.
+        let released = Migrator::with_migrations(
+            sqlx::migrate!("./migrations")
+                .iter()
+                .filter(|m| m.version <= 6)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        released.run(&pool).await.expect("apply 0001-0006");
+
+        // Guard the fixture's own premise. If this fires, the filter above is wrong
+        // and the rest of the test would be proving nothing.
+        assert!(
+            !column_exists(&pool, "settings", "close_minimizes_to_tray").await,
+            "fixture is not at the v0.9.0 schema: 0007 appears to have been applied already"
+        );
+
+        // A real install has a settings singleton the user has already customized.
+        sqlx::query(
+            "INSERT INTO settings (id, global_check_minutes, autostart, notify_on_failure) \
+             VALUES (1, 15, 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed a v0.9.0 settings row");
+
+        // Now upgrade.
+        run_migrations(&pool).await.expect("upgrade to current");
+
+        assert!(
+            column_exists(&pool, "settings", "close_minimizes_to_tray").await,
+            "0007 did not add close_minimizes_to_tray on upgrade"
+        );
+
+        let row = sqlx::query(
+            "SELECT close_minimizes_to_tray, global_check_minutes, autostart, notify_on_failure \
+             FROM settings WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("settings row survives the upgrade");
+
+        let close_to_tray: i64 = row.try_get("close_minimizes_to_tray").expect("new column");
+        assert_eq!(
+            close_to_tray, 1,
+            "an upgrading user must backfill to close-to-tray, preserving the behavior \
+             they already had; defaulting to 0 would silently turn X into quit"
+        );
+
+        // The upgrade must not disturb what the user had already set.
+        let minutes: i64 = row
+            .try_get("global_check_minutes")
+            .expect("existing column");
+        let autostart: i64 = row.try_get("autostart").expect("existing column");
+        let notify_on_failure: i64 = row.try_get("notify_on_failure").expect("existing column");
+        assert_eq!(minutes, 15, "upgrade must not reset global_check_minutes");
+        assert_eq!(autostart, 1, "upgrade must not reset autostart");
+        assert_eq!(
+            notify_on_failure, 0,
+            "upgrade must not reset notify_on_failure"
+        );
+    }
+
     #[tokio::test]
     async fn migrations_create_all_v1_tables() {
         let (_dir, pool) = fresh_pool().await;
