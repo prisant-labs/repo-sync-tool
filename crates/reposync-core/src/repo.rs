@@ -92,7 +92,22 @@ pub async fn add(
     };
     let created_at = now_secs();
 
-    // 5. Insert the repos row; UNIQUE(local_path) violation -> DuplicateRepo.
+    // 5. Write BOTH rows in ONE transaction (DS-3 / BL-NI-07).
+    //
+    //    Adding a repo is two inserts: the `repos` registry row and its initial
+    //    `repo_local_state` row. They must land together or not at all, because a
+    //    `repos` row with no state row is not a cosmetic gap - it is a repo that
+    //    is silently and permanently broken. `check_now` persists via
+    //    `UPDATE repo_local_state ... WHERE repo_id = ?`, which affects zero rows
+    //    and SUCCEEDS when the row is missing, and `repo_list` reads through a
+    //    LEFT JOIN, so the orphan still lists. The user sees a repo that never
+    //    updates, never errors, and cannot be re-added, because the orphan still
+    //    holds the UNIQUE(local_path) constraint.
+    //
+    //    Any early return below drops the transaction, which rolls it back.
+    let mut tx = pool.begin().await?;
+
+    //    UNIQUE(local_path) violation -> DuplicateRepo.
     //    check_frequency_min is inserted as 0, the INHERIT sentinel: a new repo
     //    follows the global cadence (settings.global_check_minutes) until a user
     //    sets an explicit positive per-repo override. The schema default is 360,
@@ -108,7 +123,7 @@ pub async fn add(
     .bind(&remote_origin_url)
     .bind(host_type)
     .bind(created_at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await;
 
     let repo_id = match insert {
@@ -137,8 +152,11 @@ pub async fn add(
     .bind(inspect.is_dirty as i64)
     .bind(inspect.is_detached as i64)
     .bind(inspect.last_commit_at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    // 7. Only now is the repo real.
+    tx.commit().await?;
 
     Ok(RepoId(repo_id))
 }
@@ -1032,6 +1050,87 @@ mod tests {
         let pool = db::open_pool(&db_file).await.expect("open_pool");
         db::run_migrations(&pool).await.expect("migrations");
         pool
+    }
+
+    /// `add` writes TWO rows: the `repos` registry row and the initial
+    /// `repo_local_state` row. They must land together or not at all.
+    ///
+    /// This is not a cosmetic concern, because of how the rest of the system
+    /// treats a missing state row. `check_now` persists with
+    /// `UPDATE repo_local_state SET ... WHERE repo_id = ?`, and an UPDATE against
+    /// a row that does not exist affects zero rows and SUCCEEDS. `repo_list`
+    /// reads through a `LEFT JOIN`, so the repo still appears in the UI. An
+    /// orphaned `repos` row is therefore a repo that is listed forever, reports
+    /// no error, and whose every subsequent check silently writes nothing. It
+    /// also cannot be repaired by re-adding it, because the orphan still owns the
+    /// `UNIQUE(local_path)` constraint and the retry is rejected as a duplicate.
+    ///
+    /// The failure is INDUCED with a trigger rather than waited for: the
+    /// real-world causes (a locked database, a full disk, a crash between the two
+    /// statements) are not reproducible on demand, but they all present to `add`
+    /// the same way.
+    #[tokio::test]
+    async fn add_leaves_no_orphan_when_the_state_insert_fails() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping add_leaves_no_orphan_when_the_state_insert_fails: git not resolvable"
+            );
+            return;
+        };
+
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+        let repotmp = TempDir::new().expect("repo tempdir");
+        init_repo_with_commit(repotmp.path());
+
+        // Make the SECOND write fail, after the first has already executed.
+        sqlx::query(
+            "CREATE TRIGGER fail_state_insert BEFORE INSERT ON repo_local_state \
+             BEGIN SELECT RAISE(ABORT, 'induced state-insert failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install the failure trigger");
+
+        let result = add(&pool, &git, repotmp.path()).await;
+        assert!(
+            result.is_err(),
+            "add must report failure when the state insert fails, got {result:?}"
+        );
+
+        let repos_count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM repos")
+            .fetch_one(&pool)
+            .await
+            .expect("count repos")
+            .try_get("c")
+            .expect("c");
+        assert_eq!(
+            repos_count, 0,
+            "a failed add must leave NO repos row behind; an orphan is a repo that \
+             lists forever, never records a check, and cannot be re-added"
+        );
+
+        // The user's actual recovery path: fix the transient problem, try again.
+        // With a non-atomic add this fails as DuplicateRepo against the orphan,
+        // leaving the repo permanently unusable.
+        sqlx::query("DROP TRIGGER fail_state_insert")
+            .execute(&pool)
+            .await
+            .expect("drop the failure trigger");
+
+        let id = add(&pool, &git, repotmp.path())
+            .await
+            .expect("retrying after a transient failure must succeed");
+
+        let state_count: i64 =
+            sqlx::query("SELECT COUNT(*) AS c FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(&pool)
+                .await
+                .expect("count state")
+                .try_get("c")
+                .expect("c");
+        assert_eq!(state_count, 1, "the retry must write the state row");
     }
 
     #[tokio::test]
