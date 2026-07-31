@@ -34,8 +34,18 @@ Frontend:
 ```sh
 pnpm typecheck   # tsc --noEmit, app + node config
 pnpm lint        # eslint .
+pnpm test        # vitest run (frontend behavior tests)
 pnpm build       # vite build
 ```
+
+Frontend tests live beside the code they cover as `*.test.ts` and run in the
+fast PR gate alongside typecheck and lint. Anything decided on the TypeScript
+side belongs here, because no Rust test can reach it: the status taxonomy
+(`src/lib/status.ts`) is the clearest case, since the wire type carries raw
+facts and no `status` field, so the ranking is a frontend policy decision. Use
+the typed helpers in `src/test/mock-ipc.ts` rather than stubbing `invoke`
+directly; they are typed against the generated bindings, so a mock cannot drift
+from the real command signature without failing to compile.
 
 Rust:
 
