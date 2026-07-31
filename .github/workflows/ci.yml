@@ -189,6 +189,14 @@ jobs:
       - name: pnpm lint
         run: pnpm lint
 
+      # Frontend behavior tests (vitest). Until this existed the frontend had NO
+      # automated coverage at all, so anything decided on the TypeScript side - the
+      # status taxonomy, the quiet-hours conversion - could only be caught by a human
+      # noticing. The suite is pure-logic and runs in well under a second, so it is
+      # part of the fast PR gate rather than a separate lane.
+      - name: pnpm test
+        run: pnpm test
+
       # --- Dependency-hygiene gate (E-01 AC2) ---------------------------------------------
       # reposync-core must never pull tauri, even transitively. This is the most load-bearing
       # assertion in the foundation: it fails the build the instant anything drags tauri into
