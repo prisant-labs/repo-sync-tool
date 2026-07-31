@@ -1,5 +1,19 @@
 # CI and release pipeline plan (v0.9.0)
 
+> **HISTORICAL as of 2026-07-30. This is an executed incident-and-fix plan, not a description of current CI.**
+>
+> It diagnoses a specific red build on PR #2 during v0.9.0 and prescribes the fixes, all of which landed. Read it to understand WHY the pipeline is shaped the way it is (the fail-fast mask, the two-tier test split, the cache write policy, the frontend-before-cargo ordering); do not read it as an inventory of what CI runs today.
+>
+> **What the workflows have gained since this plan was written**, none of it described below:
+> - a `dependency advisories` job (`cargo audit` with documented waivers in `.cargo/audit.toml`, plus `pnpm audit --prod`), running on pull requests and weekly on a schedule;
+> - `pnpm test`, a vitest suite in the fast PR gate, which did not exist at all when this plan was written;
+> - a `preflight` job in `release.yml` that the build matrix `needs`, so a tag cannot build until ancestry, four-way version alignment, a changelog section, a security policy, and the full gate set are proven on the tagged commit;
+> - an exact Rust toolchain pin read from `rust-toolchain.toml`, replacing the floating `@stable` this plan specified in Section 2.4.
+>
+> The authoritative description of current CI is the workflow files themselves, `.github/workflows/ci.yml` and `release.yml`, both of which carry header comments explaining each gate.
+>
+> Section 4's release-pipeline framing also assumes a **private** repo. That is no longer true; see the header of [runbook_cut-tag-release.md](../runbook_cut-tag-release.md).
+
 Phase 0 (Rails) plan for the continuous-integration and release-tag workflows. Scope: diagnose why PR #2 (build RepoSync V1) is red on all four checks, prescribe the `ci.yml` fixes, define the test-tiering strategy that makes the suite completable, and specify the `release.yml` pipeline for the private v0.9.0 tag. Owning effort: E-01 (foundation, workspace, and CI) owns `ci.yml`; the release pipeline touches E-18 (auto-update and distribution).
 
 This is a plan, not an execution log. No workflow file is edited here. The ordered checklist in Section 6 is what the Phase 0 build agents execute after "go".

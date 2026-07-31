@@ -10,6 +10,24 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ## [Unreleased]
 
+### Changed
+- **The repository is now public** (2026-07-17), at
+  `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0
+  notes below describe a private build and are kept as the historical record;
+  see the note at the end of that section for what has since changed.
+- Group colors can be edited after creation, not only at create time. A
+  rejected duplicate name now leaves both the name and the color unchanged.
+- The close (X) button is configurable: **Settings -> System -> "Close button
+  minimizes to tray"**, on by default. Off makes the close button quit the app.
+  Existing installs keep the previous behavior on upgrade. Tray **Quit** always
+  exits either way.
+
+### Added
+- A published [security model](docs/security-model.md) describing trust
+  boundaries, the controls in place, and the known weaknesses that remain.
+- A real [README](README.md), including an honest platform and signing status
+  table.
+
 ## [0.9.0] - 2026-07-05
 
 First tagged release. Private build: the repository stays private through
@@ -42,15 +60,26 @@ production artifacts) is a later milestone.
 
 ### Notes
 - Private build; this repo stays private through v0.9.0. See `docs/internal/program-roadmap.md` for the effort breakdown and `docs/internal/release-plans/plan_v0.9.0/plan_v0.9.0.md` for the release plan and readiness checks.
+
+> **Superseded 2026-07-30.** The notes above were accurate when v0.9.0 was cut
+> and are preserved as the historical record. Two of them have since changed:
+> the repository **went public on 2026-07-17**, and the auto-updater is
+> therefore no longer blocked by repository visibility. It remains **dark** for
+> the other reason given above: the production signing key is still a
+> human-gated step and the shipped config carries a placeholder public key. The
+> installers are still unsigned. Current status is in the
+> [README](README.md#status-pre-release-and-honest-about-it).
 - Desktop notifications, launch-on-login, and the system tray are wired to the OS in this release (`tauri-plugin-notification` / `tauri-plugin-autostart` / the native tray). Their Settings toggles take effect at runtime.
 - The tray menu and the OS-integration surface (menu actions, close-to-tray, autostart-hidden launch, live toasts, quiet-hours suppression) are verified in the dogfood pass, not by automated tests, because they live outside the webview and the packaged shell.
 - Auto-update ships DARK: the updater is wired but disabled until the maintainer generates the production signing key and the update endpoint is reachable (both are public-flip steps). See `docs/backlog.md` for the remaining deferred items.
 - The Windows installers (NSIS and MSI) are unsigned: no Windows Authenticode code-signing certificate is in place yet. Expect a SmartScreen "unknown publisher" warning on install. This is separate from the auto-update dark state above; both are public-flip prerequisites.
 
 <!--
-Template for a cut release section (move [Unreleased] items here at G2):
+Template for a cut release section (move [Unreleased] items here at G2).
+Replace X.Y.Z with the version being cut; do not leave a real version number
+here, or heading-scanning tools read it as a duplicate release section:
 
-## [0.9.0] - YYYY-MM-DD
+## [X.Y.Z] - YYYY-MM-DD
 
 ### Added
 ### Changed

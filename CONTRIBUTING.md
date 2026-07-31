@@ -39,7 +39,15 @@ Frontend (from the repo root):
 ```sh
 pnpm typecheck
 pnpm lint
+pnpm test
 ```
+
+`pnpm test` runs the vitest suite (`pnpm test:watch` while you work). Frontend
+tests live next to the code they cover as `*.test.ts`. If you are adding a test
+that needs to talk to the backend, use the mock IPC helpers in
+`src/test/mock-ipc.ts` rather than stubbing `invoke` directly: they are typed
+against the generated bindings, so a mock cannot silently drift from the real
+command signature.
 
 A green pull request means all of the above pass with no warnings.
 

@@ -17,6 +17,7 @@ Start here, then follow the links into whichever doc answers your question.
 | [faq.md](faq.md) | Plain-language answers about what RepoSync does today, in V1 scope. | You are a user or just curious about behavior, safety, platforms, and data. |
 | [architecture.md](architecture.md) | The system and its parts: component map, the IPC seam, persistence, tech stack, CI gates. | You want to know *what* the pieces are and how they fit. |
 | [explanation.md](explanation.md) | The design rationale: why RepoSync is shaped the way it is. | You want to know *why* a decision was made before you change it. |
+| [security-model.md](security-model.md) | Trust boundaries, the controls in place (git execution hardening, CSP, navigation guard, updater verification), and the known weaknesses that remain open. | You are auditing RepoSync, or about to change anything that runs git, touches the WebView, or widens the IPC surface. |
 | [backlog.md](backlog.md) | Deferred work, V1.1 cut features, human-only decisions, open technical questions, and review findings. | You have a new idea, or you are looking for what is deliberately out of scope. |
 
 ## Source-of-truth docs (deeper, internal)
