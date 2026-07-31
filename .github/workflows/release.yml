@@ -45,9 +45,187 @@ permissions:
   contents: write   # create the GitHub Release
 
 jobs:
+  # ------------------------------------------------------------------------------------------
+  # PREFLIGHT - the gate that must pass before a tag is allowed to build.
+  #
+  # Before this job existed, pushing a tag went STRAIGHT to the build matrix. That meant a tag
+  # could cut a release from a commit that never passed CI, that was not reachable from
+  # protected main, or whose stamped version disagreed with the tag - and the first sign of
+  # trouble would be a published artifact.
+  #
+  # Two classes of check live here, and only one of them is a duplicate of CI:
+  #
+  #   1. TAG-SPECIFIC checks that CI structurally cannot make, because CI never sees a tag:
+  #      ancestry from main, version alignment across all four declaration sites, a changelog
+  #      section, and the updater config-hygiene gate.
+  #   2. The standard quality gates. Yes, CI ran these on the commit. Re-running them here is
+  #      deliberate: branch protection guarantees main's TIP is green, not that some arbitrary
+  #      tagged commit is, and a tag can point anywhere.
+  #
+  # If this job fails, no artifact is built and no draft release is created.
+  # ------------------------------------------------------------------------------------------
+  preflight:
+    name: release preflight
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history: the ancestry check below needs to walk from the tag to main.
+          fetch-depth: 0
+
+      # --- Tag ancestry -------------------------------------------------------------------
+      # The tagged commit must be reachable from protected main. This is what stops a release
+      # being cut from a side branch, a force-pushed ref, or a commit that never went through
+      # a pull request. Equality counts (tagging main's tip is the normal case).
+      - name: Assert the tag is reachable from main
+        shell: bash
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "OK: $(git rev-parse --short HEAD) is reachable from main."
+          else
+            echo "::error::Tag ${GITHUB_REF_NAME} points at $(git rev-parse --short HEAD), which is NOT reachable from main. Refusing to release code that did not land on the protected branch."
+            exit 1
+          fi
+
+      # --- Version alignment --------------------------------------------------------------
+      # The version is declared in four places and stamped into the bundle from
+      # tauri.conf.json. If the tag disagrees with any of them, users get an artifact whose
+      # self-reported version is a lie, and the updater compares the wrong numbers.
+      - name: Assert the tag matches every declared version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          cargo_version="$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
+
+          echo "tag:              $tag_version"
+          echo "package.json:     $pkg_version"
+          echo "tauri.conf.json:  $tauri_version"
+          echo "src-tauri/Cargo:  $cargo_version"
+
+          fail=0
+          for pair in "package.json:$pkg_version" "tauri.conf.json:$tauri_version" "src-tauri/Cargo.toml:$cargo_version"; do
+            name="${pair%%:*}"; value="${pair#*:}"
+            if [ "$value" != "$tag_version" ]; then
+              echo "::error::$name declares $value but the tag is $tag_version. Run scripts/bump-version.mjs and re-tag."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: all version declarations agree with the tag."
+
+      # --- Release notes exist ------------------------------------------------------------
+      # The GitHub Release body is derived from CHANGELOG.md. A tag with no matching section
+      # ships a release with no notes, which is how "what changed?" becomes unanswerable.
+      - name: Assert CHANGELOG has a section for this version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          if grep -qE "^## \[${tag_version}\]" CHANGELOG.md; then
+            echo "OK: CHANGELOG.md has a section for ${tag_version}."
+          else
+            echo "::error::CHANGELOG.md has no '## [${tag_version}]' section. Move the [Unreleased] items into a cut section before tagging."
+            exit 1
+          fi
+
+      # --- Security policy ----------------------------------------------------------------
+      # A public release must tell people how to report a vulnerability privately.
+      - name: Assert a security policy is published
+        shell: bash
+        run: |
+          test -s SECURITY.md || { echo "::error::SECURITY.md is missing or empty. A public release needs a disclosure channel."; exit 1; }
+          echo "OK: SECURITY.md is present."
+
+      # --- Toolchains ---------------------------------------------------------------------
+      # See the note in ci.yml: rust-toolchain.toml is the single source of truth and the
+      # action does not read it, so the pin is read out and passed in.
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: echo "channel=$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.rust-toolchain.outputs.channel }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # --- The standard quality gates, re-proven on the tagged commit ---------------------
+      - name: cargo fmt (check)
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test (fast tier)
+        run: cargo test --workspace
+
+      - name: Build frontend
+        run: pnpm build
+
+      # Same assertion as CI: a contract change that was never re-exported would ship a
+      # frontend type surface that lies about the backend.
+      - name: Assert bindings.ts is up to date
+        shell: bash
+        run: |
+          cargo test -p reposync --test export_bindings
+          if ! git diff --exit-code -- src/lib/bindings.ts; then
+            echo "::error::src/lib/bindings.ts is stale. Run the export_bindings test and commit the result."
+            exit 1
+          fi
+
+      - name: pnpm typecheck
+        run: pnpm typecheck
+
+      - name: pnpm lint
+        run: pnpm lint
+
+      - name: Assert reposync-core has no tauri dependency
+        shell: bash
+        run: |
+          tree="$(cargo tree -p reposync-core)"
+          if echo "$tree" | grep -i 'tauri'; then
+            echo "::error::reposync-core depends on tauri (directly or transitively). The core crate must stay Tauri-free."
+            exit 1
+          fi
+          echo "OK: reposync-core has no tauri dependency."
+
+      # --- Updater config hygiene (E-18 / runbook G3) --------------------------------------
+      # Asserts the committed production tauri.conf.json carries neither
+      # dangerousInsecureTransportProtocol nor the disposable test pubkey - both belong only
+      # to the E2E overlay. This script was written as the pre-tag gate but was never wired
+      # into any workflow, so it depended on someone remembering to run it. Now it cannot be
+      # skipped.
+      - name: Updater production config hygiene
+        run: node scripts/check-updater-config-hygiene.mjs
+
   release:
     name: release (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # THE GATE. No preflight, no artifacts.
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -57,8 +235,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - name: Read the pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: echo "channel=$(grep -m1 '^channel' rust-toolchain.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust ${{ steps.rust-toolchain.outputs.channel }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
