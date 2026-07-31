@@ -384,11 +384,15 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
 
+      # Deliberately NO `cache: pnpm` here, unlike the other jobs. This job never runs
+      # `pnpm install` - `pnpm audit --prod` resolves straight from pnpm-lock.yaml - so
+      # there is no pnpm store to cache, and setup-node's cache-save post-step fails
+      # trying to save one. (Observed on the first real run of this job, PR #30: every
+      # substantive step passed and only `Post Setup Node` failed.)
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
       - name: pnpm audit (production dependencies)
         run: pnpm audit --prod
