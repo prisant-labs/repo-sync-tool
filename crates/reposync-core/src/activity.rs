@@ -114,16 +114,19 @@ pub fn cap_optional(value: &Option<String>) -> Option<String> {
     value.as_deref().map(cap_stream)
 }
 
-/// Append one fully-populated `activity_records` row (the single sink, AC1).
+/// The single INSERT behind both [`record`] and [`record_in_tx`].
 ///
-/// BEST-EFFORT BY DESIGN: a logging failure must never abort the git operation
-/// being recorded (the operation already happened). On a DB write error the
-/// failure is logged and swallowed; this function returns `()` and never
-/// propagates. Failed operations are recorded too (non-zero `exit_code` +
-/// captured `raw_stderr`), never dropped (AC2).
-pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
+/// Generic over the executor so a pool write and a write inside a caller's
+/// transaction run the SAME statement, and therefore go through the same
+/// capping. Splitting these into two hand-written inserts is how the single-sink
+/// property (AC1) would quietly rot: one of them would eventually miss a
+/// `cap_optional`.
+async fn insert_activity_row<'e, E>(executor: E, input: &ActivityInput) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let ts = input.timestamp.unwrap_or_else(now_secs);
-    let res = sqlx::query(
+    sqlx::query(
         "INSERT INTO activity_records \
          (repo_id, timestamp, action_type, status, reason_code, summary, commit_range, \
           raw_command, raw_stdout, raw_stderr, exit_code, duration_ms) \
@@ -144,9 +147,25 @@ pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
     .bind(cap_optional(&input.raw_stderr))
     .bind(input.exit_code)
     .bind(input.duration_ms)
-    .execute(pool)
-    .await;
-    if let Err(e) = res {
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Append one fully-populated `activity_records` row (the single sink, AC1).
+///
+/// BEST-EFFORT BY DESIGN: a logging failure must never abort the git operation
+/// being recorded (the operation already happened). On a DB write error the
+/// failure is logged and swallowed; this function returns `()` and never
+/// propagates. Failed operations are recorded too (non-zero `exit_code` +
+/// captured `raw_stderr`), never dropped (AC2).
+///
+/// This is the right contract for a caller that has ALREADY mutated the working
+/// tree, such as `update_now` after a fast-forward: the pull cannot be undone,
+/// so refusing to return it because the receipt failed would help nobody. A
+/// caller whose state change is still rollbackable wants [`record_in_tx`].
+pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
+    if let Err(e) = insert_activity_row(pool, input).await {
         // Best-effort: the git operation already happened; a logging failure must
         // not abort it. Log and swallow.
         eprintln!(
@@ -154,6 +173,23 @@ pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
             input.action_type, input.repo_id
         );
     }
+}
+
+/// Fallible sibling of [`record`], for a caller that needs the receipt to be
+/// ATOMIC with the state change it describes (BL-NI-07).
+///
+/// Writes into the caller's transaction and PROPAGATES the error, so a failed
+/// receipt rolls the state change back with it. That inverts [`record`]'s
+/// best-effort promise on purpose, and it is only sound when the described
+/// operation is safe to repeat: `check_now` inspects and fetches but never
+/// mutates the working tree, so re-running a rolled-back check costs one
+/// redundant check and nothing else. Do NOT reach for this from a path that has
+/// already moved a user's refs.
+pub async fn record_in_tx(
+    tx: &mut sqlx::SqliteConnection,
+    input: &ActivityInput,
+) -> Result<(), AppError> {
+    insert_activity_row(&mut *tx, input).await
 }
 
 /// Read `activity_records` newest-first, applying the optional [`ActivityFilter`]

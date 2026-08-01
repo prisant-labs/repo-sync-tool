@@ -760,4 +760,93 @@ mod tests {
             "the -shm sidecar moved alongside"
         );
     }
+
+    /// BL-NI-10, and the load-bearing half of it.
+    ///
+    /// The masking unit test in `error.rs` proves the arithmetic but cannot
+    /// prove the assumption the classifier rests on: that sqlx surfaces the
+    /// SQLite result code as a string that parses as an integer. Only a real
+    /// lock can falsify that, so this test induces one.
+    ///
+    /// Before the fix this produced `db.query_failed`, whose `retryable()` is
+    /// false, which is how a five-second `busy_timeout` expiry ended up
+    /// presented to the user as a permanent failure.
+    #[tokio::test]
+    async fn a_real_sqlite_busy_classifies_as_db_locked() {
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("busy.db");
+
+        let holder = open_pool(&db).await.expect("open the holding pool");
+        run_migrations(&holder).await.expect("run_migrations");
+
+        // A second pool that refuses to wait. The app's own pool sets a 5s
+        // busy_timeout, which would absorb the contention and make this test
+        // sleep for five seconds before proving anything.
+        let impatient = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db)
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .busy_timeout(Duration::from_millis(0)),
+            )
+            .await
+            .expect("open the impatient pool");
+
+        // WAL permits exactly one writer. Writing inside the transaction is what
+        // actually takes the lock: sqlx opens a DEFERRED transaction, so a bare
+        // BEGIN would take nothing and this test would pass for the wrong reason.
+        let mut tx = holder.begin().await.expect("begin the holding transaction");
+        sqlx::query("INSERT INTO groups (name) VALUES ('bl-ni-10-holder')")
+            .execute(&mut *tx)
+            .await
+            .expect("the first writer takes the WAL write lock");
+
+        let err = sqlx::query("INSERT INTO groups (name) VALUES ('bl-ni-10-contender')")
+            .execute(&impatient)
+            .await
+            .expect_err("a second writer must be refused while the first holds the lock");
+
+        let app_err = AppError::from(err);
+        assert_eq!(
+            app_err.code(),
+            "db.locked",
+            "real SQLITE_BUSY must classify as db.locked, not db.query_failed"
+        );
+        assert!(
+            app_err.retryable(),
+            "contention must be retryable; that is the entire point of classifying it"
+        );
+
+        tx.rollback().await.expect("release the write lock");
+    }
+
+    /// The negative half. A classifier that returns `db.locked` for everything
+    /// would pass the test above, so a terminal database error must still come
+    /// through as terminal.
+    #[tokio::test]
+    async fn a_constraint_violation_stays_terminal() {
+        let (_dir, pool) = fresh_pool().await;
+
+        sqlx::query("INSERT INTO groups (name) VALUES ('duplicate')")
+            .execute(&pool)
+            .await
+            .expect("first insert succeeds");
+
+        let err = sqlx::query("INSERT INTO groups (name) VALUES ('duplicate')")
+            .execute(&pool)
+            .await
+            .expect_err("the UNIQUE constraint must reject the second insert");
+
+        let app_err = AppError::from(err);
+        assert_eq!(
+            app_err.code(),
+            "db.query_failed",
+            "a UNIQUE violation is terminal and must not be reported as contention"
+        );
+        assert!(
+            !app_err.retryable(),
+            "retrying a constraint violation can never succeed"
+        );
+    }
 }
