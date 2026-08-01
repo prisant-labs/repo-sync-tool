@@ -120,11 +120,14 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
             InitFailure::Corrupt => return recover_with_fresh_db(paths, &db_path, &err).await,
             InitFailure::Locked if lock_retries < MAX_LOCK_RETRIES => {
                 let backoff = Duration::from_millis(500);
-                eprintln!(
-                    "warning: the database is locked ({err}); retrying in {}ms (attempt {}/{})",
-                    backoff.as_millis(),
-                    lock_retries + 1,
-                    MAX_LOCK_RETRIES
+                tracing::warn!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "lock_retry",
+                    backoff_ms = backoff.as_millis(),
+                    attempt = lock_retries + 1,
+                    max_retries = MAX_LOCK_RETRIES,
+                    error = %err,
+                    "the database is locked; retrying"
                 );
                 tokio::time::sleep(backoff).await;
                 lock_retries += 1;
@@ -132,9 +135,12 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
             // A persistent lock: the database is healthy, just held by another
             // process. Fail LOUD; never reset.
             InitFailure::Locked => {
-                eprintln!(
-                    "error: the database is still locked after {MAX_LOCK_RETRIES} retries; \
-                     refusing to reset a healthy database (is RepoSync already running?)"
+                tracing::error!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "locked_giving_up",
+                    max_retries = MAX_LOCK_RETRIES,
+                    "the database is still locked; refusing to reset a healthy \
+                     database (is RepoSync already running?)"
                 );
                 return Err(err);
             }
@@ -142,10 +148,13 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
             // Resetting cannot fix it and would silently discard data, so fail LOUD
             // and leave the database untouched.
             InitFailure::Fatal => {
-                eprintln!(
-                    "error: the database could not be opened or migrated ({err}); refusing \
-                     to reset it (this is not corruption). It is preserved untouched at {}.",
-                    db_path.display()
+                tracing::error!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "fatal_preserved",
+                    db_path = %db_path.display(),
+                    error = %err,
+                    "the database could not be opened or migrated; refusing to reset \
+                     it (this is not corruption) and leaving it untouched"
                 );
                 return Err(err);
             }
@@ -222,17 +231,26 @@ async fn recover_with_fresh_db(
     db_path: &Path,
     err: &AppError,
 ) -> Result<DbInit, AppError> {
-    eprintln!("warning: the database is corrupt ({err}); moving it aside and creating a fresh one");
+    tracing::error!(
+        event = crate::logging::event::DB_RECOVERED,
+        outcome = "corrupt_reset",
+        error = %err,
+        "the database is corrupt; moving it aside and creating a fresh one"
+    );
 
     let backup_dir = paths.corrupt_backups_dir();
     let backup_path = move_db_aside(db_path, &backup_dir);
     match &backup_path {
-        Some(moved) => eprintln!(
-            "info: the previous database was preserved at {}",
-            moved.display()
+        Some(moved) => tracing::info!(
+            event = crate::logging::event::DB_RECOVERED,
+            outcome = "corrupt_preserved",
+            backup_path = %moved.display(),
+            "the previous database was preserved"
         ),
-        None => eprintln!(
-            "warning: could not move the existing database aside (it may be locked); \
+        None => tracing::warn!(
+            event = crate::logging::event::DB_RECOVERED,
+            outcome = "corrupt_move_failed",
+            "could not move the existing database aside (it may be locked); \
              starting a fresh database under a unique name instead"
         ),
     }
@@ -270,7 +288,13 @@ fn move_db_aside(db_path: &Path, backup_dir: &Path) -> Option<PathBuf> {
     // Move the primary database first; if THIS fails, the whole move failed.
     if db_path.exists() {
         if let Err(e) = std::fs::rename(db_path, &dest) {
-            eprintln!("warning: could not move {} aside: {e}", db_path.display());
+            tracing::warn!(
+                event = crate::logging::event::DB_RECOVERED,
+                outcome = "move_aside_failed",
+                db_path = %db_path.display(),
+                error = %e,
+                "could not move the database aside"
+            );
             return None;
         }
     } else {
@@ -285,9 +309,12 @@ fn move_db_aside(db_path: &Path, backup_dir: &Path) -> Option<PathBuf> {
         if side.exists() {
             let side_dest = sidecar(&dest, suffix);
             if let Err(e) = std::fs::rename(&side, &side_dest) {
-                eprintln!(
-                    "warning: could not move sidecar {} aside: {e}",
-                    side.display()
+                tracing::warn!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "sidecar_move_failed",
+                    sidecar = %side.display(),
+                    error = %e,
+                    "could not move a WAL sidecar aside"
                 );
             }
         }

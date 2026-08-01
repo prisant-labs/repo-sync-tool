@@ -38,6 +38,11 @@ sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate", "ma
 # built on hyper, not reqwest, so the spec's "octocrab on reqwest" is contradictory;
 # reqwest+rustls satisfies AC2 + the no-OpenSSL hard rule with full control.)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
+# Structured diagnostics, FACADE ONLY. The core emits events and never installs a
+# subscriber - that is src-tauri's job. Keeping the subscriber out is not a style
+# preference: tracing-subscriber's timestamp formatting pulls `time`, which the
+# workspace manifest states must never enter the core tree.
+tracing = { workspace = true }
 # `tempfile` is an OPTIONAL dependency, enabled only by the `test-support`
 # feature (and always present as a dev-dependency below). Keeping it optional
 # means a default `cargo build` of the library does not compile the E-04 fixture

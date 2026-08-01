@@ -85,18 +85,20 @@ pub fn reconcile_on_launch(app: &AppHandle, setting_on: bool) {
     let os = os_state_from_is_enabled(manager.is_enabled().ok());
     match reconcile(os, setting_on) {
         AutostartAction::Register => match manager.enable() {
-            Ok(()) => eprintln!(
+            Ok(()) => tracing::info!(
                 "autostart: reconciled - registered launch-on-login \
                  (setting on, OS was not registered)"
             ),
-            Err(e) => eprintln!("autostart: reconcile could not register launch-on-login: {e}"),
+            Err(e) => {
+                tracing::warn!("autostart: reconcile could not register launch-on-login: {e}")
+            }
         },
         AutostartAction::Unregister => match manager.disable() {
-            Ok(()) => eprintln!(
+            Ok(()) => tracing::info!(
                 "autostart: reconciled - removed launch-on-login \
                  (setting off, OS was registered)"
             ),
-            Err(e) => eprintln!("autostart: reconcile could not remove launch-on-login: {e}"),
+            Err(e) => tracing::warn!("autostart: reconcile could not remove launch-on-login: {e}"),
         },
         // Already aligned, or an Unknown (untrusted) read the core refused to act on.
         AutostartAction::NoChange => {}
@@ -162,7 +164,7 @@ pub fn apply(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
 /// Log a live-apply plugin failure and reduce it to the structured, UI-honest
 /// [`AppError::InvalidSetting`] on the `autostart` field (see [`apply`]).
 fn apply_error(verb: &str, e: impl std::fmt::Display) -> AppError {
-    eprintln!("autostart: failed to {verb} launch-on-login: {e}");
+    tracing::warn!("autostart: failed to {verb} launch-on-login: {e}");
     AppError::InvalidSetting {
         field: "autostart".into(),
     }

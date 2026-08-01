@@ -29,6 +29,15 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   boundaries, the controls in place, and the known weaknesses that remain.
 - A real [README](README.md), including an honest platform and signing status
   table.
+- **RepoSync now keeps a diagnostic log.** Background failures that a tray app
+  cannot show you - a scheduled check that could not save its result, an
+  activity entry that failed to write, git going missing, an update check that
+  could not reach the server - are written to a rotating file under the app data
+  directory (`logs/reposync.<date>.log`) instead of vanishing. Previously they
+  went to a console that a release build does not even have, so a problem that
+  happened while you were not looking left no trace at all. Fourteen days are
+  kept, capped at 32 MiB total, oldest first. Set `REPOSYNC_LOG=debug` for more
+  detail when reporting a problem.
 
 ### Fixed
 - **Adding a repository is now atomic.** Previously the registry row and its

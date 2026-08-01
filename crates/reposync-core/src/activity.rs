@@ -168,9 +168,17 @@ pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
     if let Err(e) = insert_activity_row(pool, input).await {
         // Best-effort: the git operation already happened; a logging failure must
         // not abort it. Log and swallow.
-        eprintln!(
-            "activity: failed to record a '{}' row for repo {}: {e}",
-            input.action_type, input.repo_id
+        //
+        // ERROR level, and not negotiable: this line is the ONLY trace that the
+        // audit trail now has a hole in it. Nothing else in the system will ever
+        // mention it - the operation succeeded, the UI is correct, and the
+        // missing row is missing silently.
+        tracing::error!(
+            event = crate::logging::event::ACTIVITY_WRITE_FAILED,
+            action_type = %input.action_type,
+            repo_id = input.repo_id,
+            error = %e,
+            "failed to record an activity row; the audit trail is incomplete"
         );
     }
 }
@@ -272,9 +280,15 @@ pub async fn sweep(pool: &SqlitePool, now_unix: i64) -> Result<u64, AppError> {
 /// sweep failure is logged, not propagated, so app start is never gated on it.
 pub async fn sweep_at_startup(pool: &SqlitePool) {
     match sweep(pool, now_secs()).await {
-        Ok(n) if n > 0 => eprintln!("activity: startup retention sweep pruned {n} record(s)"),
+        Ok(n) if n > 0 => {
+            tracing::info!(pruned = n, "startup activity retention sweep pruned rows")
+        }
         Ok(_) => {}
-        Err(e) => eprintln!("activity: startup retention sweep failed: {e}"),
+        Err(e) => tracing::warn!(
+            event = crate::logging::event::RETENTION_SWEEP_FAILED,
+            error = %e,
+            "startup activity retention sweep failed; the log will keep growing"
+        ),
     }
 }
 

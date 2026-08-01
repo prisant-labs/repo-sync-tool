@@ -83,6 +83,31 @@ dunce = "1"
 # dependency-hygiene gate keeps `time` out of the core tree.
 time = "0.3.49"
 
+# Structured diagnostics, split along the library/binary line the ecosystem
+# intends and the crate boundary requires.
+#
+# `tracing` is the FACADE, and it is ALL reposync-core takes. It is already in the
+# resolved tree transitively, so the core gains no new crate, and critically it
+# pulls no `time`: tracing-subscriber's timestamp formatting does, and the comment
+# directly above is explicit that `time` never enters the core tree.
+#
+# The SUBSCRIBER and the rolling file appender are src-tauri only. A library that
+# installs a global subscriber steals that choice from every consumer, including
+# the test harness; the binary owns where events go.
+tracing = "0.1.44"
+# No "local-time" on purpose. The `time` crate refuses to resolve a local UTC
+# offset once a process is multithreaded (a documented soundness guard), and a
+# Tauri app is multithreaded long before the first log line. Local timestamps
+# would therefore fail to format in exactly the shipped configuration nobody
+# tests interactively. UTC is also the better choice for a log a user emails to a
+# maintainer in another timezone.
+tracing-subscriber = { version = "0.3.23", default-features = false, features = [
+  "fmt",
+  "std",
+  "time",
+] }
+tracing-appender = "0.2.5"
+
 # Per-push CI / default release profile. Tuned for a small bundle but with THIN LTO
 # and parallel codegen so per-push CI builds stay fast (a full-LTO single-codegen-unit
 # build took about 35 min on the Windows runner). Maximal-size public artifacts use the

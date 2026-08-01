@@ -584,9 +584,10 @@ where
         // (deduped so a long-resident git-less session does not spam every tick).
         let Some(engine) = self.git_source.current().await else {
             if !self.git_absent_logged.swap(true, Ordering::SeqCst) {
-                eprintln!(
-                    "scheduler: no usable git engine; skipping scheduled checks \
-                     until git is available (set a valid git path in Settings)"
+                tracing::error!(
+                    event = crate::logging::event::GIT_UNAVAILABLE,
+                    "no usable git engine; skipping scheduled checks until git is \
+                     available (set a valid git path in Settings)"
                 );
             }
             return Ok(0);
@@ -652,7 +653,12 @@ where
     /// spawns this on the runtime.
     pub async fn run(&self) {
         if let Err(e) = self.start().await {
-            eprintln!("scheduler: startup pass failed: {e}");
+            tracing::error!(
+                event = crate::logging::event::SCHEDULER_TICK_FAILED,
+                phase = "startup",
+                error = %e,
+                "scheduler startup pass failed"
+            );
         }
         let mut interval = tokio::time::interval(ONE_MINUTE);
         // The first tick fires immediately; the startup pass already ran, so
@@ -661,7 +667,12 @@ where
         loop {
             interval.tick().await;
             if let Err(e) = self.tick_once().await {
-                eprintln!("scheduler: tick failed: {e}");
+                tracing::error!(
+                    event = crate::logging::event::SCHEDULER_TICK_FAILED,
+                    phase = "tick",
+                    error = %e,
+                    "scheduler tick failed"
+                );
             }
         }
     }
@@ -712,9 +723,15 @@ async fn run_job<J, W>(
     //    with the due repo) and persist the outcome (a short txn).
     let status = classify_failure(repo.consecutive_failures, outcome);
     if let Err(e) = outcome_writer.record(&repo, completed, status).await {
-        eprintln!(
-            "scheduler: failed to record outcome for repo {}: {e}",
-            repo.id.0
+        // BL-NI-14: this failure is swallowed and `tick_once` still returns Ok,
+        // so the repo simply stays due and retries. That degradation is
+        // acceptable, but it makes the failure invisible to every caller and
+        // test - which is precisely why it has to be visible in the log.
+        tracing::error!(
+            event = crate::logging::event::SCHEDULER_OUTCOME_PERSIST_FAILED,
+            repo_id = repo.id.0,
+            error = %e,
+            "failed to persist a check outcome; the repo stays due and will retry"
         );
     }
     // 5. Release the per-repo mutex LAST (after the outcome is recorded).
