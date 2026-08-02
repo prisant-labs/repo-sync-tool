@@ -523,6 +523,16 @@ send it to), a level, and a short stable event name such as
 for. If you are reproducing a problem deliberately and want more detail, start
 RepoSync with the environment variable `REPOSYNC_LOG=debug`.
 
+Two more variables adjust how much is kept, for the case where you are chasing
+something that only happens every few weeks, or you are short on disk:
+
+- `REPOSYNC_LOG_DAYS` - how many daily files to keep (default 14, max 365).
+- `REPOSYNC_LOG_MAX_MB` - total size budget in MiB (default 32, max 4096).
+
+Both take effect at the next start. A value that is empty, out of range, or not
+a number is ignored in favor of the default rather than treated as zero, so a
+typo can never turn retention off while you are relying on it.
+
 One caution before attaching a log to a bug report: it records local file
 paths and error text from git, so it is worth reading first.
 
