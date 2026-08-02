@@ -59,6 +59,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   output is controlled by the remote, and a check is recorded per repository per
   cycle indefinitely, so this was an unbounded write amplifier pointed at your
   disk.
+- **Credentials are stripped from captured git output before it is stored,
+  shown, or logged.** Any credentials embedded in a URL are removed outright,
+  and well-known GitHub and GitLab token formats plus `Authorization:` headers
+  are removed on a best-effort basis. This runs at the moment output is
+  captured, so the database, the error messages on screen, and the diagnostic
+  log all get the filtered version. Note the honest limit: arbitrary secrets in
+  unfamiliar formats are not guaranteed to be caught, and paths and repository
+  names are deliberately left intact because they are the diagnostic value.
 - **CI now runs a dependency advisory gate** on every pull request, covering
   both the Rust and the production npm dependency graphs. Any accepted advisory
   is recorded explicitly in `.cargo/audit.toml` with a reason, so a known
