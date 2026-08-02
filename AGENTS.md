@@ -84,6 +84,17 @@ Run the slow tier at phase gates, not inner-loop iteration; CI runs it as its ow
   live convention. Co-authored-by trailer on agent commits per `EXECUTION.md`.
 - **Never commit unless asked.** Leave changes in the working tree; the human or an explicit
   instruction triggers `git commit`.
+- **Never merge to `main` unless asked, per PR.** Open the pull request, get it green, and stop.
+  This rule is enforced by agreement, not by GitHub, and the distinction matters because it is easy
+  to assume otherwise: branch protection requires the four status checks and an up-to-date branch,
+  but `required_approving_review_count` is 0. It cannot be otherwise - an agent acting with the
+  maintainer's token is indistinguishable from the maintainer at the protection layer, and with one
+  write-access collaborator an approval requirement would block the maintainer rather than review
+  anything. So nothing will stop an agent from merging. That is precisely why this is written here,
+  in the file agents read first, rather than left to a repo setting that cannot express it.
+  Authorization is per pull request: "merge this one" is not standing permission for the next.
+  Rationale and the revisit condition are recorded under G1.5 in
+  `docs/internal/release-plans/runbook_cut-tag-release.md`.
 - **Diagnostics go through `tracing`, never `eprintln!`.** The app builds with
   `windows_subsystem = "windows"`, so a release build has no console: an `eprintln!` is not
   merely unread, it goes nowhere. Emit with `tracing::{warn,error,info}!` and carry a stable
