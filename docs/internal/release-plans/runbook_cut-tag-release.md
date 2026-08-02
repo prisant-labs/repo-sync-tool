@@ -8,7 +8,7 @@ This is the EXECUTE + NOTES layer. The PLAN layer is the release plan (`plan_vX.
 >
 > 1. **Merging to `main` is a human decision, enforced by agreement rather than by GitHub.** The private-era "agent merges autonomously once CI is green" allowance in G1.5 is over. Read the mechanism note under G1.5 before assuming branch protection backs this up: it does not, and it cannot.
 > 2. **Cutting a release tag and publishing a Release is HUMAN-ONLY** (`EXECUTION.md`). The "Private repo, agent-cuttable" note under G3 no longer applies, and neither does the G3 manual-fallback path, which was explicitly scoped to a private/pre-public cut.
-> 3. **`main` is branch-protected.** A pull request plus three green checks is required; force-push and deletion are blocked, and protection is enforced on admins. The tag must sit on a commit reachable from `main`, which the release preflight now enforces mechanically (see G0).
+> 3. **`main` is branch-protected.** A pull request plus FOUR green checks is required - `build (windows-latest)`, `build (macos-latest)`, `slow git-fixture tests (windows)`, and `dependency advisories` (added to the required set 2026-07-31, when the gate itself landed; before that it ran and blocked nothing). Force-push and deletion are blocked, and protection is enforced on admins. The tag must sit on a commit reachable from `main`, which the release preflight now enforces mechanically (see G0).
 >
 > The **Public flip checklist appendix** at the bottom is now a RECORD of a completed milestone, not a to-do list. Its per-row status is marked there.
 

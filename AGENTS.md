@@ -11,13 +11,18 @@ keeps a personal library of cloned-but-not-actively-developed Git repos fresh an
 layers, one seam:
 
 - **`crates/reposync-core`** - the headless logic crate. Git engine, scheduler, update-policy
-  engine, persistence, activity log, summary engine, GitHub client, and the IPC payload types
-  and error taxonomy. **Never imports `tauri`, even transitively.** That invariant is what keeps
-  this crate unit-testable without a webview and is enforced in CI as a dependency-hygiene gate
-  (`cargo tree -p reposync-core` must show no `tauri`).
+  engine, persistence, activity log, summary engine, GitHub client, credential redaction
+  (`redact`), the diagnostic event vocabulary and log-retention sweep (`logging`), and the IPC
+  payload types and error taxonomy. **Never imports `tauri`, even transitively.** That invariant
+  is what keeps this crate unit-testable without a webview and is enforced in CI as a
+  dependency-hygiene gate (`cargo tree -p reposync-core` must show no `tauri`).
 - **`src-tauri`** - the thin Tauri shell: IPC command handlers, event emission, the system tray,
-  windows, the opener (open-in folder/terminal/editor/remote), and OS-plugin wiring (autostart,
-  notifications). This is the "edge." It hosts `reposync-core`; it does not contain product logic.
+  windows, the opener (open-in folder/terminal/editor/remote), OS-plugin wiring (autostart,
+  notifications), and the logging subscriber plus rolling file appender. This is the "edge." It
+  hosts `reposync-core`; it does not contain product logic. The logging split is not arbitrary:
+  the core emits through the `tracing` facade and the shell decides where events go, both because
+  a library installing a global subscriber steals that choice from its consumers and because
+  `tracing-subscriber` pulls `time`, which the core tree excludes.
 - **`src/`** - the React 19 + TypeScript GUI. Screens (`src/screens`), components
   (`src/components`), and the data/IPC layer (`src/lib`).
 
@@ -57,8 +62,10 @@ cargo test -p reposync-core <filter>        # narrow further while iterating
 
 Tests are tiered (since 2026-07-04; see `docs/internal/release-plans/plan_v0.9.0/ci-plan.md`
 Section 3.4 decision note). The fast tier is the default: `cargo test --workspace` (or
-`-p reposync-core`) skips the 27 `#[ignore]`-marked git-CLI fixture tests and completes in a
-few minutes. The slow tier runs them: `cargo test -p reposync-core --features test-support
+`-p reposync-core`) skips the `#[ignore]`-marked git-CLI fixture tests and completes in a
+few minutes. (Deliberately not stating how many: this line said "27" until 2026-08-02, when the
+real figure was 28. A count nobody updates is a fact with a decay rate; the tail of any
+`cargo test` run prints the true number.) The slow tier runs them: `cargo test -p reposync-core --features test-support
 --lib -- --ignored`, plus the three feature-gated integration binaries via
 `cargo test -p reposync-core --features test-support --test git_fixture_cross_check
 --test policy_fixture_matrix --test scheduler_integration -- --include-ignored`.

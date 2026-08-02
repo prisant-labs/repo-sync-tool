@@ -70,6 +70,7 @@ pnpm tauri build   # produce installers
 | [User guide](docs/user-guide.md) | You are setting RepoSync up, or want a feature explained in depth. Includes the settings reference and troubleshooting. |
 | [FAQ](docs/faq.md) | You want a quick, plain answer about behavior, safety, platforms, or data. |
 | [Architecture](docs/architecture.md) | You want to know what the pieces are and how they fit together. |
+| [Security model](docs/security-model.md) | You want the threat model, the controls actually in place, and an honest list of the weaknesses that remain open. |
 | [Design rationale](docs/explanation.md) | You want to know *why* it is shaped this way before changing it. |
 | [Backlog](docs/backlog.md) | You have an idea, or want to know what is deliberately out of scope. |
 | [Contributing](CONTRIBUTING.md) | You want to open a pull request. Start here for the quality gates. |

@@ -36,8 +36,10 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   directory (`logs/reposync.<date>.log`) instead of vanishing. Previously they
   went to a console that a release build does not even have, so a problem that
   happened while you were not looking left no trace at all. Fourteen days are
-  kept, capped at 32 MiB total, oldest first. Set `REPOSYNC_LOG=debug` for more
-  detail when reporting a problem.
+  kept by default, capped at 32 MiB total, oldest first. Three environment
+  variables adjust it: `REPOSYNC_LOG=debug` for more detail while reproducing a
+  problem, and `REPOSYNC_LOG_DAYS` / `REPOSYNC_LOG_MAX_MB` if you need a longer
+  history or a smaller footprint.
 
 ### Fixed
 - **Adding a repository is now atomic.** Previously the registry row and its
