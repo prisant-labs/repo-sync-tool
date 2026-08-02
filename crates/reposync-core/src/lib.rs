@@ -22,6 +22,7 @@ pub mod logging;
 pub mod notify;
 pub mod paths;
 pub mod policy;
+pub mod redact;
 pub mod repo;
 pub mod scheduler;
 pub mod store;
