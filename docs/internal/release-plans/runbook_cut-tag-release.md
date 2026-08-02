@@ -6,7 +6,7 @@ This is the EXECUTE + NOTES layer. The PLAN layer is the release plan (`plan_vX.
 
 > **THE REPO IS PUBLIC (since 2026-07-17). Three rules in this runbook changed at that moment, and they are the ones most likely to be followed from memory:**
 >
-> 1. **Merging to `main` requires human review.** The private-era "agent merges autonomously once CI is green" allowance in G1.5 is over.
+> 1. **Merging to `main` is a human decision, enforced by agreement rather than by GitHub.** The private-era "agent merges autonomously once CI is green" allowance in G1.5 is over. Read the mechanism note under G1.5 before assuming branch protection backs this up: it does not, and it cannot.
 > 2. **Cutting a release tag and publishing a Release is HUMAN-ONLY** (`EXECUTION.md`). The "Private repo, agent-cuttable" note under G3 no longer applies, and neither does the G3 manual-fallback path, which was explicitly scoped to a private/pre-public cut.
 > 3. **`main` is branch-protected.** A pull request plus three green checks is required; force-push and deletion are blocked, and protection is enforced on admins. The tag must sit on a commit reachable from `main`, which the release preflight now enforces mechanically (see G0).
 >
@@ -43,7 +43,19 @@ This is the EXECUTE + NOTES layer. The PLAN layer is the release plan (`plan_vX.
 ## G1.5: Flip and merge the release PR
 
 - [ ] Flip the release PR from draft to ready for review. For v0.9.0 this is PR #2 (Build RepoSync V1).
-- [ ] Merge the PR into `main`. **Human review required** (the repo is public; `EXECUTION.md`'s human-only list). The private-era agent-autonomous merge ended at the 2026-07-17 flip. Branch protection also requires the three checks green and the branch up to date with `main`, so a stale branch must be updated before it can merge.
+- [ ] Merge the PR into `main`. **A human decides the merge** (the repo is public; `EXECUTION.md`'s human-only list). The private-era agent-autonomous merge ended at the 2026-07-17 flip. Branch protection independently requires the four checks green and the branch up to date with `main`, so a stale branch must be updated before it can merge.
+
+> **What enforces what, because this used to read as though GitHub enforced all of it.**
+>
+> Branch protection on `main` enforces exactly two things: the four required status checks, and strict up-to-date-ness. `required_approving_review_count` is **0**, and that is deliberate rather than an oversight.
+>
+> Raising it would not do what it appears to. There is one collaborator with write access, so an approval requirement binds nobody except the person it is meant to empower - and GitHub does not permit self-approval, so with `enforce_admins` on it would make merging impossible rather than reviewed. Outside contributors are already unable to merge, because they have no write access at all.
+>
+> More to the point, the rule exists to stop an AGENT merging unreviewed, and that is not mechanizable here: an agent acting with the maintainer's token is indistinguishable from the maintainer at the protection layer. No GitHub setting can tell those apart.
+>
+> So the no-self-merge rule is a **working agreement**, and it lives where agents actually read it: the "Hard conventions" section of `AGENTS.md`. This note exists so nobody re-derives the above and concludes the protection config is misconfigured.
+>
+> Revisit if a second maintainer or an outside contributor with write access ever appears. At that point an approval requirement starts binding someone real, and `enforce_admins` becomes the knob to reconsider.
 - [ ] Confirm `main` is green after the merge itself, not just on the pre-merge PR head. A merge can surface conflicts or interactions the PR view never ran.
 
 ## G2: Version bump + CHANGELOG
