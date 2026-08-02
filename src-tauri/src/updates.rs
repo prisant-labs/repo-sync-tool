@@ -126,7 +126,11 @@ fn build_availability(current_version: String, outcome: CheckOutcome) -> UpdateA
 /// malformed manifest) is a non-alarming "could not reach the update server," logged
 /// with detail.
 fn map_check_error(e: &tauri_plugin_updater::Error) -> AppError {
-    eprintln!("updater: update check could not reach the server: {e}");
+    tracing::error!(
+        event = reposync_core::logging::event::UPDATE_CHECK_FAILED,
+        error = %e,
+        "the update check could not reach the server"
+    );
     AppError::Offline
 }
 
@@ -136,7 +140,7 @@ fn map_check_error(e: &tauri_plugin_updater::Error) -> AppError {
 /// carrying the cause; the Settings UI renders "update could not be verified; staying
 /// on your current version."
 fn map_install_error(e: tauri_plugin_updater::Error) -> AppError {
-    eprintln!("updater: install/verify failed (current version retained): {e}");
+    tracing::error!("updater: install/verify failed (current version retained): {e}");
     AppError::Unexpected {
         context: format!("update could not be verified or installed: {e}"),
     }
@@ -150,7 +154,7 @@ pub async fn check(app: &AppHandle) -> UpdateAvailability {
     let current_version = app.package_info().version.to_string();
 
     if !updater_is_live(&configured_pubkey(app)) {
-        eprintln!(
+        tracing::warn!(
             "updater: ships dark (no production signing key configured); update check skipped"
         );
         return build_availability(current_version, CheckOutcome::Unreachable);
@@ -159,7 +163,7 @@ pub async fn check(app: &AppHandle) -> UpdateAvailability {
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(e) => {
-            eprintln!("updater: could not build the updater ({e}); reporting unreachable");
+            tracing::warn!("updater: could not build the updater ({e}); reporting unreachable");
             return build_availability(current_version, CheckOutcome::Unreachable);
         }
     };
@@ -247,7 +251,7 @@ fn notify_update_available(app: &AppHandle, version: &str) {
         ))
         .show()
     {
-        eprintln!("updater: could not raise the update-available toast: {e}");
+        tracing::warn!("updater: could not raise the update-available toast: {e}");
     }
 }
 

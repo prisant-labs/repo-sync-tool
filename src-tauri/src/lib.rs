@@ -15,6 +15,7 @@ mod autostart;
 mod commands;
 mod events;
 mod localtime;
+mod logging;
 mod notify;
 mod opener;
 mod tray;
@@ -213,6 +214,23 @@ fn allow_navigation(scheme: &str, host: Option<&str>, is_dev: bool) -> bool {
 /// managed [`AppState`] before running the Tauri runtime.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Structured logging comes FIRST, before anything that could fail with
+    // something worth reading. The guard is bound in this scope on purpose: it
+    // keeps the background log writer alive for exactly as long as the app runs,
+    // and its Drop flushes buffered events on the way out. Moving it into
+    // `setup()` or into managed state would end its life early and turn every
+    // later log call into a silent no-op.
+    let _log_guard = match logging::init(&reposync_core::paths::AppPaths::from_env()) {
+        Ok(guard) => Some(guard),
+        Err(e) => {
+            // The one legitimate surviving eprintln! in the app: the logger
+            // itself failed to start, so there is nowhere else for this to go.
+            // Not fatal - running without logs beats refusing to run.
+            eprintln!("reposync: file logging unavailable ({e}); continuing without it");
+            None
+        }
+    };
+
     let builder = specta_builder();
 
     // Dev convenience: regenerate the bindings on every debug run so a local
@@ -297,11 +315,15 @@ pub fn run() {
                 // is the signal and the base-dir choice is the structural defense.
                 let paths = reposync_core::paths::AppPaths::from_env();
                 if paths.is_onedrive_rooted() {
-                    eprintln!(
-                        "warning: RepoSync data dir {} is under a OneDrive root; a \
-                         WAL database in a synced folder can corrupt. Consider moving \
-                         app data out of OneDrive.",
-                        paths.data_dir().display()
+                    // BL-NI-57 DS-4: this backstop used to warn via an eprintln
+                    // nobody could see, which made the one signal for a genuinely
+                    // corrupting configuration completely invisible.
+                    tracing::warn!(
+                        event = reposync_core::logging::event::DB_ONEDRIVE_ROOTED,
+                        data_dir = %paths.data_dir().display(),
+                        "the data dir is under a OneDrive root; a WAL database in a \
+                         synced folder can corrupt. Consider moving app data out of \
+                         OneDrive."
                     );
                 }
 
@@ -312,10 +334,12 @@ pub fn run() {
                     .await
                     .expect("failed to initialize database");
                 if init.recovered {
-                    eprintln!(
-                        "warning: the database could not be migrated and was reset; \
-                         the previous database was preserved at {:?}.",
-                        init.backup_path
+                    tracing::warn!(
+                        event = reposync_core::logging::event::DB_RECOVERED,
+                        outcome = "migration_reset",
+                        backup_path = ?init.backup_path,
+                        "the database could not be migrated and was reset; the \
+                         previous database was preserved"
                     );
                 }
                 // Carry the one-time recovery notice into AppState so a later
@@ -354,9 +378,11 @@ pub fn run() {
                     .unwrap_or(true);
                 let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
                 let initial_git = if engine.availability().is_unavailable() {
-                    eprintln!(
-                        "warning: git executable not found; git-dependent \
-                         actions will report GitNotFound until git is available"
+                    tracing::warn!(
+                        event = reposync_core::logging::event::GIT_UNAVAILABLE,
+                        phase = "startup",
+                        "git executable not found; git-dependent actions will report \
+                         GitNotFound until git is available"
                     );
                     None
                 } else {
@@ -450,7 +476,12 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         // Startup pass is best-effort; a failure must not kill the loop.
                         if let Err(e) = scheduler.start().await {
-                            eprintln!("scheduler: startup pass failed: {e}");
+                            tracing::error!(
+                                event = reposync_core::logging::event::SCHEDULER_TICK_FAILED,
+                                phase = "startup",
+                                error = %e,
+                                "scheduler startup pass failed"
+                            );
                         }
                         // Fire the startup pass's coalesced notifications too (its jobs
                         // have all joined by the time `start()` returns).
@@ -487,7 +518,12 @@ pub fn run() {
                                     )
                                     .await;
                                 }
-                                Err(e) => eprintln!("scheduler: tick failed: {e}"),
+                                Err(e) => tracing::error!(
+                                    event = reposync_core::logging::event::SCHEDULER_TICK_FAILED,
+                                    phase = "tick",
+                                    error = %e,
+                                    "scheduler tick failed"
+                                ),
                             }
                             // BL-NI-32: the daily activity-retention sweep, gated once
                             // per day off the same edge clock the tick loop uses. Cheap
@@ -499,12 +535,18 @@ pub fn run() {
                             let sweep_now = crate::localtime::now_unix();
                             if reposync_core::activity::sweep_due(last_sweep_unix, sweep_now) {
                                 match reposync_core::activity::sweep(&sweep_pool, sweep_now).await {
-                                    Ok(n) if n > 0 => eprintln!(
+                                    Ok(n) if n > 0 => tracing::info!(
                                         "activity: daily retention sweep pruned {n} record(s)"
                                     ),
                                     Ok(_) => {}
                                     Err(e) => {
-                                        eprintln!("activity: daily retention sweep failed: {e}")
+                                        tracing::warn!(
+                                            event =
+                                                reposync_core::logging::event::RETENTION_SWEEP_FAILED,
+                                            cadence = "daily",
+                                            error = %e,
+                                            "activity retention sweep failed; the log will keep growing"
+                                        )
                                     }
                                 }
                                 last_sweep_unix = Some(sweep_now);
@@ -581,14 +623,14 @@ pub fn run() {
                                                 );
                                             }
                                         }
-                                        Err(e) => eprintln!(
+                                        Err(e) => tracing::warn!(
                                             "github: background metadata refresh pass failed: {e}"
                                         ),
                                     }
                                 }
                             });
                         }
-                        Err(e) => eprintln!(
+                        Err(e) => tracing::warn!(
                             "github: could not build the HTTP client; background \
                              metadata refresh disabled: {e}"
                         ),
@@ -622,7 +664,7 @@ pub fn run() {
                 let tray_available = match tray::init(&handle, &recent) {
                     Ok(()) => true,
                     Err(e) => {
-                        eprintln!("tray: failed to build the tray icon/menu: {e}");
+                        tracing::error!("tray: failed to build the tray icon/menu: {e}");
                         false
                     }
                 };
