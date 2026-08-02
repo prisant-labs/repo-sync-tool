@@ -131,10 +131,24 @@ pub(crate) async fn run_git(
     };
     let duration_ms = started.elapsed().as_millis() as i64;
 
+    // Redact HERE, at capture, not at the activity write sink where the size cap
+    // lives. This stderr does not only become a database row: it becomes
+    // `AppError::FetchFailed`, which crosses IPC and is rendered on screen, and
+    // it is interpolated into tracing events that land in a log a user may
+    // attach to a bug report. Cleaning at the persistence boundary would cover
+    // one of those three. Cleaning at capture covers all of them by
+    // construction. It also has to precede capping, since a cap applied first
+    // can bisect a token and persist the half that survives.
+    //
+    // `raw_command` is deliberately NOT redacted. It is built above from the git
+    // executable path, the repo path, and a fixed argument list, so it carries
+    // no URL and therefore no credential. Running it through the heuristic half
+    // of the redactor would buy nothing and risk mangling a legitimate path that
+    // happens to contain a token-shaped substring.
     Ok(Captured {
         raw_command,
-        raw_stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        raw_stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        raw_stdout: crate::redact::redact_secrets(&String::from_utf8_lossy(&output.stdout)),
+        raw_stderr: crate::redact::redact_secrets(&String::from_utf8_lossy(&output.stderr)),
         exit_code: output.status.code(),
         duration_ms,
     })
@@ -1348,6 +1362,64 @@ mod tests {
         assert!(
             rows.iter().any(|r| r.refname.starts_with("refs/heads/")),
             "for-each-ref should list the local branch: {rows:?}"
+        );
+    }
+
+    /// The WIRING test: proof that `redact_secrets` is actually installed on the
+    /// capture path. `redact.rs` proves the function in isolation; this proves
+    /// the call site exists, which is the half that regresses silently.
+    ///
+    /// IT DOES NOT USE A REMOTE URL, and the reason is worth recording. The
+    /// obvious version of this test - point a remote at a dead port and assert
+    /// the token is gone from the fetch error - PASSES WITH REDACTION REMOVED,
+    /// because git sanitizes userinfo out of its own error messages. It would be
+    /// a permanently green test that proves nothing about our code. Verified on
+    /// git 2.40.1 across both the connection-refused and DNS-failure paths:
+    ///
+    /// ```text
+    /// fatal: unable to access 'https://127.0.0.1:1/acme/widgets.git/': ...
+    /// ```
+    ///
+    /// So the probe uses stdout we control instead: a FILENAME shaped like a
+    /// token, surfaced by `status --porcelain=v2`. That deliberately exercises
+    /// the heuristic half's false-positive behavior - a file really named
+    /// `ghp_...` really is redacted - which is the documented trade in
+    /// `redact.rs` and, here, the cheapest honest probe of the wiring.
+    #[tokio::test]
+    async fn captured_output_passes_through_the_redactor() {
+        if !git_resolvable() {
+            eprintln!("skipping captured_output_passes_through_the_redactor: no git");
+            return;
+        }
+
+        let tmp = TempDir::new().expect("tempdir");
+        let dir = tmp.path();
+        assert!(git(dir, &["init"]));
+
+        const TOKEN_SHAPED: &str = "ghp_TESTONLYNOTAREALTOKEN00";
+        std::fs::write(dir.join(format!("{TOKEN_SHAPED}.txt")), "x\n").expect("write file");
+
+        // `git_resolvable` above already proved a git on PATH.
+        let captured = super::run_git(Path::new("git"), dir, &["status", "--porcelain=v2"])
+            .await
+            .expect("status capture");
+
+        // Porcelain v2 marks an untracked path with a leading "? ".
+        assert!(
+            captured.raw_stdout.starts_with("? "),
+            "sanity: the capture must actually contain the status output: {}",
+            captured.raw_stdout
+        );
+        assert!(
+            !captured.raw_stdout.contains(TOKEN_SHAPED),
+            "captured stdout did not pass through the redactor: {}",
+            captured.raw_stdout
+        );
+        assert!(
+            captured.raw_stdout.contains(crate::redact::REDACTED),
+            "the redaction marker must be present so a reader can tell something \
+             was removed: {}",
+            captured.raw_stdout
         );
     }
 }
