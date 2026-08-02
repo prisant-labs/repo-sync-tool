@@ -51,6 +51,15 @@ command signature.
 
 A green pull request means all of the above pass with no warnings.
 
+**One gate runs only in CI**, so it is worth knowing about before it surprises
+you: a dependency advisory check (`cargo audit` over the Rust lock graph, plus
+`pnpm audit --prod`) fails the build on any advisory that is not explicitly
+waived in `.cargo/audit.toml`. If you add or bump a dependency, that is the
+check most likely to stop you. Each waiver in that file carries a reachability
+argument, an owner, and a review date, so adding one is a deliberate decision
+rather than a way to make CI quiet. It also runs on a weekly schedule, because
+a newly published advisory can make an unchanged lockfile vulnerable.
+
 ## Branch-first workflow
 
 Do not commit directly to `main`. Create a branch for your work, push it, and

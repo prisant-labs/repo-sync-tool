@@ -11,13 +11,18 @@ keeps a personal library of cloned-but-not-actively-developed Git repos fresh an
 layers, one seam:
 
 - **`crates/reposync-core`** - the headless logic crate. Git engine, scheduler, update-policy
-  engine, persistence, activity log, summary engine, GitHub client, and the IPC payload types
-  and error taxonomy. **Never imports `tauri`, even transitively.** That invariant is what keeps
-  this crate unit-testable without a webview and is enforced in CI as a dependency-hygiene gate
-  (`cargo tree -p reposync-core` must show no `tauri`).
+  engine, persistence, activity log, summary engine, GitHub client, credential redaction
+  (`redact`), the diagnostic event vocabulary and log-retention sweep (`logging`), and the IPC
+  payload types and error taxonomy. **Never imports `tauri`, even transitively.** That invariant
+  is what keeps this crate unit-testable without a webview and is enforced in CI as a
+  dependency-hygiene gate (`cargo tree -p reposync-core` must show no `tauri`).
 - **`src-tauri`** - the thin Tauri shell: IPC command handlers, event emission, the system tray,
-  windows, the opener (open-in folder/terminal/editor/remote), and OS-plugin wiring (autostart,
-  notifications). This is the "edge." It hosts `reposync-core`; it does not contain product logic.
+  windows, the opener (open-in folder/terminal/editor/remote), OS-plugin wiring (autostart,
+  notifications), and the logging subscriber plus rolling file appender. This is the "edge." It
+  hosts `reposync-core`; it does not contain product logic. The logging split is not arbitrary:
+  the core emits through the `tracing` facade and the shell decides where events go, both because
+  a library installing a global subscriber steals that choice from its consumers and because
+  `tracing-subscriber` pulls `time`, which the core tree excludes.
 - **`src/`** - the React 19 + TypeScript GUI. Screens (`src/screens`), components
   (`src/components`), and the data/IPC layer (`src/lib`).
 

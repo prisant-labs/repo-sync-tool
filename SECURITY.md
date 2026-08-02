@@ -17,6 +17,18 @@ security fixes. There are no long-term-support branches yet.
 | v0.9.x (latest)   | Yes                |
 | Older prereleases | No                 |
 
+## Before you report: the known weaknesses are already written down
+
+The [security model](docs/security-model.md) describes what RepoSync trusts,
+what it does not, and the weaknesses that are open and tracked. It exists partly
+so a researcher does not spend time rediscovering something we already publish,
+such as the unresolved repository-local `credential.helper` edge or the
+over-granted WebView plugin capabilities.
+
+If what you found is in that list, it is still worth telling us if you have a
+sharper exploit path or a better fix than the one described. If it is not in
+that list, it is very much worth reporting.
+
 ## Reporting a vulnerability
 
 Please do not open a public issue for a security problem. Report it privately
