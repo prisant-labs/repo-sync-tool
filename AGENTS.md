@@ -84,6 +84,15 @@ Run the slow tier at phase gates, not inner-loop iteration; CI runs it as its ow
   live convention. Co-authored-by trailer on agent commits per `EXECUTION.md`.
 - **Never commit unless asked.** Leave changes in the working tree; the human or an explicit
   instruction triggers `git commit`.
+- **Diagnostics go through `tracing`, never `eprintln!`.** The app builds with
+  `windows_subsystem = "windows"`, so a release build has no console: an `eprintln!` is not
+  merely unread, it goes nowhere. Emit with `tracing::{warn,error,info}!` and carry a stable
+  `event = ...` name from `reposync_core::logging::event` so the line is greppable in a log a
+  user sends in. Add new names there rather than inventing them at the call site; they are a
+  contract with logs already on users' machines. `reposync-core` takes the `tracing` FACADE
+  ONLY - the subscriber lives in `src-tauri/src/logging.rs`, because `tracing-subscriber` pulls
+  `time`, which the core tree excludes. Set `REPOSYNC_LOG=debug` when reproducing a problem;
+  logs land in `logs/` under the app data dir.
 
 ## The shell-crate chokepoint
 
