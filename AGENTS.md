@@ -62,8 +62,10 @@ cargo test -p reposync-core <filter>        # narrow further while iterating
 
 Tests are tiered (since 2026-07-04; see `docs/internal/release-plans/plan_v0.9.0/ci-plan.md`
 Section 3.4 decision note). The fast tier is the default: `cargo test --workspace` (or
-`-p reposync-core`) skips the 27 `#[ignore]`-marked git-CLI fixture tests and completes in a
-few minutes. The slow tier runs them: `cargo test -p reposync-core --features test-support
+`-p reposync-core`) skips the `#[ignore]`-marked git-CLI fixture tests and completes in a
+few minutes. (Deliberately not stating how many: this line said "27" until 2026-08-02, when the
+real figure was 28. A count nobody updates is a fact with a decay rate; the tail of any
+`cargo test` run prints the true number.) The slow tier runs them: `cargo test -p reposync-core --features test-support
 --lib -- --ignored`, plus the three feature-gated integration binaries via
 `cargo test -p reposync-core --features test-support --test git_fixture_cross_check
 --test policy_fixture_matrix --test scheduler_integration -- --include-ignored`.
