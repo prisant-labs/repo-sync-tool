@@ -517,6 +517,36 @@ product, and its data posture follows from that directly:
 
 ## 15. Troubleshooting
 
+**Something went wrong while you weren't watching, and you want to know what.**
+RepoSync keeps a diagnostic log. This is the place to look when a check failed
+overnight, a repo stopped updating, or the app did something you can't
+reproduce on demand, because those failures happen with no window open to
+report them in.
+
+The logs live next to your data, in `logs/` under the app data directory. On
+Windows that is `%LOCALAPPDATA%\RepoSync\logs\`, one file per day named
+`reposync.2026-08-02.log`. Fourteen days are kept, capped at 32 MiB in total,
+oldest removed first, so it will not grow without bound.
+
+Each line carries a timestamp (in UTC, so it reads the same for whoever you
+send it to), a level, and a short stable event name such as
+`scheduler.outcome_persist_failed` or `git.unavailable` that you can search
+for. If you are reproducing a problem deliberately and want more detail, start
+RepoSync with the environment variable `REPOSYNC_LOG=debug`.
+
+Two more variables adjust how much is kept, for the case where you are chasing
+something that only happens every few weeks, or you are short on disk:
+
+- `REPOSYNC_LOG_DAYS` - how many daily files to keep (default 14, max 365).
+- `REPOSYNC_LOG_MAX_MB` - total size budget in MiB (default 32, max 4096).
+
+Both take effect at the next start. A value that is empty, out of range, or not
+a number is ignored in favor of the default rather than treated as zero, so a
+typo can never turn retention off while you are relying on it.
+
+One caution before attaching a log to a bug report: it records local file
+paths and error text from git, so it is worth reading first.
+
 **"Git was not found" / a repo shows Failed with a git-related error.**
 RepoSync looks for `git` in this order: an explicit path you've set in
 Settings, then your PATH, then a list of well-known Windows install locations

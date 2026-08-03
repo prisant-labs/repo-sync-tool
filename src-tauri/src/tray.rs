@@ -152,7 +152,7 @@ fn toggle_pause(app: &AppHandle, pause_item: &MenuItem<Wry>) {
         "Pause all"
     };
     if let Err(e) = pause_item.set_text(label) {
-        eprintln!("tray: could not update the Pause/Resume label: {e}");
+        tracing::warn!("tray: could not update the Pause/Resume label: {e}");
     }
 }
 
@@ -168,7 +168,7 @@ fn spawn_check_all(app: &AppHandle) {
         };
         if let Err(e) = crate::commands::check_all_enabled(&app, &pool, &git, &locks).await {
             crate::events::emit_error_raised(&app, &e);
-            eprintln!("tray: check all now failed: {e}");
+            tracing::warn!("tray: check all now failed: {e}");
         }
     });
 }
@@ -186,12 +186,12 @@ fn open_recent_repo(app: &AppHandle, id: i64) {
                 if let Err(e) = crate::opener::open_folder(std::path::Path::new(&detail.local_path))
                 {
                     crate::events::emit_error_raised(&app, &e);
-                    eprintln!("tray: open recent repo {id} failed: {e}");
+                    tracing::warn!("tray: open recent repo {id} failed: {e}");
                 }
             }
             Err(e) => {
                 crate::events::emit_error_raised(&app, &e);
-                eprintln!("tray: open recent repo {id} lookup failed: {e}");
+                tracing::warn!("tray: open recent repo {id} lookup failed: {e}");
             }
         }
     });

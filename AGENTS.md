@@ -11,13 +11,18 @@ keeps a personal library of cloned-but-not-actively-developed Git repos fresh an
 layers, one seam:
 
 - **`crates/reposync-core`** - the headless logic crate. Git engine, scheduler, update-policy
-  engine, persistence, activity log, summary engine, GitHub client, and the IPC payload types
-  and error taxonomy. **Never imports `tauri`, even transitively.** That invariant is what keeps
-  this crate unit-testable without a webview and is enforced in CI as a dependency-hygiene gate
-  (`cargo tree -p reposync-core` must show no `tauri`).
+  engine, persistence, activity log, summary engine, GitHub client, credential redaction
+  (`redact`), the diagnostic event vocabulary and log-retention sweep (`logging`), and the IPC
+  payload types and error taxonomy. **Never imports `tauri`, even transitively.** That invariant
+  is what keeps this crate unit-testable without a webview and is enforced in CI as a
+  dependency-hygiene gate (`cargo tree -p reposync-core` must show no `tauri`).
 - **`src-tauri`** - the thin Tauri shell: IPC command handlers, event emission, the system tray,
-  windows, the opener (open-in folder/terminal/editor/remote), and OS-plugin wiring (autostart,
-  notifications). This is the "edge." It hosts `reposync-core`; it does not contain product logic.
+  windows, the opener (open-in folder/terminal/editor/remote), OS-plugin wiring (autostart,
+  notifications), and the logging subscriber plus rolling file appender. This is the "edge." It
+  hosts `reposync-core`; it does not contain product logic. The logging split is not arbitrary:
+  the core emits through the `tracing` facade and the shell decides where events go, both because
+  a library installing a global subscriber steals that choice from its consumers and because
+  `tracing-subscriber` pulls `time`, which the core tree excludes.
 - **`src/`** - the React 19 + TypeScript GUI. Screens (`src/screens`), components
   (`src/components`), and the data/IPC layer (`src/lib`).
 
@@ -34,8 +39,18 @@ Frontend:
 ```sh
 pnpm typecheck   # tsc --noEmit, app + node config
 pnpm lint        # eslint .
+pnpm test        # vitest run (frontend behavior tests)
 pnpm build       # vite build
 ```
+
+Frontend tests live beside the code they cover as `*.test.ts` and run in the
+fast PR gate alongside typecheck and lint. Anything decided on the TypeScript
+side belongs here, because no Rust test can reach it: the status taxonomy
+(`src/lib/status.ts`) is the clearest case, since the wire type carries raw
+facts and no `status` field, so the ranking is a frontend policy decision. Use
+the typed helpers in `src/test/mock-ipc.ts` rather than stubbing `invoke`
+directly; they are typed against the generated bindings, so a mock cannot drift
+from the real command signature without failing to compile.
 
 Rust:
 
@@ -47,8 +62,10 @@ cargo test -p reposync-core <filter>        # narrow further while iterating
 
 Tests are tiered (since 2026-07-04; see `docs/internal/release-plans/plan_v0.9.0/ci-plan.md`
 Section 3.4 decision note). The fast tier is the default: `cargo test --workspace` (or
-`-p reposync-core`) skips the 27 `#[ignore]`-marked git-CLI fixture tests and completes in a
-few minutes. The slow tier runs them: `cargo test -p reposync-core --features test-support
+`-p reposync-core`) skips the `#[ignore]`-marked git-CLI fixture tests and completes in a
+few minutes. (Deliberately not stating how many: this line said "27" until 2026-08-02, when the
+real figure was 28. A count nobody updates is a fact with a decay rate; the tail of any
+`cargo test` run prints the true number.) The slow tier runs them: `cargo test -p reposync-core --features test-support
 --lib -- --ignored`, plus the three feature-gated integration binaries via
 `cargo test -p reposync-core --features test-support --test git_fixture_cross_check
 --test policy_fixture_matrix --test scheduler_integration -- --include-ignored`.
@@ -74,6 +91,26 @@ Run the slow tier at phase gates, not inner-loop iteration; CI runs it as its ow
   live convention. Co-authored-by trailer on agent commits per `EXECUTION.md`.
 - **Never commit unless asked.** Leave changes in the working tree; the human or an explicit
   instruction triggers `git commit`.
+- **Never merge to `main` unless asked, per PR.** Open the pull request, get it green, and stop.
+  This rule is enforced by agreement, not by GitHub, and the distinction matters because it is easy
+  to assume otherwise: branch protection requires the four status checks and an up-to-date branch,
+  but `required_approving_review_count` is 0. It cannot be otherwise - an agent acting with the
+  maintainer's token is indistinguishable from the maintainer at the protection layer, and with one
+  write-access collaborator an approval requirement would block the maintainer rather than review
+  anything. So nothing will stop an agent from merging. That is precisely why this is written here,
+  in the file agents read first, rather than left to a repo setting that cannot express it.
+  Authorization is per pull request: "merge this one" is not standing permission for the next.
+  Rationale and the revisit condition are recorded under G1.5 in
+  `docs/internal/release-plans/runbook_cut-tag-release.md`.
+- **Diagnostics go through `tracing`, never `eprintln!`.** The app builds with
+  `windows_subsystem = "windows"`, so a release build has no console: an `eprintln!` is not
+  merely unread, it goes nowhere. Emit with `tracing::{warn,error,info}!` and carry a stable
+  `event = ...` name from `reposync_core::logging::event` so the line is greppable in a log a
+  user sends in. Add new names there rather than inventing them at the call site; they are a
+  contract with logs already on users' machines. `reposync-core` takes the `tracing` FACADE
+  ONLY - the subscriber lives in `src-tauri/src/logging.rs`, because `tracing-subscriber` pulls
+  `time`, which the core tree excludes. Set `REPOSYNC_LOG=debug` when reproducing a problem;
+  logs land in `logs/` under the app data dir.
 
 ## The shell-crate chokepoint
 

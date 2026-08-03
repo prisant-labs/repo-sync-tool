@@ -120,11 +120,14 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
             InitFailure::Corrupt => return recover_with_fresh_db(paths, &db_path, &err).await,
             InitFailure::Locked if lock_retries < MAX_LOCK_RETRIES => {
                 let backoff = Duration::from_millis(500);
-                eprintln!(
-                    "warning: the database is locked ({err}); retrying in {}ms (attempt {}/{})",
-                    backoff.as_millis(),
-                    lock_retries + 1,
-                    MAX_LOCK_RETRIES
+                tracing::warn!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "lock_retry",
+                    backoff_ms = backoff.as_millis(),
+                    attempt = lock_retries + 1,
+                    max_retries = MAX_LOCK_RETRIES,
+                    error = %err,
+                    "the database is locked; retrying"
                 );
                 tokio::time::sleep(backoff).await;
                 lock_retries += 1;
@@ -132,9 +135,12 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
             // A persistent lock: the database is healthy, just held by another
             // process. Fail LOUD; never reset.
             InitFailure::Locked => {
-                eprintln!(
-                    "error: the database is still locked after {MAX_LOCK_RETRIES} retries; \
-                     refusing to reset a healthy database (is RepoSync already running?)"
+                tracing::error!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "locked_giving_up",
+                    max_retries = MAX_LOCK_RETRIES,
+                    "the database is still locked; refusing to reset a healthy \
+                     database (is RepoSync already running?)"
                 );
                 return Err(err);
             }
@@ -142,10 +148,13 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
             // Resetting cannot fix it and would silently discard data, so fail LOUD
             // and leave the database untouched.
             InitFailure::Fatal => {
-                eprintln!(
-                    "error: the database could not be opened or migrated ({err}); refusing \
-                     to reset it (this is not corruption). It is preserved untouched at {}.",
-                    db_path.display()
+                tracing::error!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "fatal_preserved",
+                    db_path = %db_path.display(),
+                    error = %err,
+                    "the database could not be opened or migrated; refusing to reset \
+                     it (this is not corruption) and leaving it untouched"
                 );
                 return Err(err);
             }
@@ -222,17 +231,26 @@ async fn recover_with_fresh_db(
     db_path: &Path,
     err: &AppError,
 ) -> Result<DbInit, AppError> {
-    eprintln!("warning: the database is corrupt ({err}); moving it aside and creating a fresh one");
+    tracing::error!(
+        event = crate::logging::event::DB_RECOVERED,
+        outcome = "corrupt_reset",
+        error = %err,
+        "the database is corrupt; moving it aside and creating a fresh one"
+    );
 
     let backup_dir = paths.corrupt_backups_dir();
     let backup_path = move_db_aside(db_path, &backup_dir);
     match &backup_path {
-        Some(moved) => eprintln!(
-            "info: the previous database was preserved at {}",
-            moved.display()
+        Some(moved) => tracing::info!(
+            event = crate::logging::event::DB_RECOVERED,
+            outcome = "corrupt_preserved",
+            backup_path = %moved.display(),
+            "the previous database was preserved"
         ),
-        None => eprintln!(
-            "warning: could not move the existing database aside (it may be locked); \
+        None => tracing::warn!(
+            event = crate::logging::event::DB_RECOVERED,
+            outcome = "corrupt_move_failed",
+            "could not move the existing database aside (it may be locked); \
              starting a fresh database under a unique name instead"
         ),
     }
@@ -270,7 +288,13 @@ fn move_db_aside(db_path: &Path, backup_dir: &Path) -> Option<PathBuf> {
     // Move the primary database first; if THIS fails, the whole move failed.
     if db_path.exists() {
         if let Err(e) = std::fs::rename(db_path, &dest) {
-            eprintln!("warning: could not move {} aside: {e}", db_path.display());
+            tracing::warn!(
+                event = crate::logging::event::DB_RECOVERED,
+                outcome = "move_aside_failed",
+                db_path = %db_path.display(),
+                error = %e,
+                "could not move the database aside"
+            );
             return None;
         }
     } else {
@@ -285,9 +309,12 @@ fn move_db_aside(db_path: &Path, backup_dir: &Path) -> Option<PathBuf> {
         if side.exists() {
             let side_dest = sidecar(&dest, suffix);
             if let Err(e) = std::fs::rename(&side, &side_dest) {
-                eprintln!(
-                    "warning: could not move sidecar {} aside: {e}",
-                    side.display()
+                tracing::warn!(
+                    event = crate::logging::event::DB_RECOVERED,
+                    outcome = "sidecar_move_failed",
+                    sidecar = %side.display(),
+                    error = %e,
+                    "could not move a WAL sidecar aside"
                 );
             }
         }
@@ -844,6 +871,95 @@ mod tests {
         assert!(
             sidecar(&moved, "-shm").exists(),
             "the -shm sidecar moved alongside"
+        );
+    }
+
+    /// BL-NI-10, and the load-bearing half of it.
+    ///
+    /// The masking unit test in `error.rs` proves the arithmetic but cannot
+    /// prove the assumption the classifier rests on: that sqlx surfaces the
+    /// SQLite result code as a string that parses as an integer. Only a real
+    /// lock can falsify that, so this test induces one.
+    ///
+    /// Before the fix this produced `db.query_failed`, whose `retryable()` is
+    /// false, which is how a five-second `busy_timeout` expiry ended up
+    /// presented to the user as a permanent failure.
+    #[tokio::test]
+    async fn a_real_sqlite_busy_classifies_as_db_locked() {
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("busy.db");
+
+        let holder = open_pool(&db).await.expect("open the holding pool");
+        run_migrations(&holder).await.expect("run_migrations");
+
+        // A second pool that refuses to wait. The app's own pool sets a 5s
+        // busy_timeout, which would absorb the contention and make this test
+        // sleep for five seconds before proving anything.
+        let impatient = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&db)
+                    .journal_mode(SqliteJournalMode::Wal)
+                    .busy_timeout(Duration::from_millis(0)),
+            )
+            .await
+            .expect("open the impatient pool");
+
+        // WAL permits exactly one writer. Writing inside the transaction is what
+        // actually takes the lock: sqlx opens a DEFERRED transaction, so a bare
+        // BEGIN would take nothing and this test would pass for the wrong reason.
+        let mut tx = holder.begin().await.expect("begin the holding transaction");
+        sqlx::query("INSERT INTO groups (name) VALUES ('bl-ni-10-holder')")
+            .execute(&mut *tx)
+            .await
+            .expect("the first writer takes the WAL write lock");
+
+        let err = sqlx::query("INSERT INTO groups (name) VALUES ('bl-ni-10-contender')")
+            .execute(&impatient)
+            .await
+            .expect_err("a second writer must be refused while the first holds the lock");
+
+        let app_err = AppError::from(err);
+        assert_eq!(
+            app_err.code(),
+            "db.locked",
+            "real SQLITE_BUSY must classify as db.locked, not db.query_failed"
+        );
+        assert!(
+            app_err.retryable(),
+            "contention must be retryable; that is the entire point of classifying it"
+        );
+
+        tx.rollback().await.expect("release the write lock");
+    }
+
+    /// The negative half. A classifier that returns `db.locked` for everything
+    /// would pass the test above, so a terminal database error must still come
+    /// through as terminal.
+    #[tokio::test]
+    async fn a_constraint_violation_stays_terminal() {
+        let (_dir, pool) = fresh_pool().await;
+
+        sqlx::query("INSERT INTO groups (name) VALUES ('duplicate')")
+            .execute(&pool)
+            .await
+            .expect("first insert succeeds");
+
+        let err = sqlx::query("INSERT INTO groups (name) VALUES ('duplicate')")
+            .execute(&pool)
+            .await
+            .expect_err("the UNIQUE constraint must reject the second insert");
+
+        let app_err = AppError::from(err);
+        assert_eq!(
+            app_err.code(),
+            "db.query_failed",
+            "a UNIQUE violation is terminal and must not be reported as contention"
+        );
+        assert!(
+            !app_err.retryable(),
+            "retrying a constraint violation can never succeed"
         );
     }
 }

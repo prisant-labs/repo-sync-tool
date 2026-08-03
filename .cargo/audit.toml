@@ -1,0 +1,54 @@
+# cargo-audit configuration for RepoSync.
+#
+# This file exists so the CI advisory gate can FAIL on any NEW vulnerability while
+# a small, explicitly documented set of existing ones is temporarily tolerated. An
+# ignore here is a debt with an owner and an expiry, not a dismissal.
+#
+# Rules for adding an entry to `ignore` below:
+#   1. State the reachability argument. "Probably fine" is not one.
+#   2. Name who owns getting rid of it.
+#   3. Give a review date. Past that date the entry is re-argued or removed, not
+#      silently renewed.
+#   4. If the fix is available and simply not taken yet, say so plainly.
+#
+# Run locally with `cargo audit`. CI runs the same command on every pull request
+# and weekly on a schedule, so a newly published advisory against an unchanged
+# lockfile still turns CI red.
+
+[advisories]
+ignore = [
+  # --------------------------------------------------------------------------
+  # RUSTSEC-2026-0194 - quick-xml 0.39.4
+  #   "Quadratic run time when checking a start tag for duplicate attribute names"
+  #   Severity 7.5 (high). Fixed in quick-xml >= 0.41.0.
+  #
+  # RUSTSEC-2026-0195 - quick-xml 0.39.4
+  #   "Unbounded namespace-declaration allocation in NsReader enables
+  #   memory-exhaustion denial of service"
+  #   Severity 7.5 (high). Fixed in quick-xml >= 0.41.0.
+  #
+  # Both are the same crate, same fixed version, same dependency path:
+  #   quick-xml -> plist -> tauri-utils -> { tauri-build (build-dependencies), tauri }
+  #
+  # Reachability: RepoSync does not parse XML or property-list input anywhere. The
+  # crate enters the graph through Tauri's own configuration and bundling tooling
+  # (plist handling, which is macOS-oriented), not through any RepoSync code path,
+  # and not through any input an attacker supplies at runtime. Both advisories are
+  # denial-of-service classes that require feeding hostile XML to the parser, and
+  # there is no route by which a watched repository, a Git remote, or the GitHub
+  # API reaches this parser.
+  #
+  # Why not simply fix it: the version is chosen by `plist`, which is chosen by
+  # `tauri-utils`. Forcing it requires either an upstream Tauri release that bumps
+  # plist, or a `[patch]` override that pins a transitive dependency of a
+  # framework we do not control. Waiting for the upstream bump is the correct
+  # call for a DoS-class advisory with no reachable path.
+  #
+  # Owner: maintainer (@jprisant)
+  # Action: track the Tauri or plist release that brings quick-xml >= 0.41.0 and
+  #         drop both entries the moment it lands.
+  # Review by: 2026-10-31. Do not renew silently.
+  # --------------------------------------------------------------------------
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

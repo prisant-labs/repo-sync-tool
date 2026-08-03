@@ -33,12 +33,17 @@ fn now_secs() -> i64 {
 /// re-admits a repo the user has fixed. Without this, auto-pause would be a
 /// permanent one-way trip (E-08 spec: "auto_paused resets to 0 on a successful
 /// manual check or an explicit user resume").
-async fn clear_failure_state(pool: &SqlitePool, repo_id: i64) -> Result<(), AppError> {
+/// Generic over the executor so `check_now` can clear the streak INSIDE its
+/// outcome transaction while `update_now` keeps calling it on the pool.
+async fn clear_failure_state<'e, E>(executor: E, repo_id: i64) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query(
         "UPDATE repo_local_state SET consecutive_failures = 0, auto_paused = 0 WHERE repo_id = ?",
     )
     .bind(repo_id)
-    .execute(pool)
+    .execute(executor)
     .await?;
     Ok(())
 }
@@ -92,7 +97,22 @@ pub async fn add(
     };
     let created_at = now_secs();
 
-    // 5. Insert the repos row; UNIQUE(local_path) violation -> DuplicateRepo.
+    // 5. Write BOTH rows in ONE transaction (DS-3 / BL-NI-07).
+    //
+    //    Adding a repo is two inserts: the `repos` registry row and its initial
+    //    `repo_local_state` row. They must land together or not at all, because a
+    //    `repos` row with no state row is not a cosmetic gap - it is a repo that
+    //    is silently and permanently broken. `check_now` persists via
+    //    `UPDATE repo_local_state ... WHERE repo_id = ?`, which affects zero rows
+    //    and SUCCEEDS when the row is missing, and `repo_list` reads through a
+    //    LEFT JOIN, so the orphan still lists. The user sees a repo that never
+    //    updates, never errors, and cannot be re-added, because the orphan still
+    //    holds the UNIQUE(local_path) constraint.
+    //
+    //    Any early return below drops the transaction, which rolls it back.
+    let mut tx = pool.begin().await?;
+
+    //    UNIQUE(local_path) violation -> DuplicateRepo.
     //    check_frequency_min is inserted as 0, the INHERIT sentinel: a new repo
     //    follows the global cadence (settings.global_check_minutes) until a user
     //    sets an explicit positive per-repo override. The schema default is 360,
@@ -108,7 +128,7 @@ pub async fn add(
     .bind(&remote_origin_url)
     .bind(host_type)
     .bind(created_at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await;
 
     let repo_id = match insert {
@@ -137,8 +157,11 @@ pub async fn add(
     .bind(inspect.is_dirty as i64)
     .bind(inspect.is_detached as i64)
     .bind(inspect.last_commit_at)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+
+    // 7. Only now is the repo real.
+    tx.commit().await?;
 
     Ok(RepoId(repo_id))
 }
@@ -226,10 +249,26 @@ pub async fn check_now(
         }
     };
 
-    // 7. Update the cached local state. active_branch is refreshed from the
-    //    fresh inspect so a branch switch since `add` is reflected; omitting it
-    //    leaves stale state. upstream_branch is also refreshed here since it was
-    //    already inspected.
+    // 7. Persist the whole outcome ATOMICALLY (BL-NI-07, the `check_now` half;
+    //    PR #31 did the `add` half).
+    //
+    //    Three writes describe one event: the refreshed local state, the audit
+    //    receipt, and (on success) the cleared failure streak. Run loose on the
+    //    pool, a failure between them left state advanced with no receipt - the
+    //    activity log silently stops being a complete record of what the app did,
+    //    which is worse than a visible error because nothing ever surfaces it.
+    //
+    //    This follows the audit's prescribed ordering: the external observation
+    //    (inspect + fetch) is already finished above, and only after it does any
+    //    database state move. Rolling back is safe precisely because `check_now`
+    //    never mutates the working tree - the cost of a lost check is one
+    //    redundant re-check on the next tick.
+    let mut tx = pool.begin().await?;
+
+    // 7a. Update the cached local state. active_branch is refreshed from the
+    //     fresh inspect so a branch switch since `add` is reflected; omitting it
+    //     leaves stale state. upstream_branch is also refreshed here since it was
+    //     already inspected.
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
@@ -248,18 +287,20 @@ pub async fn check_now(
     .bind(now)
     .bind(now)
     .bind(repo_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    // 8. Append the activity record. A locally-decided check (no fetch) records no
-    //    git command; a fetched check records the fetch capture.
+    // 7b. Append the activity record. A locally-decided check (no fetch) records no
+    //     git command; a fetched check records the fetch capture. This uses the
+    //     FALLIBLE writer: inside this transaction a swallowed error would commit
+    //     the state update with no receipt, which is the exact defect being fixed.
     let status = if fetch_failed { "failed" } else { "success" };
     let summary = format!(
         "check: decision={decision}{}",
         format_ahead_behind_suffix(ahead_behind.ahead, ahead_behind.behind)
     );
-    activity::record(
-        pool,
+    activity::record_in_tx(
+        &mut tx,
         &ActivityInput {
             repo_id,
             timestamp: Some(now),
@@ -275,20 +316,30 @@ pub async fn check_now(
             duration_ms: fetch.as_ref().map(|f| f.duration_ms),
         },
     )
-    .await;
+    .await?;
+
+    // 7c. E-08 review fix (HIGH): a successful check clears the failure streak +
+    //     auto-pause so a user-recovered repo is re-admitted to the scheduler's
+    //     due-query (which excludes auto_paused = 1). It belongs in the same
+    //     transaction because it is part of the same outcome: committing the
+    //     success receipt while leaving the repo auto-paused would keep a
+    //     recovered repo out of the scheduler with a green check on record.
+    if !fetch_failed {
+        clear_failure_state(&mut *tx, repo_id).await?;
+    }
+
+    // 8. One commit for the whole outcome. Nothing above this line is durable;
+    //    everything below observes a fully-written check.
+    tx.commit().await?;
 
     // 9. A failed fetch records the activity row above, then surfaces the error.
+    //    This runs AFTER the commit so the receipt survives the error return.
     if let Some(f) = fetch.as_ref().filter(|f| !f.success) {
         return Err(AppError::FetchFailed {
             exit_code: f.exit_code,
             stderr: f.raw_stderr.clone(),
         });
     }
-
-    // 10. E-08 review fix (HIGH): reaching here means the check succeeded; clear the
-    //     failure streak + auto-pause so a user-recovered repo is re-admitted to the
-    //     scheduler's due-query (which excludes auto_paused = 1).
-    clear_failure_state(pool, repo_id).await?;
 
     Ok(CheckResult {
         repo_id,
@@ -1032,6 +1083,181 @@ mod tests {
         let pool = db::open_pool(&db_file).await.expect("open_pool");
         db::run_migrations(&pool).await.expect("migrations");
         pool
+    }
+
+    /// `add` writes TWO rows: the `repos` registry row and the initial
+    /// `repo_local_state` row. They must land together or not at all.
+    ///
+    /// This is not a cosmetic concern, because of how the rest of the system
+    /// treats a missing state row. `check_now` persists with
+    /// `UPDATE repo_local_state SET ... WHERE repo_id = ?`, and an UPDATE against
+    /// a row that does not exist affects zero rows and SUCCEEDS. `repo_list`
+    /// reads through a `LEFT JOIN`, so the repo still appears in the UI. An
+    /// orphaned `repos` row is therefore a repo that is listed forever, reports
+    /// no error, and whose every subsequent check silently writes nothing. It
+    /// also cannot be repaired by re-adding it, because the orphan still owns the
+    /// `UNIQUE(local_path)` constraint and the retry is rejected as a duplicate.
+    ///
+    /// The failure is INDUCED with a trigger rather than waited for: the
+    /// real-world causes (a locked database, a full disk, a crash between the two
+    /// statements) are not reproducible on demand, but they all present to `add`
+    /// the same way.
+    #[tokio::test]
+    async fn add_leaves_no_orphan_when_the_state_insert_fails() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping add_leaves_no_orphan_when_the_state_insert_fails: git not resolvable"
+            );
+            return;
+        };
+
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+        let repotmp = TempDir::new().expect("repo tempdir");
+        init_repo_with_commit(repotmp.path());
+
+        // Make the SECOND write fail, after the first has already executed.
+        sqlx::query(
+            "CREATE TRIGGER fail_state_insert BEFORE INSERT ON repo_local_state \
+             BEGIN SELECT RAISE(ABORT, 'induced state-insert failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install the failure trigger");
+
+        let result = add(&pool, &git, repotmp.path()).await;
+        assert!(
+            result.is_err(),
+            "add must report failure when the state insert fails, got {result:?}"
+        );
+
+        let repos_count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM repos")
+            .fetch_one(&pool)
+            .await
+            .expect("count repos")
+            .try_get("c")
+            .expect("c");
+        assert_eq!(
+            repos_count, 0,
+            "a failed add must leave NO repos row behind; an orphan is a repo that \
+             lists forever, never records a check, and cannot be re-added"
+        );
+
+        // The user's actual recovery path: fix the transient problem, try again.
+        // With a non-atomic add this fails as DuplicateRepo against the orphan,
+        // leaving the repo permanently unusable.
+        sqlx::query("DROP TRIGGER fail_state_insert")
+            .execute(&pool)
+            .await
+            .expect("drop the failure trigger");
+
+        let id = add(&pool, &git, repotmp.path())
+            .await
+            .expect("retrying after a transient failure must succeed");
+
+        let state_count: i64 =
+            sqlx::query("SELECT COUNT(*) AS c FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(&pool)
+                .await
+                .expect("count state")
+                .try_get("c")
+                .expect("c");
+        assert_eq!(state_count, 1, "the retry must write the state row");
+    }
+
+    /// BL-NI-07, the `check_now` half. The failure is induced with a trigger for
+    /// the same reason `add`'s test does it: the real causes (a locked database,
+    /// a full disk, a crash between statements) are not reproducible on demand
+    /// but present to the writer identically.
+    ///
+    /// What this protects is subtle. A lost check is cheap - the scheduler
+    /// re-runs it. State advancing WITHOUT its receipt is not, because nothing
+    /// ever surfaces it: `last_checked_at` moves, the UI shows a checked repo,
+    /// and the activity log has quietly stopped being a complete record of what
+    /// the app did to the user's machine.
+    #[tokio::test]
+    async fn a_failed_receipt_rolls_back_the_whole_check() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping a_failed_receipt_rolls_back_the_whole_check: git not resolvable");
+            return;
+        };
+
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+        let repotmp = TempDir::new().expect("repo tempdir");
+        init_repo_with_commit(repotmp.path());
+
+        let id = add(&pool, &git, repotmp.path()).await.expect("add ok");
+
+        async fn last_checked_at(pool: &SqlitePool, repo_id: i64) -> Option<i64> {
+            sqlx::query("SELECT last_checked_at FROM repo_local_state WHERE repo_id = ?")
+                .bind(repo_id)
+                .fetch_one(pool)
+                .await
+                .expect("read last_checked_at")
+                .try_get("last_checked_at")
+                .expect("last_checked_at column")
+        }
+
+        let before = last_checked_at(&pool, id.0).await;
+
+        // Fail the LAST write of the outcome, after the state UPDATE has already
+        // executed. This is the ordering that produced the defect.
+        sqlx::query(
+            "CREATE TRIGGER fail_activity_insert BEFORE INSERT ON activity_records \
+             BEGIN SELECT RAISE(ABORT, 'induced activity-insert failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("install the failure trigger");
+
+        let result = check_now(&pool, &git, id).await;
+        assert!(
+            result.is_err(),
+            "check_now must report failure when the receipt cannot be written, got {result:?}"
+        );
+
+        assert_eq!(
+            last_checked_at(&pool, id.0).await,
+            before,
+            "a check whose receipt failed must not advance last_checked_at; \
+             state without a receipt is an audit trail that lies by omission"
+        );
+
+        let activity_count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM activity_records")
+            .fetch_one(&pool)
+            .await
+            .expect("count activity")
+            .try_get("c")
+            .expect("c");
+        assert_eq!(activity_count, 0, "no receipt was written, by construction");
+
+        // The recovery path: the transient problem clears and the next check
+        // lands whole.
+        sqlx::query("DROP TRIGGER fail_activity_insert")
+            .execute(&pool)
+            .await
+            .expect("drop the failure trigger");
+
+        check_now(&pool, &git, id)
+            .await
+            .expect("retrying after a transient failure must succeed");
+
+        assert!(
+            last_checked_at(&pool, id.0).await.is_some(),
+            "the successful retry must advance last_checked_at"
+        );
+        let activity_count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM activity_records")
+            .fetch_one(&pool)
+            .await
+            .expect("count activity")
+            .try_get("c")
+            .expect("c");
+        assert_eq!(
+            activity_count, 1,
+            "the successful retry must leave exactly one receipt"
+        );
     }
 
     #[tokio::test]

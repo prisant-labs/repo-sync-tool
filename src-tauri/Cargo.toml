@@ -55,6 +55,15 @@ tauri-plugin-process = { workspace = true }
 # folder picker (Explorer / Finder). Registered in `lib.rs`; the `dialog:allow-open`
 # capability permission is granted in `capabilities/default.json`.
 tauri-plugin-dialog = { workspace = true }
+# Structured diagnostics: the SUBSCRIBER half. A tray app has no console, so
+# `eprintln!` sent every resident failure - scheduler ticks, outcome persistence,
+# update checks - to a stderr nobody ever reads. These two crates put them in a
+# rotating file under the app data dir instead. They live here rather than in
+# reposync-core because installing a global subscriber is a binary's decision, and
+# because tracing-subscriber pulls `time`, which the core tree excludes.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
 serde = { workspace = true }

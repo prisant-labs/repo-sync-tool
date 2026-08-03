@@ -72,11 +72,20 @@ the architecture brief for why this split exists
 
 ## Where is my data stored?
 
-Locally, on your machine, in a single SQLite database under the OS application-data
-directory. On Windows that is `%LOCALAPPDATA%\RepoSync\` (the Local profile, never a
-roaming or OneDrive-synced folder, to avoid database corruption). The database holds
-your repo list, cached git state, cached GitHub metadata, the activity log, and your
-settings.
+Locally, on your machine, under the OS application-data directory. On Windows that is
+`%LOCALAPPDATA%\RepoSync\` (the Local profile, never a roaming or OneDrive-synced
+folder, to avoid database corruption). Two things live there:
+
+- **A SQLite database** holding your repo list, cached git state, cached GitHub
+  metadata, the activity log, and your settings.
+- **A `logs/` directory** of rotating diagnostic logs, one file per day. These record
+  what RepoSync did in the background and why anything failed, because a tray app has
+  nowhere on screen to tell you. They contain local paths and error text, which can
+  include git's own error output. Fourteen days are kept, capped at 32 MiB total,
+  oldest deleted first.
+
+Neither is sent anywhere. If you attach a log to a bug report, it is worth reading
+first, since it names paths on your machine.
 
 There is **no telemetry, no crash reporting, and no cloud sync.** RepoSync makes no
 outbound network calls beyond the Git fetches and the optional unauthenticated GitHub

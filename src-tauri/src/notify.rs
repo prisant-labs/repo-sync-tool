@@ -72,7 +72,7 @@ fn raise(app: &AppHandle, payload: &NotificationFiredPayload) {
         .body(payload.body.clone())
         .show()
     {
-        eprintln!(
+        tracing::warn!(
             "notify: failed to raise OS toast (kind={}): {e}",
             payload.kind
         );
@@ -116,7 +116,9 @@ pub async fn fire_cycle_from_collector(
     }
     match reposync_core::store::settings_get(pool).await {
         Ok(settings) => fire_cycle(app, &settings, &events),
-        Err(e) => eprintln!("notify: could not read settings to fire cycle notifications: {e}"),
+        Err(e) => {
+            tracing::warn!("notify: could not read settings to fire cycle notifications: {e}")
+        }
     }
 }
 
@@ -131,13 +133,13 @@ pub fn ensure_permission(app: &AppHandle) {
         Ok(PermissionState::Granted) => {}
         Ok(_) => match app.notification().request_permission() {
             Ok(PermissionState::Granted) => {}
-            Ok(other) => eprintln!(
+            Ok(other) => tracing::warn!(
                 "notify: notification permission not granted ({other:?}); \
                  OS toasts will be suppressed until the user enables them"
             ),
-            Err(e) => eprintln!("notify: could not request notification permission: {e}"),
+            Err(e) => tracing::warn!("notify: could not request notification permission: {e}"),
         },
-        Err(e) => eprintln!("notify: could not read notification permission state: {e}"),
+        Err(e) => tracing::warn!("notify: could not read notification permission state: {e}"),
     }
 }
 

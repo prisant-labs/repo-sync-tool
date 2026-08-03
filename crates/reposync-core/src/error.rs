@@ -403,8 +403,55 @@ impl specta::Type for AppError {
     }
 }
 
+/// SQLite primary result code for `SQLITE_BUSY`.
+const SQLITE_BUSY: i32 = 5;
+
+/// SQLite primary result code for `SQLITE_LOCKED`.
+const SQLITE_LOCKED: i32 = 6;
+
+/// The primary result code carried in the low byte of a SQLite extended code.
+///
+/// SQLite reports contention as an EXTENDED code, not a bare one: `SQLITE_BUSY`
+/// is 5 but `SQLITE_BUSY_SNAPSHOT` is 517 and `SQLITE_BUSY_TIMEOUT` is 773;
+/// `SQLITE_LOCKED` is 6 but `SQLITE_LOCKED_SHAREDCACHE` is 262. Every extended
+/// code stores its primary code in the low byte, so masking classifies the whole
+/// family - including members SQLite may add later - without enumerating them.
+/// Matching on the bare 5 and 6 would silently miss the variants that actually
+/// show up under WAL contention.
+fn sqlite_primary_code(extended: i32) -> i32 {
+    extended & 0xFF
+}
+
+/// Whether a sqlx error is transient SQLite write contention rather than a
+/// terminal query failure.
+///
+/// Non-database errors (pool timeouts, decode failures, closed connections)
+/// deliberately return `false`: they are not the "another writer holds the lock,
+/// try again" condition, even when they are also transient.
+fn is_sqlite_contention(err: &sqlx::Error) -> bool {
+    err.as_database_error()
+        .and_then(|db_err| db_err.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .map(sqlite_primary_code)
+        .is_some_and(|primary| primary == SQLITE_BUSY || primary == SQLITE_LOCKED)
+}
+
 impl From<sqlx::Error> for AppError {
     fn from(err: sqlx::Error) -> Self {
+        // BL-NI-10. SQLITE_BUSY and SQLITE_LOCKED are transient: the same write
+        // can succeed on a retry with no user action. Collapsing them into
+        // `Db { .. }` (`db.query_failed`, whose `retryable()` is false) made the
+        // `DbLocked` variant unreachable from the `?` path that every store call
+        // uses, so a caller could not tell "try again" from "this statement is
+        // wrong" and a 5-second `busy_timeout` expiry surfaced as a hard error.
+        //
+        // `DbLocked` carries no fields because the IPC payload shape is frozen,
+        // so the sqlx cause string is dropped here. That is the deliberate
+        // trade: the variant's remediation already tells the user what to do,
+        // and adding a field would change a contract that is closed.
+        if is_sqlite_contention(&err) {
+            return AppError::DbLocked;
+        }
         AppError::Db {
             cause: err.to_string(),
         }
@@ -651,5 +698,55 @@ mod tests {
         assert!(value["message"].is_string());
         assert!(!value["remediation"].as_str().unwrap().is_empty());
         assert_eq!(value["context"]["context"], "panic in worker");
+    }
+
+    /// BL-NI-10. The masking is the whole point of the classifier: SQLite hands
+    /// back extended codes, and the bare 5 / 6 are the least likely members of
+    /// their families to appear under real WAL contention.
+    #[test]
+    fn sqlite_primary_code_masks_every_member_of_the_busy_and_locked_families() {
+        // SQLITE_BUSY and its extended forms: BUSY, BUSY_RECOVERY,
+        // BUSY_SNAPSHOT, BUSY_TIMEOUT.
+        for extended in [5, 261, 517, 773] {
+            assert_eq!(
+                sqlite_primary_code(extended),
+                SQLITE_BUSY,
+                "extended code {extended} must classify as SQLITE_BUSY"
+            );
+        }
+
+        // SQLITE_LOCKED and its extended forms: LOCKED, LOCKED_SHAREDCACHE,
+        // LOCKED_VTAB.
+        for extended in [6, 262, 518] {
+            assert_eq!(
+                sqlite_primary_code(extended),
+                SQLITE_LOCKED,
+                "extended code {extended} must classify as SQLITE_LOCKED"
+            );
+        }
+
+        // Terminal codes must NOT collapse into the contention families.
+        // SQLITE_CONSTRAINT (19), SQLITE_CONSTRAINT_UNIQUE (2067),
+        // SQLITE_READONLY (8), SQLITE_CORRUPT (11), SQLITE_ERROR (1).
+        for extended in [19, 2067, 8, 11, 1] {
+            let primary = sqlite_primary_code(extended);
+            assert!(
+                primary != SQLITE_BUSY && primary != SQLITE_LOCKED,
+                "extended code {extended} is terminal and must not be classified as contention"
+            );
+        }
+    }
+
+    /// A duplicate-path insert is the contention classifier's nearest neighbour:
+    /// it is a real `DatabaseError` with a real code, and misclassifying it as
+    /// retryable would make callers spin forever on a write that can never win.
+    #[test]
+    fn constraint_violations_stay_terminal() {
+        assert_ne!(
+            sqlite_primary_code(2067),
+            SQLITE_BUSY,
+            "SQLITE_CONSTRAINT_UNIQUE must never be treated as transient"
+        );
+        assert!(!AppError::Db { cause: "x".into() }.retryable());
     }
 }

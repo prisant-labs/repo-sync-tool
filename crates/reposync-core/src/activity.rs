@@ -66,16 +66,67 @@ pub struct ActivityInput {
     pub duration_ms: Option<i64>,
 }
 
-/// Append one fully-populated `activity_records` row (the single sink, AC1).
+/// Maximum bytes retained for any ONE captured stream on an activity row
+/// (`raw_command`, `raw_stdout`, `raw_stderr`).
 ///
-/// BEST-EFFORT BY DESIGN: a logging failure must never abort the git operation
-/// being recorded (the operation already happened). On a DB write error the
-/// failure is logged and swallowed; this function returns `()` and never
-/// propagates. Failed operations are recorded too (non-zero `exit_code` +
-/// captured `raw_stderr`), never dropped (AC2).
-pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
+/// These fields hold git's own output, which is attacker-influenced: a hostile
+/// or merely misconfigured remote controls what lands on stderr, and the
+/// scheduler records a row per check, per repo, forever. Uncapped, that is an
+/// unbounded write amplifier pointed at the user's disk (BL-NI-54).
+///
+/// 16 KiB is chosen to be far larger than any real git message while still
+/// bounding the worst case. Nothing legitimate gets clipped in practice.
+pub const ACTIVITY_STREAM_MAX_BYTES: usize = 16 * 1024;
+
+/// Appended to a stream that was cut, so a reader can distinguish truncated
+/// output from output that simply ended there. Silent truncation would be worse
+/// than the disk usage: it turns the activity log from evidence into a guess.
+pub const TRUNCATION_MARKER: &str = "\n... [truncated by RepoSync]";
+
+/// Bound one captured stream to [`ACTIVITY_STREAM_MAX_BYTES`].
+///
+/// The single place captured git output is size-limited; every write path goes
+/// through here rather than each caller inventing its own limit.
+///
+/// Cuts on a CHARACTER boundary, not a byte index. Git output is arbitrary UTF-8
+/// (branch names, commit subjects, localized messages), so slicing at a fixed
+/// byte offset can land inside a multi-byte character and panic - inside a writer
+/// that is documented as best-effort and must never take down the operation it is
+/// recording.
+pub fn cap_stream(value: &str) -> String {
+    if value.len() <= ACTIVITY_STREAM_MAX_BYTES {
+        return value.to_string();
+    }
+    // Walk back to the nearest character boundary at or below the limit.
+    let mut end = ACTIVITY_STREAM_MAX_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + TRUNCATION_MARKER.len());
+    out.push_str(&value[..end]);
+    out.push_str(TRUNCATION_MARKER);
+    out
+}
+
+/// [`cap_stream`] for the optional captured fields. `None` stays `None`: an
+/// absent stream is different from an empty one, and the distinction is stored.
+pub fn cap_optional(value: &Option<String>) -> Option<String> {
+    value.as_deref().map(cap_stream)
+}
+
+/// The single INSERT behind both [`record`] and [`record_in_tx`].
+///
+/// Generic over the executor so a pool write and a write inside a caller's
+/// transaction run the SAME statement, and therefore go through the same
+/// capping. Splitting these into two hand-written inserts is how the single-sink
+/// property (AC1) would quietly rot: one of them would eventually miss a
+/// `cap_optional`.
+async fn insert_activity_row<'e, E>(executor: E, input: &ActivityInput) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     let ts = input.timestamp.unwrap_or_else(now_secs);
-    let res = sqlx::query(
+    sqlx::query(
         "INSERT INTO activity_records \
          (repo_id, timestamp, action_type, status, reason_code, summary, commit_range, \
           raw_command, raw_stdout, raw_stderr, exit_code, duration_ms) \
@@ -88,21 +139,65 @@ pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
     .bind(&input.reason_code)
     .bind(&input.summary)
     .bind(&input.commit_range)
-    .bind(&input.raw_command)
-    .bind(&input.raw_stdout)
-    .bind(&input.raw_stderr)
+    // The three captured streams are the only attacker-influenced fields on this
+    // row, so they are bounded HERE, at the single write sink, rather than at each
+    // of the several call sites that construct an ActivityInput.
+    .bind(cap_optional(&input.raw_command))
+    .bind(cap_optional(&input.raw_stdout))
+    .bind(cap_optional(&input.raw_stderr))
     .bind(input.exit_code)
     .bind(input.duration_ms)
-    .execute(pool)
-    .await;
-    if let Err(e) = res {
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
+/// Append one fully-populated `activity_records` row (the single sink, AC1).
+///
+/// BEST-EFFORT BY DESIGN: a logging failure must never abort the git operation
+/// being recorded (the operation already happened). On a DB write error the
+/// failure is logged and swallowed; this function returns `()` and never
+/// propagates. Failed operations are recorded too (non-zero `exit_code` +
+/// captured `raw_stderr`), never dropped (AC2).
+///
+/// This is the right contract for a caller that has ALREADY mutated the working
+/// tree, such as `update_now` after a fast-forward: the pull cannot be undone,
+/// so refusing to return it because the receipt failed would help nobody. A
+/// caller whose state change is still rollbackable wants [`record_in_tx`].
+pub async fn record(pool: &SqlitePool, input: &ActivityInput) {
+    if let Err(e) = insert_activity_row(pool, input).await {
         // Best-effort: the git operation already happened; a logging failure must
         // not abort it. Log and swallow.
-        eprintln!(
-            "activity: failed to record a '{}' row for repo {}: {e}",
-            input.action_type, input.repo_id
+        //
+        // ERROR level, and not negotiable: this line is the ONLY trace that the
+        // audit trail now has a hole in it. Nothing else in the system will ever
+        // mention it - the operation succeeded, the UI is correct, and the
+        // missing row is missing silently.
+        tracing::error!(
+            event = crate::logging::event::ACTIVITY_WRITE_FAILED,
+            action_type = %input.action_type,
+            repo_id = input.repo_id,
+            error = %e,
+            "failed to record an activity row; the audit trail is incomplete"
         );
     }
+}
+
+/// Fallible sibling of [`record`], for a caller that needs the receipt to be
+/// ATOMIC with the state change it describes (BL-NI-07).
+///
+/// Writes into the caller's transaction and PROPAGATES the error, so a failed
+/// receipt rolls the state change back with it. That inverts [`record`]'s
+/// best-effort promise on purpose, and it is only sound when the described
+/// operation is safe to repeat: `check_now` inspects and fetches but never
+/// mutates the working tree, so re-running a rolled-back check costs one
+/// redundant check and nothing else. Do NOT reach for this from a path that has
+/// already moved a user's refs.
+pub async fn record_in_tx(
+    tx: &mut sqlx::SqliteConnection,
+    input: &ActivityInput,
+) -> Result<(), AppError> {
+    insert_activity_row(&mut *tx, input).await
 }
 
 /// Read `activity_records` newest-first, applying the optional [`ActivityFilter`]
@@ -185,9 +280,15 @@ pub async fn sweep(pool: &SqlitePool, now_unix: i64) -> Result<u64, AppError> {
 /// sweep failure is logged, not propagated, so app start is never gated on it.
 pub async fn sweep_at_startup(pool: &SqlitePool) {
     match sweep(pool, now_secs()).await {
-        Ok(n) if n > 0 => eprintln!("activity: startup retention sweep pruned {n} record(s)"),
+        Ok(n) if n > 0 => {
+            tracing::info!(pruned = n, "startup activity retention sweep pruned rows")
+        }
         Ok(_) => {}
-        Err(e) => eprintln!("activity: startup retention sweep failed: {e}"),
+        Err(e) => tracing::warn!(
+            event = crate::logging::event::RETENTION_SWEEP_FAILED,
+            error = %e,
+            "startup activity retention sweep failed; the log will keep growing"
+        ),
     }
 }
 
@@ -627,6 +728,79 @@ mod tests {
         assert!(
             !sweep_due(Some(1_000_000), 1_000_000),
             "swept this exact instant is not due"
+        );
+    }
+
+    // --- Captured-stream size cap (BL-NI-54, the disk-exhaustion half) ---------------
+
+    #[test]
+    fn cap_stream_leaves_ordinary_output_alone() {
+        let short = "Updating aaa..bbb\nFast-forward\n";
+        assert_eq!(
+            cap_stream(short),
+            short,
+            "output under the cap must be stored verbatim"
+        );
+        assert_eq!(cap_stream(""), "", "empty output stays empty");
+    }
+
+    #[test]
+    fn cap_stream_keeps_output_exactly_at_the_limit() {
+        let exact = "x".repeat(ACTIVITY_STREAM_MAX_BYTES);
+        let capped = cap_stream(&exact);
+        assert_eq!(
+            capped.len(),
+            ACTIVITY_STREAM_MAX_BYTES,
+            "output exactly at the cap must not be truncated (off-by-one guard)"
+        );
+        assert!(!capped.ends_with(TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn cap_stream_truncates_and_marks_oversized_output() {
+        // A hostile or merely broken remote can emit unbounded stderr. Without a
+        // cap this lands in SQLite verbatim, once per failed check, forever.
+        let huge = "y".repeat(ACTIVITY_STREAM_MAX_BYTES * 4);
+        let capped = cap_stream(&huge);
+
+        assert!(
+            capped.len() <= ACTIVITY_STREAM_MAX_BYTES + TRUNCATION_MARKER.len(),
+            "capped output must be bounded, got {} bytes",
+            capped.len()
+        );
+        assert!(
+            capped.ends_with(TRUNCATION_MARKER),
+            "truncated output must SAY it was truncated, so a reader never mistakes \
+             a cut-off stream for the whole story"
+        );
+    }
+
+    /// The bug a naive `&s[..LIMIT]` would ship: git output is arbitrary UTF-8
+    /// (branch names, commit subjects, localized messages), and slicing at a byte
+    /// index that lands inside a multi-byte character PANICS. That panic would fire
+    /// inside the activity writer, which is documented as best-effort and must never
+    /// take down the operation it is recording.
+    #[test]
+    fn cap_stream_never_splits_a_multibyte_character() {
+        // Three bytes per character, so the cap lands mid-character.
+        let multibyte = "\u{4e16}".repeat(ACTIVITY_STREAM_MAX_BYTES);
+        let capped = cap_stream(&multibyte);
+
+        assert!(capped.ends_with(TRUNCATION_MARKER));
+        let body = &capped[..capped.len() - TRUNCATION_MARKER.len()];
+        assert!(
+            body.chars().all(|c| c == '\u{4e16}'),
+            "truncation must cut on a character boundary, never mid-character"
+        );
+        assert!(body.len() <= ACTIVITY_STREAM_MAX_BYTES);
+    }
+
+    #[test]
+    fn cap_optional_stream_passes_through_none() {
+        assert_eq!(cap_optional(&None), None, "absent output stays absent");
+        assert_eq!(
+            cap_optional(&Some("ok".to_string())),
+            Some("ok".to_string())
         );
     }
 }

@@ -33,6 +33,7 @@ Three layers, one direction of dependency. The frontend depends on the IPC contr
 |  reposync-core  (pure Rust, NO tauri dependency)            |
 |  ipc (payload structs)  | error (AppError)                  |
 |  repo | policy | scheduler | activity | summary | github    |
+|  logging (events + retention) | redact (credentials)      |
 |  paths (platform seam)  | git/{mod,cli,inspect}            |
 |  migrations/ (numbered .sql)                                |
 +----------------------------+--------------------------------+
