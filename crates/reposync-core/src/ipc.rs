@@ -68,6 +68,65 @@ pub struct ActivityRecord {
     pub duration_ms: Option<i64>,
 }
 
+/// A read-only snapshot of where RepoSync keeps its files and how it is
+/// currently configured, for the Settings -> Diagnostics card.
+///
+/// Every field is DERIVED, not stored: this is a view over the resolved paths,
+/// the logging configuration actually installed at startup, the live git probe,
+/// and the since-launch scheduler counters. Nothing here is settable, which is
+/// why it has no write counterpart.
+///
+/// Paths are rendered strings rather than structured values because their only
+/// consumer is a label the user reads or copies into a bug report. Note that on
+/// Windows they contain the account name; the card says so next to the copy
+/// action rather than mangling the paths, since a redacted path is useless for
+/// the thing a user opens this card to do - find the folder.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostics {
+    /// The running app version (the crate version baked in at build time).
+    pub app_version: String,
+    /// The resolved app-data directory.
+    pub data_dir: String,
+    /// The SQLite database file inside it.
+    pub db_path: String,
+    /// The rolling-log directory.
+    pub log_dir: String,
+    /// Whether the rolling file appender is actually running. `false` means the
+    /// app started but could not open a log file, so nothing is being recorded.
+    pub logging_active: bool,
+    /// The effective maximum level, e.g. `"INFO"`. `None` when logging is off.
+    pub log_level: Option<String>,
+    /// Daily files retained (the AGE half of retention). `None` when logging is off.
+    pub log_max_files: Option<i64>,
+    /// The directory size budget in bytes (the SIZE half). `None` when off.
+    pub log_max_bytes: Option<i64>,
+    /// Log files present right now.
+    pub log_file_count: i64,
+    /// Bytes those files occupy right now.
+    pub log_bytes: i64,
+    /// Whether the data directory sits under a OneDrive-synced tree, where a sync
+    /// agent can corrupt the SQLite WAL sidecars mid-write (BL-NI-12).
+    pub onedrive_rooted: bool,
+    /// The resolved `git` executable, or `None` when none was found.
+    pub git_path: Option<String>,
+    /// The probed git version, or `None` when git is unavailable.
+    pub git_version: Option<String>,
+    /// Whether git is usable (found AND at or above the supported floor).
+    pub git_available: bool,
+    /// Scheduler cycles completed since launch.
+    pub scheduler_cycles: i64,
+    /// Repos run across those cycles.
+    pub scheduler_repos_checked: i64,
+    /// Jobs that ran but could not persist their outcome (BL-NI-14). Non-zero
+    /// means some checks silently retried; the log carries the reason under
+    /// `scheduler.outcome_persist_failed`.
+    pub scheduler_outcome_persist_failures: i64,
+    /// Whether the startup migration failed and the previous database was moved
+    /// aside (E-02 AC7).
+    pub db_recovered: bool,
+}
+
 /// The singleton `settings` row. `github_token_present` is a derived boolean -
 /// the token itself lives in the OS keychain, never on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]

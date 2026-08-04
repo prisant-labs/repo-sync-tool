@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AsyncPanel } from "@/components/async-panel";
+import { DiagnosticsCard } from "@/components/diagnostics-card";
 import { useSettings } from "@/hooks/queries";
 import { hhMmToMinutes, minutesToHhMm } from "@/lib/time";
 import { useToast } from "@/hooks/use-toast";
@@ -166,6 +167,13 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           </Field>
         </CardContent>
       </Card>
+
+      {/*
+        Diagnostics sits below the editable sections and outside the save
+        affordance on purpose: nothing on it is a setting, so putting it above
+        would suggest the Save button applies to it.
+      */}
+      <DiagnosticsCard />
 
       <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-background/80 py-3 backdrop-blur">
         <span className="text-xs text-muted-foreground">

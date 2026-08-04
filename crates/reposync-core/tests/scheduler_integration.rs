@@ -93,7 +93,19 @@ async fn one_tick_checks_due_repos_then_next_check_gating_holds() {
 
     // One steady-state tick (no jitter -> no real sleep) runs BOTH due repos.
     let ran = scheduler.tick_once().await.expect("first tick");
-    assert_eq!(ran, 2, "both newly-added repos are due on the first tick");
+    assert_eq!(
+        ran.ran, 2,
+        "both newly-added repos are due on the first tick"
+    );
+    // BL-NI-14 against the REAL DbOutcomeWriter, not a fake: a healthy cycle over
+    // a real database reports no partial failures. The unit tests prove the
+    // failing path; this proves the clean path is clean where it actually
+    // matters, so a report that always looked dirty could not hide here.
+    assert!(
+        ran.is_clean(),
+        "a healthy real-DB cycle must report no persist failures, got {:?}",
+        ran.persist_failures
+    );
 
     // Repo A fast-forwarded: behind is now 0 and last_updated_at is set, and the
     // scheduler scheduled the next check + left it healthy and unpaused.
@@ -143,7 +155,7 @@ async fn one_tick_checks_due_repos_then_next_check_gating_holds() {
     // the next_check_at gating proven end to end through the real DB.
     let ran_again = scheduler.tick_once().await.expect("second tick");
     assert_eq!(
-        ran_again, 0,
+        ran_again.ran, 0,
         "next_check_at gating excludes repos until their next check is due"
     );
 }

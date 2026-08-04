@@ -127,6 +127,24 @@ export const commands = {
 	 */
 	dbRecoveryNotice: () => typedError<DbRecoveryNotice, AppErrorPayload>(__TAURI_INVOKE("db_recovery_notice")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**
+	 *  Read the diagnostics snapshot for the Settings -> Diagnostics card.
+	 * 
+	 *  `Ok`-only in practice: every field is a read of managed state, a resolved
+	 *  path, or a filesystem stat that reports zeroes rather than failing. It still
+	 *  returns `Result` so the frontend's one `unwrap` helper covers it like every
+	 *  other command.
+	 */
+	diagnosticsGet: () => typedError<Diagnostics, AppErrorPayload>(__TAURI_INVOKE("diagnostics_get")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  Open the log directory in the OS file manager.
+	 * 
+	 *  Creates it first. On a launch where logging failed to start there may be no
+	 *  directory at all, and opening a file manager on a path that does not exist is
+	 *  an error dialog rather than an answer; an empty folder at least tells the
+	 *  truth about what has been recorded.
+	 */
+	diagnosticsOpenLogDir: () => typedError<null, AppErrorPayload>(__TAURI_INVOKE("diagnostics_open_log_dir")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
 	 *  Check for an app update (E-18). Runs the plugin check and returns a typed
 	 *  [`UpdateAvailability`] distinguishing "update available" / "up to date" /
 	 *  "couldn't reach the update server" WITHOUT throwing (the manual button and the
@@ -310,6 +328,73 @@ export type DailySummary = {
 export type DbRecoveryNotice = {
 	recovered: boolean,
 	backupPath: string | null,
+};
+
+/**
+ *  A read-only snapshot of where RepoSync keeps its files and how it is
+ *  currently configured, for the Settings -> Diagnostics card.
+ * 
+ *  Every field is DERIVED, not stored: this is a view over the resolved paths,
+ *  the logging configuration actually installed at startup, the live git probe,
+ *  and the since-launch scheduler counters. Nothing here is settable, which is
+ *  why it has no write counterpart.
+ * 
+ *  Paths are rendered strings rather than structured values because their only
+ *  consumer is a label the user reads or copies into a bug report. Note that on
+ *  Windows they contain the account name; the card says so next to the copy
+ *  action rather than mangling the paths, since a redacted path is useless for
+ *  the thing a user opens this card to do - find the folder.
+ */
+export type Diagnostics = {
+	/**  The running app version (the crate version baked in at build time). */
+	appVersion: string,
+	/**  The resolved app-data directory. */
+	dataDir: string,
+	/**  The SQLite database file inside it. */
+	dbPath: string,
+	/**  The rolling-log directory. */
+	logDir: string,
+	/**
+	 *  Whether the rolling file appender is actually running. `false` means the
+	 *  app started but could not open a log file, so nothing is being recorded.
+	 */
+	loggingActive: boolean,
+	/**  The effective maximum level, e.g. `"INFO"`. `None` when logging is off. */
+	logLevel: string | null,
+	/**  Daily files retained (the AGE half of retention). `None` when logging is off. */
+	logMaxFiles: number | null,
+	/**  The directory size budget in bytes (the SIZE half). `None` when off. */
+	logMaxBytes: number | null,
+	/**  Log files present right now. */
+	logFileCount: number,
+	/**  Bytes those files occupy right now. */
+	logBytes: number,
+	/**
+	 *  Whether the data directory sits under a OneDrive-synced tree, where a sync
+	 *  agent can corrupt the SQLite WAL sidecars mid-write (BL-NI-12).
+	 */
+	onedriveRooted: boolean,
+	/**  The resolved `git` executable, or `None` when none was found. */
+	gitPath: string | null,
+	/**  The probed git version, or `None` when git is unavailable. */
+	gitVersion: string | null,
+	/**  Whether git is usable (found AND at or above the supported floor). */
+	gitAvailable: boolean,
+	/**  Scheduler cycles completed since launch. */
+	schedulerCycles: number,
+	/**  Repos run across those cycles. */
+	schedulerReposChecked: number,
+	/**
+	 *  Jobs that ran but could not persist their outcome (BL-NI-14). Non-zero
+	 *  means some checks silently retried; the log carries the reason under
+	 *  `scheduler.outcome_persist_failed`.
+	 */
+	schedulerOutcomePersistFailures: number,
+	/**
+	 *  Whether the startup migration failed and the previous database was moved
+	 *  aside (E-02 AC7).
+	 */
+	dbRecovered: boolean,
 };
 
 /**  What to do when the working tree is dirty at update time. */

@@ -26,13 +26,13 @@ use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
-    activity_list, app_check_for_update, app_install_update, db_recovery_notice, group_assign,
-    group_create, group_delete, group_list, group_rename, group_unassign, group_update,
-    groups_for_repo, repo_add_path, repo_check_all, repo_check_now, repo_get,
-    repo_group_memberships, repo_list, repo_open_editor, repo_open_folder, repo_open_remote,
-    repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_cadence,
-    repo_set_enabled, repo_set_policy, repo_update_now, settings_get, settings_set, summary_today,
-    summary_week,
+    activity_list, app_check_for_update, app_install_update, db_recovery_notice, diagnostics_get,
+    diagnostics_open_log_dir, group_assign, group_create, group_delete, group_list, group_rename,
+    group_unassign, group_update, groups_for_repo, repo_add_path, repo_check_all, repo_check_now,
+    repo_get, repo_group_memberships, repo_list, repo_open_editor, repo_open_folder,
+    repo_open_remote, repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent,
+    repo_set_cadence, repo_set_enabled, repo_set_policy, repo_update_now, settings_get,
+    settings_set, summary_today, summary_week,
 };
 use events::{
     CheckCompleted, CheckStarted, ErrorRaised, MetadataRefreshed, NavigateRequested,
@@ -102,6 +102,51 @@ pub struct AppState {
     /// reads this flag instead (same Arc-flag pattern as `pause`). Seeded from
     /// settings at setup; `settings_set` updates it when the toggle changes.
     pub close_minimizes_to_tray: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Since-launch scheduler counters, bumped by the resident tick loop and read
+    /// by `diagnostics_get`. Shared with the loop; see [`SchedulerHealth`].
+    pub scheduler_health: SchedulerHealth,
+    /// The logging configuration actually in effect, or `None` when the rolling
+    /// file appender failed to start and the app is running without logs. Read by
+    /// `diagnostics_get` so the Diagnostics card reports what IS, not what the
+    /// environment asked for.
+    pub log_config: Option<logging::LogConfig>,
+}
+
+/// Since-launch scheduler counters, shared between the resident tick loop and the
+/// Diagnostics command.
+///
+/// This is what keeps BL-NI-14's structured [`TickReport`] load-bearing in a
+/// shipped build rather than only in tests. An outcome-persist failure degrades
+/// silently by design - the repo stays due and retries - so without a counter the
+/// only evidence is a log line the user has to already suspect and go looking
+/// for. A number on the Diagnostics card is evidence they can find by accident.
+///
+/// Plain atomics rather than a mutex: the tick loop bumps them once per cycle and
+/// the command reads them, so there is nothing to serialize and no value in a
+/// consistent snapshot across the three.
+#[derive(Default)]
+pub struct SchedulerHealthCounters {
+    /// Cycles completed since launch (the startup pass counts as one).
+    pub cycles: std::sync::atomic::AtomicU64,
+    /// Repos run across all those cycles.
+    pub repos_checked: std::sync::atomic::AtomicU64,
+    /// Jobs that finished their git work but could not persist the outcome.
+    pub outcome_persist_failures: std::sync::atomic::AtomicU64,
+}
+
+/// Shared handle to [`SchedulerHealthCounters`].
+pub type SchedulerHealth = std::sync::Arc<SchedulerHealthCounters>;
+
+/// Fold one cycle's [`TickReport`] into the since-launch counters.
+fn record_tick(health: &SchedulerHealth, report: &reposync_core::scheduler::TickReport) {
+    use std::sync::atomic::Ordering;
+    health.cycles.fetch_add(1, Ordering::Relaxed);
+    health
+        .repos_checked
+        .fetch_add(report.ran as u64, Ordering::Relaxed);
+    health
+        .outcome_persist_failures
+        .fetch_add(report.persist_failures.len() as u64, Ordering::Relaxed);
 }
 
 /// Build the `tauri-specta` [`Builder`](tauri_specta::Builder) for the shell.
@@ -147,6 +192,11 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             settings_set,
             // db-recovery notice read (BL-NI-33 / E-02 AC7, additive)
             db_recovery_notice,
+            // diagnostics (additive): the Settings card that surfaces where the
+            // files are, whether logging is running, and whether the background
+            // scheduler is quietly failing to persist outcomes (BL-NI-14).
+            diagnostics_get,
+            diagnostics_open_log_dir,
             // app self-update (E-18, additive): one typed path for the launch check
             // and the Settings button; the ship-dark + toggle gates live in one place.
             app_check_for_update,
@@ -229,14 +279,19 @@ pub fn run() {
     // and its Drop flushes buffered events on the way out. Moving it into
     // `setup()` or into managed state would end its life early and turn every
     // later log call into a silent no-op.
-    let _log_guard = match logging::init(&reposync_core::paths::AppPaths::from_env()) {
-        Ok(guard) => Some(guard),
+    let (_log_guard, log_config) = match logging::init(&reposync_core::paths::AppPaths::from_env())
+    {
+        Ok((guard, config)) => (Some(guard), Some(config)),
         Err(e) => {
             // The one legitimate surviving eprintln! in the app: the logger
             // itself failed to start, so there is nowhere else for this to go.
             // Not fatal - running without logs beats refusing to run.
             eprintln!("reposync: file logging unavailable ({e}); continuing without it");
-            None
+            // `None` is carried into AppState so the Diagnostics card can say
+            // "logging is not running" out loud. Reporting the configuration that
+            // WOULD have applied here would be a lie in the one situation where
+            // the user most needs the truth.
+            (None, None)
         }
     };
 
@@ -447,6 +502,11 @@ pub fn run() {
                 // deliberately Tauri-free (E-08). `locks` is the scheduler's OWN
                 // `RepoLocks` (a shared Arc-backed map), handed to AppState so the
                 // manual command handlers contend the exact locks the jobs do.
+                //
+                // `scheduler_health` is created OUT here so the same counters reach
+                // both the tick loop (which bumps them) and AppState (which serves
+                // them to `diagnostics_get`).
+                let scheduler_health: SchedulerHealth = Default::default();
                 let locks = {
                     use reposync_core::scheduler::{
                         DbDueQuery, Scheduler, SharedGitEngineSource, SystemClock, SystemJitter,
@@ -492,15 +552,18 @@ pub fn run() {
                     // long-resident tray app prunes old activity rows instead of only
                     // sweeping at startup.
                     let sweep_pool = pool.clone();
+                    // BL-NI-14: the loop's half of the shared cycle counters.
+                    let tick_health = scheduler_health.clone();
                     tauri::async_runtime::spawn(async move {
                         // Startup pass is best-effort; a failure must not kill the loop.
-                        if let Err(e) = scheduler.start().await {
-                            tracing::error!(
+                        match scheduler.start().await {
+                            Ok(report) => record_tick(&tick_health, &report),
+                            Err(e) => tracing::error!(
                                 event = reposync_core::logging::event::SCHEDULER_TICK_FAILED,
                                 phase = "startup",
                                 error = %e,
                                 "scheduler startup pass failed"
-                            );
+                            ),
                         }
                         // Fire the startup pass's coalesced notifications too (its jobs
                         // have all joined by the time `start()` returns).
@@ -520,8 +583,14 @@ pub fn run() {
                         loop {
                             interval.tick().await;
                             match scheduler.tick_once().await {
-                                Ok(ran) => {
-                                    let ran = ran as i64;
+                                Ok(report) => {
+                                    // BL-NI-14: the cycle's partial failures are
+                                    // already logged per job inside `run_job`;
+                                    // folding them into the since-launch counters
+                                    // is what puts them somewhere a user can
+                                    // actually look (Settings -> Diagnostics).
+                                    record_tick(&tick_health, &report);
+                                    let ran = report.ran as i64;
                                     crate::events::emit_scheduler_tick(
                                         &tick_handle,
                                         ran,
@@ -673,6 +742,8 @@ pub fn run() {
                     db_recovered,
                     db_backup_path,
                     close_minimizes_to_tray: close_minimizes_to_tray_flag.clone(),
+                    scheduler_health,
+                    log_config,
                 });
 
                 // Build the tray AFTER AppState is managed so a menu click can never
