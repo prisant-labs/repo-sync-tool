@@ -10,9 +10,9 @@
 
 use reposync_core::error::AppError;
 use reposync_core::ipc::{
-    ActivityFilter, ActivityRecord, CheckResult, DailySummary, DbRecoveryNotice, GroupSummary,
-    RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult, Settings,
-    UpdateAvailability, UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
+    ActivityFilter, ActivityRecord, CheckResult, DailySummary, DbRecoveryNotice, Diagnostics,
+    GroupSummary, RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult,
+    Settings, UpdateAvailability, UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
 };
 use reposync_core::notify::{NoteKind, NotifiableEvent};
 use reposync_core::scheduler::{RepoLocks, SharedGitEngine};
@@ -691,6 +691,128 @@ pub async fn db_recovery_notice(
     ))
 }
 
+// =============================================================================
+// Diagnostics (additive): where the files are, what is being logged, and whether
+// the background scheduler is quietly failing.
+//
+// The motivating gap: RepoSync builds with `windows_subsystem = "windows"`, so a
+// release build has no console, and everything worth diagnosing goes to a file in
+// a directory the user has no reason to know about. PR #35 gave the app a real
+// log; without this card, reaching that log means knowing to type
+// `%LOCALAPPDATA%\RepoSync\logs` into an address bar.
+// =============================================================================
+
+/// Read the diagnostics snapshot for the Settings -> Diagnostics card.
+///
+/// `Ok`-only in practice: every field is a read of managed state, a resolved
+/// path, or a filesystem stat that reports zeroes rather than failing. It still
+/// returns `Result` so the frontend's one `unwrap` helper covers it like every
+/// other command.
+#[tauri::command]
+#[specta::specta]
+pub async fn diagnostics_get(state: tauri::State<'_, AppState>) -> Result<Diagnostics, AppError> {
+    let paths = reposync_core::paths::AppPaths::from_env();
+    // Clone the engine out of the read lock and drop the guard immediately, per
+    // BL-NI-19, so reading diagnostics can never block a settings re-probe.
+    let git = { state.git.read().await.clone() };
+    Ok(build_diagnostics(
+        env!("CARGO_PKG_VERSION"),
+        &paths,
+        state.log_config.as_ref(),
+        git.as_ref().map(|g| g.availability().clone()),
+        git.as_ref()
+            .and_then(|g| g.git_exe().map(|p| p.to_path_buf())),
+        &state.scheduler_health,
+        state.db_recovered,
+    ))
+}
+
+/// Open the log directory in the OS file manager.
+///
+/// Creates it first. On a launch where logging failed to start there may be no
+/// directory at all, and opening a file manager on a path that does not exist is
+/// an error dialog rather than an answer; an empty folder at least tells the
+/// truth about what has been recorded.
+#[tauri::command]
+#[specta::specta]
+pub async fn diagnostics_open_log_dir(_state: tauri::State<'_, AppState>) -> Result<(), AppError> {
+    let paths = reposync_core::paths::AppPaths::from_env();
+    let dir = paths.log_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Err(AppError::Unexpected {
+            context: format!("could not create the log directory {}: {e}", dir.display()),
+        });
+    }
+    crate::opener::open_folder(&dir)
+}
+
+/// Assemble the [`Diagnostics`] payload from already-resolved inputs.
+///
+/// Pure and parameterized (no `AppState`, no environment reads beyond the paths
+/// it is handed) for the same reason [`build_recovery_notice`] is: it is the part
+/// with decisions in it - what "logging is active" means, how an absent git is
+/// rendered - and those decisions are worth testing without a Tauri harness.
+#[allow(clippy::too_many_arguments)]
+fn build_diagnostics(
+    app_version: &str,
+    paths: &reposync_core::paths::AppPaths,
+    log_config: Option<&crate::logging::LogConfig>,
+    git_availability: Option<reposync_core::git::GitAvailability>,
+    git_exe: Option<std::path::PathBuf>,
+    health: &crate::SchedulerHealth,
+    db_recovered: bool,
+) -> Diagnostics {
+    use std::sync::atomic::Ordering;
+
+    // The log directory reported is the one the appender ACTUALLY opened when
+    // logging is running, and the resolved default otherwise. They agree today;
+    // preferring the live one means they cannot silently diverge later.
+    let log_dir = log_config
+        .map(|c| c.dir.clone())
+        .unwrap_or_else(|| paths.log_dir());
+    let stats = reposync_core::logging::log_dir_stats(&log_dir);
+
+    // Three engine states map to two INDEPENDENT booleans, not one. A
+    // below-floor git is resolved and still used (E-03 AC7: "usable but
+    // flagged - operations are still attempted"), so folding it into a single
+    // `available: false` would tell the user RepoSync had stopped running git
+    // when it had not. Showing the version alongside is the point: "2.28.0"
+    // explains the flag by itself.
+    let (git_version, git_resolved, git_meets_floor) = match &git_availability {
+        Some(reposync_core::git::GitAvailability::Available { version }) => {
+            (Some(version.to_string()), true, true)
+        }
+        Some(reposync_core::git::GitAvailability::BelowFloor { version }) => {
+            (Some(version.to_string()), true, false)
+        }
+        Some(reposync_core::git::GitAvailability::Unavailable) | None => (None, false, false),
+    };
+
+    Diagnostics {
+        app_version: app_version.to_string(),
+        data_dir: paths.data_dir().display().to_string(),
+        db_path: paths.db_path().display().to_string(),
+        log_dir: log_dir.display().to_string(),
+        logging_active: log_config.is_some(),
+        log_level: log_config.map(|c| c.level.to_string()),
+        log_max_files: log_config.map(|c| c.retention.max_files as i64),
+        log_max_bytes: log_config.map(|c| c.retention.max_bytes as i64),
+        log_dir_readable: stats.readable,
+        log_file_count: stats.file_count as i64,
+        log_bytes: stats.total_bytes as i64,
+        onedrive_rooted: paths.is_onedrive_rooted(),
+        git_path: git_exe.map(|p| p.display().to_string()),
+        git_version,
+        git_resolved,
+        git_meets_floor,
+        scheduler_cycles: health.cycles.load(Ordering::Relaxed) as i64,
+        scheduler_repos_checked: health.repos_checked.load(Ordering::Relaxed) as i64,
+        scheduler_outcome_persist_failures: health.outcome_persist_failures.load(Ordering::Relaxed)
+            as i64,
+        db_recovered,
+    }
+}
+
 /// Build the [`DbRecoveryNotice`] payload from the parked recovery fields (pure, so
 /// it is unit-tested without a Tauri harness, like [`git_swap_rejection`]). The
 /// backup path is rendered to a display string for the wire.
@@ -845,7 +967,253 @@ pub async fn repo_group_memberships(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reposync_core::git::GitAvailability;
     use reposync_core::github::{RateLimit, RefreshOutcome, RefreshReport};
+    use reposync_core::paths::AppPaths;
+
+    // =========================================================================
+    // Diagnostics
+    // =========================================================================
+
+    fn health_with(cycles: u64, checked: u64, failures: u64) -> crate::SchedulerHealth {
+        use std::sync::atomic::Ordering;
+        let h = crate::SchedulerHealth::default();
+        h.cycles.store(cycles, Ordering::Relaxed);
+        h.repos_checked.store(checked, Ordering::Relaxed);
+        h.outcome_persist_failures
+            .store(failures, Ordering::Relaxed);
+        h
+    }
+
+    /// The state that matters most and is easiest to get wrong: logging failed
+    /// to start. Reporting the retention the environment ASKED for would tell
+    /// the user their logs are being kept for 14 days when nothing is being
+    /// written at all - a confident wrong answer in exactly the situation where
+    /// the card exists to give a right one.
+    #[test]
+    fn a_failed_logger_reports_inactive_with_no_configuration() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Unavailable),
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(!d.logging_active);
+        assert_eq!(d.log_level, None);
+        assert_eq!(d.log_max_files, None);
+        assert_eq!(d.log_max_bytes, None);
+        // The DIRECTORY is still reported: knowing where logs would have gone is
+        // what lets someone check whether it is a permissions problem.
+        assert_eq!(d.log_dir, paths.log_dir().display().to_string());
+        assert_eq!(d.log_file_count, 0);
+        assert!(
+            !d.log_dir_readable,
+            "the directory does not exist here, and 'could not read' must not be \
+             reported as 'read it, found nothing'"
+        );
+    }
+
+    /// The gap Codex's second finding named, encoded as a test. `logging_active`
+    /// proves only that the subscriber installed at STARTUP; `tracing_appender`
+    /// writes on a worker thread with no error channel, so a later failure
+    /// leaves this true. The card must therefore never treat it as proof that
+    /// events are reaching disk - the live directory read is the corroborating
+    /// evidence, and the UI flags "started, but nothing on disk" as a warning.
+    #[test]
+    fn logging_active_and_files_on_disk_are_reported_independently() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let config = crate::logging::LogConfig {
+            dir: paths.log_dir(),
+            level: tracing::level_filters::LevelFilter::INFO,
+            retention: crate::logging::Retention::default(),
+        };
+        std::fs::create_dir_all(paths.log_dir()).expect("create log dir");
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            Some(&config),
+            None,
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(d.logging_active, "the subscriber did install");
+        assert!(d.log_dir_readable, "and the directory is readable");
+        assert_eq!(
+            d.log_file_count, 0,
+            "yet nothing is on disk - the contradiction the card surfaces"
+        );
+    }
+
+    #[test]
+    fn an_active_logger_reports_the_configuration_it_was_built_with() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let config = crate::logging::LogConfig {
+            dir: paths.log_dir(),
+            level: tracing::level_filters::LevelFilter::DEBUG,
+            retention: crate::logging::Retention {
+                max_files: 7,
+                max_bytes: 8 * 1024 * 1024,
+            },
+        };
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            Some(&config),
+            None,
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(d.logging_active);
+        assert_eq!(d.log_level.as_deref(), Some("debug"));
+        assert_eq!(d.log_max_files, Some(7));
+        assert_eq!(d.log_max_bytes, Some(8 * 1024 * 1024));
+    }
+
+    /// The three-state engine mapped onto two booleans. A below-floor git is
+    /// RESOLVED (RepoSync still runs it, per E-03 AC7) but does NOT meet the
+    /// floor. One combined "available" boolean could not say both, and whichever
+    /// value it took would be a lie about the other half.
+    #[test]
+    fn a_below_floor_git_is_resolved_but_does_not_meet_the_floor() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let old = reposync_core::git::discover::GitVersion {
+            major: 2,
+            minor: 28,
+            patch: 0,
+        };
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::BelowFloor { version: old }),
+            Some(std::path::PathBuf::from("C:\\git\\git.exe")),
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(
+            d.git_resolved,
+            "a below-floor git is still the git RepoSync runs"
+        );
+        assert!(!d.git_meets_floor);
+        assert_eq!(d.git_version.as_deref(), Some("2.28.0"));
+        assert_eq!(d.git_path.as_deref(), Some("C:\\git\\git.exe"));
+    }
+
+    /// The state that IS a stop: no git at all. Both booleans go false together,
+    /// which is what distinguishes it from the below-floor case above.
+    #[test]
+    fn an_absent_git_is_neither_resolved_nor_at_the_floor() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Unavailable),
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(!d.git_resolved);
+        assert!(!d.git_meets_floor);
+        assert_eq!(d.git_version, None);
+        assert_eq!(d.git_path, None);
+    }
+
+    #[test]
+    fn an_available_git_is_resolved_and_at_the_floor() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let v = reposync_core::git::discover::GitVersion {
+            major: 2,
+            minor: 40,
+            patch: 1,
+        };
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Available { version: v }),
+            Some(std::path::PathBuf::from("git")),
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(d.git_resolved);
+        assert!(d.git_meets_floor);
+        assert_eq!(d.git_version.as_deref(), Some("2.40.1"));
+    }
+
+    /// BL-NI-14 reaching the surface: the counters the tick loop folds each
+    /// `TickReport` into are what the card actually displays.
+    #[test]
+    fn scheduler_counters_are_carried_through_to_the_payload() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            None,
+            None,
+            &health_with(42, 137, 3),
+            true,
+        );
+
+        assert_eq!(d.scheduler_cycles, 42);
+        assert_eq!(d.scheduler_repos_checked, 137);
+        assert_eq!(
+            d.scheduler_outcome_persist_failures, 3,
+            "a silent retry storm has to be countable somewhere the user can see"
+        );
+        assert!(d.db_recovered);
+    }
+
+    /// The counts come from the real directory, not from a stored number, so an
+    /// externally deleted file cannot leave the card claiming logs that are gone.
+    #[test]
+    fn log_file_counts_are_measured_from_disk() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        std::fs::create_dir_all(paths.log_dir()).expect("create log dir");
+        std::fs::write(paths.log_dir().join("reposync.2026-08-04.log"), b"hello")
+            .expect("write log");
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            None,
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert_eq!(d.log_file_count, 1);
+        assert_eq!(d.log_bytes, 5);
+    }
 
     fn report(outcome: RefreshOutcome, rate_limit: Option<RateLimit>) -> RefreshReport {
         RefreshReport {

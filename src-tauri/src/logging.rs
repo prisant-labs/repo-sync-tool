@@ -82,6 +82,23 @@ impl Default for Retention {
     }
 }
 
+/// The logging configuration ACTUALLY in effect, captured at init.
+///
+/// Returned from [`init`] rather than recomputed on demand. Re-reading the
+/// environment when the Diagnostics view asks would report what the environment
+/// says NOW, which is not necessarily what the appender was built with - and a
+/// diagnostics panel that reports the configuration it wishes it had is worse
+/// than one that reports nothing.
+#[derive(Debug, Clone)]
+pub struct LogConfig {
+    /// The directory the rolling appender writes into.
+    pub dir: std::path::PathBuf,
+    /// The maximum level being recorded.
+    pub level: LevelFilter,
+    /// The age + size budget in force.
+    pub retention: Retention,
+}
+
 /// Keeps the background log writer alive.
 ///
 /// THIS MUST BE HELD FOR THE LIFE OF THE PROCESS. `tracing_appender::non_blocking`
@@ -142,7 +159,8 @@ fn retention_from_env(days: Option<&str>, max_mb: Option<&str>) -> Retention {
     }
 }
 
-/// Install the global subscriber and return the guard that keeps it running.
+/// Install the global subscriber and return the guard that keeps it running,
+/// together with the configuration it was built with.
 ///
 /// Ordering matters: the size sweep runs BEFORE the appender opens today's file,
 /// so the sweep never contends with a handle this process is about to hold.
@@ -151,7 +169,7 @@ fn retention_from_env(days: Option<&str>, max_mb: Option<&str>) -> Retention {
 /// to run without logs, never a reason not to start - the same best-effort
 /// principle the activity writer follows, and for the same reason: the
 /// diagnostic must not become the outage.
-pub fn init(paths: &AppPaths) -> Result<LogGuard, String> {
+pub fn init(paths: &AppPaths) -> Result<(LogGuard, LogConfig), String> {
     paths
         .ensure_dirs()
         .map_err(|e| format!("could not create the log directory: {e}"))?;
@@ -222,7 +240,14 @@ pub fn init(paths: &AppPaths) -> Result<LogGuard, String> {
         "RepoSync starting"
     );
 
-    Ok(LogGuard { _worker: worker })
+    Ok((
+        LogGuard { _worker: worker },
+        LogConfig {
+            dir,
+            level,
+            retention,
+        },
+    ))
 }
 
 #[cfg(test)]

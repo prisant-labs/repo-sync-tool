@@ -430,6 +430,55 @@ pub trait OutcomeWriter: Send + Sync {
 }
 
 // =============================================================================
+// The cycle report (BL-NI-14).
+// =============================================================================
+
+/// One job that finished its git work but could not persist the outcome.
+///
+/// The DEGRADATION is deliberate and unchanged by this type: a failed
+/// `next_check_at` / auto-pause write leaves the repo due, so it is simply
+/// picked up again on the next tick. What this adds is OBSERVABILITY. Before
+/// it, the only trace was a `scheduler.outcome_persist_failed` line in the
+/// rotating log, and a log line is not something a caller can branch on or a
+/// test can assert - which is why BL-NI-14 stayed open after the log line
+/// landed.
+#[derive(Debug, Clone)]
+pub struct OutcomePersistFailure {
+    /// The repo whose outcome did not persist. It stays due and retries.
+    pub repo: RepoId,
+    /// The error, rendered where it happened. A `String` rather than the
+    /// `AppError` itself because `AppError` is not `Clone` and none of the three
+    /// consumers - a log line, a test assertion, a diagnostics counter -
+    /// re-dispatch on the variant.
+    pub error: String,
+}
+
+/// What one scheduler cycle actually did.
+///
+/// `ran` is the count that used to be the whole return value of
+/// [`Scheduler::tick_once`]: how many repos the cycle selected and fanned out.
+/// A cycle that selected nothing - paused, inside quiet hours, no usable git -
+/// returns `ran == 0` with no failures, exactly as the old `Ok(0)` did.
+///
+/// `persist_failures` is a PARTIAL failure set, not an error: the cycle itself
+/// succeeded, and every entry names a repo that will retry. A cycle that could
+/// not even run (the due query failed) is still `Err(AppError)`, unchanged.
+#[derive(Debug, Clone, Default)]
+pub struct TickReport {
+    /// Repos selected and run this cycle.
+    pub ran: usize,
+    /// Jobs whose outcome write failed. Empty on a healthy cycle.
+    pub persist_failures: Vec<OutcomePersistFailure>,
+}
+
+impl TickReport {
+    /// Whether every job that ran also recorded its outcome.
+    pub fn is_clean(&self) -> bool {
+        self.persist_failures.is_empty()
+    }
+}
+
+// =============================================================================
 // The live git-engine seam (BL-NI-23 / finding 6).
 // =============================================================================
 
@@ -553,27 +602,28 @@ where
 
     /// Run ONE steady-state tick: select due repos, apply the quiet-hours gate,
     /// and fan the due set out through the concurrency composition with NO jitter.
-    /// Returns the number of repos run. Tests drive ticks via this method instead
-    /// of the timer.
-    pub async fn tick_once(&self) -> Result<usize, AppError> {
+    /// Returns a [`TickReport`]: how many repos ran, plus any job that finished
+    /// its git work but could not persist its outcome (BL-NI-14). Tests drive
+    /// ticks via this method instead of the timer.
+    pub async fn tick_once(&self) -> Result<TickReport, AppError> {
         self.run_due(false).await
     }
 
     /// The startup pass: like a tick, but each due repo is staggered by a random
     /// `0..=30s` jitter (AC5: only startup and a newly-added repo's first schedule
     /// are jittered; steady-state ticks are not).
-    pub async fn start(&self) -> Result<usize, AppError> {
+    pub async fn start(&self) -> Result<TickReport, AppError> {
         self.run_due(true).await
     }
 
-    async fn run_due(&self, startup: bool) -> Result<usize, AppError> {
+    async fn run_due(&self, startup: bool) -> Result<TickReport, AppError> {
         // Global-pause gate (E-13 tray Pause/Resume): while paused, select nothing
         // and run no jobs, so no `next_check_at` advances and no failures accrue. The
         // check is the same short-circuit shape as the git-absent gate below; resuming
         // makes the still-due set selectable on the very next tick. A manual "Check All
         // Now" bypasses this flag entirely (it does not go through the scheduler).
         if self.pause.is_paused() {
-            return Ok(0);
+            return Ok(TickReport::default());
         }
         // Live git gate (BL-NI-23 / finding 6): read the CURRENT engine from the
         // shared handle each cycle. If no usable git is available right now, skip
@@ -590,7 +640,7 @@ where
                      available (set a valid git path in Settings)"
                 );
             }
-            return Ok(0);
+            return Ok(TickReport::default());
         };
         // Git is back (or was always present): clear the dedup flag so the next
         // absence logs afresh.
@@ -605,15 +655,25 @@ where
             // due-query predicate re-evaluated next tick - there is no deferred
             // queue, so an in-window repo simply becomes selectable the first tick
             // `now` is outside the window.
-            return Ok(0);
+            return Ok(TickReport::default());
         }
         let due = selection.candidates;
-        let count = due.len();
-        self.spawn_and_join(due, startup, engine).await;
-        Ok(count)
+        let ran = due.len();
+        let persist_failures = self.spawn_and_join(due, startup, engine).await;
+        Ok(TickReport {
+            ran,
+            persist_failures,
+        })
     }
 
-    async fn spawn_and_join(&self, due: Vec<DueRepo>, startup: bool, engine: SystemGitEngine) {
+    /// Fan the due set out, join every job, and collect the partial failures the
+    /// cycle absorbed (BL-NI-14).
+    async fn spawn_and_join(
+        &self,
+        due: Vec<DueRepo>,
+        startup: bool,
+        engine: SystemGitEngine,
+    ) -> Vec<OutcomePersistFailure> {
         let mut set = JoinSet::new();
         for repo in due {
             let offset = if startup {
@@ -642,10 +702,30 @@ where
                 if offset > 0 {
                     tokio::time::sleep(Duration::from_secs(offset as u64)).await;
                 }
-                run_job(repo, clock, locks, sem, jr, ow, git).await;
+                run_job(repo, clock, locks, sem, jr, ow, git).await
             });
         }
-        while set.join_next().await.is_some() {}
+        let mut persist_failures = Vec::new();
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Some(failure)) => persist_failures.push(failure),
+                Ok(None) => {}
+                // The task did not return a value at all. Under the release
+                // profile's `panic = "abort"` a panicking job takes the process
+                // with it, so in a shipped build this arm is unreachable and it
+                // is deliberately NOT modelled as a `TickReport` variant: a
+                // structured field no production run can ever populate would
+                // read as coverage it does not have. It is still logged, because
+                // a debug or dev run CAN reach it and the repo's job silently
+                // vanished.
+                Err(e) => tracing::error!(
+                    event = crate::logging::event::SCHEDULER_JOB_ABORTED,
+                    error = %e,
+                    "a scheduled job task did not complete; that repo stays due and will retry"
+                ),
+            }
+        }
+        persist_failures
     }
 
     /// The production resident loop (AC1): run the startup pass (jittered), then
@@ -684,6 +764,9 @@ where
 /// the per-repo mutex is held until the outcome is recorded, so a manual check on
 /// the same repo waits for the whole job. Releasing in reverse order (permit, then
 /// mutex) is what keeps a repo blocked on its mutex from holding a global permit.
+///
+/// Returns `Some(..)` when the git work completed but the outcome write did not,
+/// so the cycle can carry that partial failure out to its caller (BL-NI-14).
 async fn run_job<J, W>(
     repo: DueRepo,
     clock: Arc<dyn Clock>,
@@ -692,7 +775,8 @@ async fn run_job<J, W>(
     job_runner: Arc<J>,
     outcome_writer: Arc<W>,
     git: SystemGitEngine,
-) where
+) -> Option<OutcomePersistFailure>
+where
     J: JobRunner,
     W: OutcomeWriter,
 {
@@ -722,20 +806,29 @@ async fn run_job<J, W>(
     // 4. Classify via the E-07 failure state machine (using the prior count read
     //    with the due repo) and persist the outcome (a short txn).
     let status = classify_failure(repo.consecutive_failures, outcome);
-    if let Err(e) = outcome_writer.record(&repo, completed, status).await {
-        // BL-NI-14: this failure is swallowed and `tick_once` still returns Ok,
-        // so the repo simply stays due and retries. That degradation is
-        // acceptable, but it makes the failure invisible to every caller and
-        // test - which is precisely why it has to be visible in the log.
-        tracing::error!(
-            event = crate::logging::event::SCHEDULER_OUTCOME_PERSIST_FAILED,
-            repo_id = repo.id.0,
-            error = %e,
-            "failed to persist a check outcome; the repo stays due and will retry"
-        );
-    }
+    // BL-NI-14: the failure is still ABSORBED here - the cycle continues and the
+    // repo simply stays due and retries - but it is now carried out of the job
+    // as a value as well as into the log. The log line remains the record a user
+    // can send in after the fact; the returned value is what a caller can branch
+    // on and a test can assert, which the log line never could be.
+    let failure = match outcome_writer.record(&repo, completed, status).await {
+        Ok(()) => None,
+        Err(e) => {
+            tracing::error!(
+                event = crate::logging::event::SCHEDULER_OUTCOME_PERSIST_FAILED,
+                repo_id = repo.id.0,
+                error = %e,
+                "failed to persist a check outcome; the repo stays due and will retry"
+            );
+            Some(OutcomePersistFailure {
+                repo: repo.id,
+                error: e.to_string(),
+            })
+        }
+    };
     // 5. Release the per-repo mutex LAST (after the outcome is recorded).
     drop(guard);
+    failure
 }
 
 // =============================================================================
@@ -1423,23 +1516,37 @@ mod tests {
     }
 
     /// An [`OutcomeWriter`] that records each `(id, now, status)` and optionally
-    /// stamps a "db transaction" window.
+    /// stamps a "db transaction" window. `failing_ids` makes the write fail for
+    /// exactly those repos, which is how the BL-NI-14 partial-failure tests
+    /// induce a persistence failure without a real database.
     #[derive(Clone)]
     struct FakeOutcomeWriter {
         inst: Option<Instrument>,
         recorded: Arc<StdMutex<Vec<(i64, i64, RepoStatus)>>>,
+        failing_ids: Arc<Vec<i64>>,
     }
     impl FakeOutcomeWriter {
         fn new() -> FakeOutcomeWriter {
             FakeOutcomeWriter {
                 inst: None,
                 recorded: Arc::new(StdMutex::new(Vec::new())),
+                failing_ids: Arc::new(Vec::new()),
             }
         }
         fn instrumented(inst: Instrument) -> FakeOutcomeWriter {
             FakeOutcomeWriter {
                 inst: Some(inst),
                 recorded: Arc::new(StdMutex::new(Vec::new())),
+                failing_ids: Arc::new(Vec::new()),
+            }
+        }
+        /// A writer whose `record` returns `Err` for the listed repo ids and
+        /// succeeds for every other.
+        fn failing_for(ids: &[i64]) -> FakeOutcomeWriter {
+            FakeOutcomeWriter {
+                inst: None,
+                recorded: Arc::new(StdMutex::new(Vec::new())),
+                failing_ids: Arc::new(ids.to_vec()),
             }
         }
         fn recorded(&self) -> Vec<(i64, i64, RepoStatus)> {
@@ -1453,6 +1560,11 @@ mod tests {
             now_unix: i64,
             status: RepoStatus,
         ) -> Result<(), AppError> {
+            if self.failing_ids.contains(&repo.id.0) {
+                return Err(AppError::Unexpected {
+                    context: format!("induced outcome-write failure for repo {}", repo.id.0),
+                });
+            }
             match &self.inst {
                 Some(inst) => {
                     let s = inst.stamp();
@@ -1520,7 +1632,7 @@ mod tests {
             cap,
         );
         let n = sched.tick_once().await.expect("tick");
-        assert_eq!(n, cap * 2);
+        assert_eq!(n.ran, cap * 2);
         assert_eq!(
             inst.max(),
             cap as i64,
@@ -1752,7 +1864,7 @@ mod tests {
             .expect("tick task joins")
             .expect("tick completes ok");
         assert_eq!(
-            ran, 1,
+            ran.ran, 1,
             "the scheduled tick runs the one due repo once the manual op releases"
         );
         assert_eq!(
@@ -1792,7 +1904,7 @@ mod tests {
             4,
         );
         let n = sched.tick_once().await.expect("tick");
-        assert_eq!(n, 0, "inside quiet hours, the tick selects nothing");
+        assert_eq!(n.ran, 0, "inside quiet hours, the tick selects nothing");
         assert_eq!(inst.max(), 0, "no git work starts during quiet hours");
     }
 
@@ -1817,7 +1929,7 @@ mod tests {
             4,
         );
         let n = sched.tick_once().await.expect("tick");
-        assert_eq!(n, 2, "outside quiet hours, the due repos run");
+        assert_eq!(n.ran, 2, "outside quiet hours, the due repos run");
     }
 
     // --- global pause (E-13 tray Pause/Resume) --------------------------------
@@ -1867,12 +1979,12 @@ mod tests {
         )
         .with_pause(pause.clone());
         let n = sched.tick_once().await.expect("tick");
-        assert_eq!(n, 0, "a paused scheduler runs nothing");
+        assert_eq!(n.ran, 0, "a paused scheduler runs nothing");
         assert_eq!(inst.max(), 0, "no git work starts while paused");
         // Resuming makes the same due set run on the very next tick.
         pause.set_paused(false);
         let n = sched.tick_once().await.expect("tick");
-        assert_eq!(n, 2, "resuming picks the still-due repos up next tick");
+        assert_eq!(n.ran, 2, "resuming picks the still-due repos up next tick");
     }
 
     // =========================================================================
@@ -2482,7 +2594,7 @@ mod tests {
         // Git absent: the tick skips the WHOLE cycle - no jobs, no outcome writes,
         // so no repo's next_check_at is advanced while git is missing.
         let ran = sched.tick_once().await.expect("tick with no git");
-        assert_eq!(ran, 0, "with no git, the tick selects and runs nothing");
+        assert_eq!(ran.ran, 0, "with no git, the tick selects and runs nothing");
         assert_eq!(inst.max(), 0, "no git work starts when git is absent");
         assert!(
             writer_handle.recorded().is_empty(),
@@ -2495,7 +2607,7 @@ mod tests {
         // The very next tick picks up the swapped-in engine and runs the due repos.
         let ran2 = sched.tick_once().await.expect("tick after swap");
         assert_eq!(
-            ran2, 2,
+            ran2.ran, 2,
             "once git is available, the still-due repos run on the next tick"
         );
         assert_eq!(
@@ -2503,5 +2615,146 @@ mod tests {
             2,
             "both repos' outcomes are recorded once git is live"
         );
+    }
+
+    // =========================================================================
+    // BL-NI-14: partial persistence failures are carried OUT of the cycle.
+    //
+    // The degradation these tests pin is unchanged - a failed outcome write
+    // leaves the repo due and it retries. What is new is that the failure is a
+    // value the caller receives, not only a line in a log file. These tests are
+    // the whole point of the row: none of them could have been written against
+    // the previous `Result<usize, AppError>`, because "the log contains an
+    // error line" is not something a test can assert.
+    // =========================================================================
+
+    #[tokio::test]
+    async fn a_healthy_cycle_reports_no_persist_failures() {
+        // The falsification baseline. Without this, a report that ALWAYS carried
+        // a failure would still pass the test below, so "clean" has to be
+        // demonstrated before "dirty" means anything.
+        let inst = Instrument::default();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(1), due(2)]),
+            },
+            FakeJobRunner::new(inst.clone()),
+            FakeOutcomeWriter::new(),
+            4,
+        );
+
+        let report = sched.tick_once().await.expect("tick");
+
+        assert_eq!(report.ran, 2);
+        assert!(
+            report.is_clean(),
+            "a cycle whose writes all succeeded must report no failures, got {:?}",
+            report.persist_failures
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_outcome_write_is_reported_rather_than_swallowed() {
+        let inst = Instrument::default();
+        let writer = FakeOutcomeWriter::failing_for(&[7]);
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(7)]),
+            },
+            FakeJobRunner::new(inst.clone()),
+            writer,
+            4,
+        );
+
+        let report = sched.tick_once().await.expect("tick");
+
+        assert_eq!(report.ran, 1, "the job still RAN; only its write failed");
+        assert!(!report.is_clean());
+        assert_eq!(report.persist_failures.len(), 1);
+        assert_eq!(
+            report.persist_failures[0].repo.0, 7,
+            "the report names WHICH repo did not persist"
+        );
+        assert!(
+            report.persist_failures[0].error.contains("repo 7"),
+            "the underlying error text is carried through, got {:?}",
+            report.persist_failures[0].error
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn one_repos_write_failure_does_not_abort_the_rest_of_the_cycle() {
+        // The property that makes absorbing the failure defensible in the first
+        // place: repo 2's bad write must not cost repos 1 and 3 their checks or
+        // their outcome rows. Before the report existed, this was true but
+        // unprovable from outside the scheduler.
+        let inst = Instrument::default();
+        let writer = FakeOutcomeWriter::failing_for(&[2]);
+        let writer_handle = writer.clone();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(1), due(2), due(3)]),
+            },
+            FakeJobRunner::new(inst.clone()),
+            writer,
+            4,
+        );
+
+        let report = sched.tick_once().await.expect("tick");
+
+        assert_eq!(report.ran, 3, "every due repo still runs");
+        assert_eq!(
+            report.persist_failures.len(),
+            1,
+            "exactly the one failing repo is reported, got {:?}",
+            report.persist_failures
+        );
+        assert_eq!(report.persist_failures[0].repo.0, 2);
+
+        let mut recorded: Vec<i64> = writer_handle
+            .recorded()
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect();
+        recorded.sort_unstable();
+        assert_eq!(
+            recorded,
+            vec![1, 3],
+            "the two healthy repos still recorded their outcomes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_skipped_cycle_reports_zero_and_clean() {
+        // Paused, quiet hours, and git-absent all return the same shape the old
+        // `Ok(0)` did: nothing ran, and nothing failed. A skip is not a failure.
+        let inst = Instrument::default();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(1)]),
+            },
+            FakeJobRunner::new(inst.clone()),
+            FakeOutcomeWriter::new(),
+            4,
+        )
+        .with_pause(GlobalPause::default());
+        sched.pause.set_paused(true);
+
+        let report = sched.tick_once().await.expect("tick while paused");
+
+        assert_eq!(report.ran, 0);
+        assert!(report.is_clean(), "a skipped cycle is clean, not failed");
     }
 }

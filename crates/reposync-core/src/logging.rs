@@ -37,6 +37,12 @@ pub mod event {
     pub const SCHEDULER_OUTCOME_PERSIST_FAILED: &str = "scheduler.outcome_persist_failed";
     /// A scheduler tick itself failed.
     pub const SCHEDULER_TICK_FAILED: &str = "scheduler.tick_failed";
+    /// A spawned job task did not return a value - it panicked or was cancelled.
+    /// The release profile sets `panic = "abort"`, so in a shipped build a
+    /// panicking job takes the process with it and this can only appear in a
+    /// debug or dev run. It is a real event there: that repo's job vanished
+    /// without recording anything.
+    pub const SCHEDULER_JOB_ABORTED: &str = "scheduler.job_aborted";
     /// The activity retention sweep failed.
     pub const RETENTION_SWEEP_FAILED: &str = "retention.sweep_failed";
 
@@ -87,6 +93,60 @@ pub const LOG_FILE_SUFFIX: &str = "log";
 /// 32 MiB holds a great deal of a quiet tray app's history while staying small
 /// enough to attach to an issue.
 pub const LOG_DIR_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
+/// What the log directory currently holds, for the Diagnostics view.
+///
+/// Counts only OUR files, by the same `LOG_FILE_PREFIX` rule the sweep uses.
+/// The two have to agree: a diagnostics panel reporting a size the sweep does
+/// not charge itself for would make the retention budget look broken every time
+/// an unrelated file sat in the directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogDirStats {
+    /// Whether the directory could be read at all.
+    ///
+    /// Kept SEPARATE from the counts rather than collapsed into a zero. "We
+    /// looked and there are no files" and "we could not look" are different
+    /// facts, and only the second one is itself a problem - a directory the app
+    /// cannot read is a directory it probably cannot write either, which is
+    /// exactly the condition a diagnostics panel exists to catch. Reporting a
+    /// confident `0` for both would hide the interesting case behind the boring
+    /// one.
+    pub readable: bool,
+    /// Rotated log files present. Meaningless unless `readable`.
+    pub file_count: u64,
+    /// Bytes they occupy in total. Meaningless unless `readable`.
+    pub total_bytes: u64,
+}
+
+/// Measure `dir` against [`LogDirStats`].
+///
+/// Never errors: this feeds a display panel, and a diagnostics read that fails
+/// closed tells the user nothing. An unreadable or missing directory comes back
+/// with `readable: false` so the caller can say which of the two it is.
+pub fn log_dir_stats(dir: &Path) -> LogDirStats {
+    let mut stats = LogDirStats::default();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return stats;
+    };
+    stats.readable = true;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(LOG_FILE_PREFIX) {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            stats.file_count += 1;
+            stats.total_bytes += meta.len();
+        }
+    }
+    stats
+}
 
 /// Delete the oldest log files until `dir` fits within `budget_bytes`.
 ///
@@ -280,6 +340,53 @@ mod tests {
         );
     }
 
+    /// An unreadable directory must not look like an empty one. A diagnostics
+    /// panel that reports a confident "0 files" for a folder it could not open
+    /// hides a permissions problem behind a number that reads as normal - and a
+    /// directory the app cannot read is one it probably cannot write to either,
+    /// which is precisely the failure the panel exists to surface.
+    #[test]
+    fn an_unreadable_directory_is_distinguished_from_an_empty_one() {
+        let dir = TempDir::new().expect("tempdir");
+
+        let missing = log_dir_stats(&dir.path().join("no-such-dir"));
+        assert!(!missing.readable, "a missing directory is not readable");
+        assert_eq!(missing.file_count, 0);
+
+        let empty = log_dir_stats(dir.path());
+        assert!(empty.readable, "an existing empty directory IS readable");
+        assert_eq!(empty.file_count, 0);
+
+        assert_ne!(
+            missing, empty,
+            "the two states must be distinguishable; collapsing them is the bug"
+        );
+    }
+
+    /// The stats and the sweep must charge for the same bytes. If they diverged,
+    /// the Diagnostics panel would show a directory over its budget while the
+    /// sweep considered it fine, and the retention budget would look broken every
+    /// time an unrelated file landed in the folder.
+    #[test]
+    fn stats_count_only_our_files_like_the_sweep_does() {
+        let dir = TempDir::new().expect("tempdir");
+        write_log(dir.path(), "2026-07-29", 100);
+        write_log(dir.path(), "2026-07-30", 250);
+        fs::write(dir.path().join("someone-elses.log"), vec![b'x'; 9_000])
+            .expect("write foreign file");
+        fs::create_dir(dir.path().join("reposync-subdir")).expect("create dir");
+
+        let stats = log_dir_stats(dir.path());
+
+        assert!(stats.readable);
+        assert_eq!(stats.file_count, 2, "only the two prefixed FILES count");
+        assert_eq!(
+            stats.total_bytes, 350,
+            "a foreign file's bytes are not ours to report, exactly as the sweep \
+             does not charge itself for them"
+        );
+    }
+
     /// Event names are a grep contract for logs already sitting on users'
     /// machines. This pins the format so a rename is a deliberate, visible edit.
     #[test]
@@ -287,6 +394,7 @@ mod tests {
         for name in [
             event::SCHEDULER_OUTCOME_PERSIST_FAILED,
             event::SCHEDULER_TICK_FAILED,
+            event::SCHEDULER_JOB_ABORTED,
             event::RETENTION_SWEEP_FAILED,
             event::ACTIVITY_WRITE_FAILED,
             event::DB_RECOVERED,

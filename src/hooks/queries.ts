@@ -36,6 +36,19 @@ export function useSettings() {
 }
 
 /**
+ * The diagnostics snapshot (paths, logging state, git probe, scheduler counters).
+ *
+ * Deliberately NOT subscribed to backend events: the counters only move on a
+ * scheduler cycle (at most once a minute) and re-reading the log directory on
+ * every check completion would stat the filesystem for a number nobody is
+ * watching change. The card carries its own Refresh instead, which is also the
+ * honest affordance - the user is looking at a snapshot and knows it.
+ */
+export function useDiagnostics() {
+  return useAsync(() => unwrap(commands.diagnosticsGet()), []);
+}
+
+/**
  * The one-time database-recovery notice (E-02 AC7 / BL-NI-33). Read once at
  * launch; `data.recovered` is true only when the startup migration failed and the
  * previous database was moved aside, in which case `data.backupPath` names where

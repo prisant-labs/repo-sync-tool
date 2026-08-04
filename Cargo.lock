@@ -3263,6 +3263,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-specta",
+ "tempfile",
  "time",
  "tokio",
  "tracing",

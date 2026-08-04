@@ -87,10 +87,17 @@ folder, to avoid database corruption). Two things live there:
 Neither is sent anywhere. If you attach a log to a bug report, it is worth reading
 first, since it names paths on your machine.
 
+**Settings -> Diagnostics** shows both locations, opens the `logs/` folder for you, and
+reports whether logging is actually running and under what retention. It also flags the
+conditions worth knowing about: a data folder that ended up inside a OneDrive-synced
+tree, a database that had to be recovered at startup, and background checks whose
+results could not be saved.
+
 There is **no telemetry, no crash reporting, and no cloud sync.** RepoSync makes no
 outbound network calls beyond the Git fetches and the optional unauthenticated GitHub
 metadata lookups that you configure. The activity log shows the exact commands it ran,
-so nothing is hidden.
+so nothing is hidden: select any row in **Activity** for the full receipt, including
+git's own output on both streams, the exit code, and how long it took.
 
 ## Is it safe to point at many repos?
 

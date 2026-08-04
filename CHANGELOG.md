@@ -23,6 +23,25 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   exits either way.
 
 ### Added
+- **Activity entries open a full receipt.** Selecting a row in Activity shows
+  what RepoSync actually ran, what git printed back on both streams, the exit
+  code, and how long it took. RepoSync has always recorded this; nothing
+  displayed it, so answering "why did that repository not update" meant opening
+  the database by hand. Captured output has already had credentials stripped
+  from it, so the receipt shows exactly what is stored.
+- **A Diagnostics panel in Settings, with an "Open logs" button.** It shows
+  where your data, database, and log folders are; whether logging is actually
+  running and under what retention; which `git` executable was found and its
+  version; and how many scheduled cycles have run since launch. It flags the
+  three conditions worth acting on - logging that failed to start, a data folder
+  inside a OneDrive-synced tree, and a database that had to be recovered at
+  startup - and a "Copy details" button produces a plain-text summary for a bug
+  report. The log folder was previously reachable only by knowing its path.
+- **Scheduled check outcomes that fail to save are now counted where you can see
+  them.** When a background check finishes but its result cannot be written, the
+  repository simply stays due and retries, which is the right behavior and
+  completely silent. The Diagnostics panel now carries the count, so a database
+  problem that would otherwise present as "checks seem to run twice" is visible.
 - A published [security model](docs/security-model.md) describing trust
   boundaries, the controls in place, and the known weaknesses that remain.
 - A real [README](README.md), including an honest platform and signing status
