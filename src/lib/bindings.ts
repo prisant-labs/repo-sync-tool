@@ -147,8 +147,21 @@ export const commands = {
 	groupList: () => typedError<GroupSummary[], AppErrorPayload>(__TAURI_INVOKE("group_list")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Create a group. A duplicate name is rejected as an invalid setting. */
 	groupCreate: (name: string, color: string | null) => typedError<GroupSummary, AppErrorPayload>(__TAURI_INVOKE("group_create", { name, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
-	/**  Rename a group. A duplicate name is rejected; a missing id is NotFound. */
+	/**
+	 *  Rename a group without touching its color.
+	 * 
+	 *  Retained as a compatibility command under the E-06 additive IPC contract. New
+	 *  callers should use [`group_update`], which edits name and color together in one
+	 *  atomic write; this exists so a consumer on the original two-argument contract
+	 *  keeps working and does not lose the group's color as a side effect.
+	 */
 	groupRename: (id: number, name: string) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_rename", { id, name })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
+	 *  Update a group's name and color atomically. A duplicate name is rejected; a
+	 *  missing id is NotFound. A single UPDATE, so a name clash leaves both fields
+	 *  unchanged - an edit never partially persists.
+	 */
+	groupUpdate: (id: number, name: string, color: string | null) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_update", { id, name, color })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Delete a group (idempotent; memberships cascade away). */
 	groupDelete: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("group_delete", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Assign a repo to a group (idempotent; a missing repo/group is NotFound). */
@@ -551,6 +564,14 @@ export type Settings = {
 	 *  `settings.auto_update_check` column added in migration `0006_auto_update.sql`.
 	 */
 	autoUpdateCheck: boolean,
+	/**
+	 *  Whether the window's close (X) button HIDES the app to the tray (`true`,
+	 *  the default and prior hardcoded behavior) or QUITS it (`false`). Read live
+	 *  by the close handler via a mirrored `AtomicBool` in the shell's AppState.
+	 *  Mirrors the `settings.close_minimizes_to_tray` column added in migration
+	 *  `0007_close_minimizes_to_tray.sql`.
+	 */
+	closeMinimizesToTray: boolean,
 };
 
 /**  Typed `repo:state-changed` event (a repo's cached state was updated). */

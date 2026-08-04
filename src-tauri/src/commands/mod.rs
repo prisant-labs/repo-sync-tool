@@ -521,6 +521,15 @@ pub async fn settings_set(
 
     reposync_core::store::settings_set(&state.pool, &settings).await?;
 
+    // Mirror the close-button behavior into the shared flag the window
+    // CloseRequested handler reads (it is synchronous and cannot query the DB).
+    // Storing unconditionally keeps the flag exactly in sync with the just-persisted
+    // value; the handler reads it fresh on the next close, so the change is live.
+    state.close_minimizes_to_tray.store(
+        settings.close_minimizes_to_tray,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     // Finding 1: only reconcile the LIVE git engine when `git_executable_path`
     // ACTUALLY changed from the previously persisted value. The git re-probe, the
     // autostart actuation, and the inherit-cadence reschedule are INDEPENDENT
@@ -753,7 +762,12 @@ pub async fn group_create(
     reposync_core::store::group_create(&state.pool, &name, color.as_deref()).await
 }
 
-/// Rename a group. A duplicate name is rejected; a missing id is NotFound.
+/// Rename a group without touching its color.
+///
+/// Retained as a compatibility command under the E-06 additive IPC contract. New
+/// callers should use [`group_update`], which edits name and color together in one
+/// atomic write; this exists so a consumer on the original two-argument contract
+/// keeps working and does not lose the group's color as a side effect.
 #[tauri::command]
 #[specta::specta]
 pub async fn group_rename(
@@ -762,6 +776,20 @@ pub async fn group_rename(
     name: String,
 ) -> Result<(), AppError> {
     reposync_core::store::group_rename(&state.pool, id, &name).await
+}
+
+/// Update a group's name and color atomically. A duplicate name is rejected; a
+/// missing id is NotFound. A single UPDATE, so a name clash leaves both fields
+/// unchanged - an edit never partially persists.
+#[tauri::command]
+#[specta::specta]
+pub async fn group_update(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    name: String,
+    color: Option<String>,
+) -> Result<(), AppError> {
+    reposync_core::store::group_update(&state.pool, id, &name, color.as_deref()).await
 }
 
 /// Delete a group (idempotent; memberships cascade away).

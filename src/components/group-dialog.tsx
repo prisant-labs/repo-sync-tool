@@ -32,7 +32,7 @@ const GROUP_COLORS = [
 const GROUP_COLOR_NAMES = ["Blue", "Green", "Amber", "Red", "Violet", "Magenta", "Teal", "Slate"];
 
 /**
- * Whether an error is `group_create` / `group_rename`'s duplicate-name
+ * Whether an error is `group_create` / `group_update`'s duplicate-name
  * rejection, keyed on the error code and the `field` it carries (E-16 Known
  * defect 4) rather than string-matching the message, so it stays robust if
  * the wire message text ever changes.
@@ -44,10 +44,10 @@ function isDuplicateNameError(e: unknown): boolean {
 }
 
 /**
- * Create or rename a group. In create mode it collects a name plus a preset
- * color; in rename mode only the name is editable (the backend `group_rename`
- * command carries no color). On success it toasts and calls `onSaved` so the
- * caller can refetch the group list.
+ * Create or edit a group. Both modes collect a name plus a preset color. Create
+ * calls `group_create`; edit calls `group_update`, which persists name + color in
+ * one atomic backend write. On success it toasts and calls `onSaved` so the caller
+ * can refetch the group list.
  */
 export function GroupDialog({
   open,
@@ -96,15 +96,19 @@ export function GroupDialog({
         await unwrap(commands.groupCreate(trimmed, color));
         toast("ok", "Group created", trimmed);
       } else if (group) {
-        await unwrap(commands.groupRename(group.id, trimmed));
-        toast("ok", "Group renamed", trimmed);
+        // Edit: ONE atomic backend update of name + color. Keep this a single
+        // command. Two sequential calls (rename, then set color) reintroduce a
+        // partial-failure path where the rename commits, the color write fails,
+        // and the dialog reports an error while the new name is already saved.
+        await unwrap(commands.groupUpdate(group.id, trimmed, color));
+        toast("ok", "Group updated", trimmed);
       }
       onSaved();
       onClose();
     } catch (e) {
       toast(
         "error",
-        mode === "create" ? "Could not create group" : "Could not rename group",
+        mode === "create" ? "Could not create group" : "Could not update group",
         isDuplicateNameError(e)
           ? "That name is already taken."
           : e instanceof IpcError
@@ -118,11 +122,11 @@ export function GroupDialog({
   return (
     <Dialog open={open} onClose={onClose}>
       <div className="border-b border-border px-5 py-4">
-        <h2 className="text-base font-semibold">{mode === "create" ? "New group" : "Rename group"}</h2>
+        <h2 className="text-base font-semibold">{mode === "create" ? "New group" : "Edit group"}</h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
           {mode === "create"
             ? "Name a group and pick a color to organize your repositories."
-            : "Give this group a new name. Its color and members stay the same."}
+            : "Edit this group's name and color. Members stay the same."}
         </p>
       </div>
 
@@ -143,29 +147,27 @@ export function GroupDialog({
           />
         </div>
 
-        {mode === "create" && (
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Color
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {GROUP_COLORS.map((c, i) => (
-                <button
-                  key={c}
-                  type="button"
-                  aria-label={`${GROUP_COLOR_NAMES[i]} (color ${i + 1} of ${GROUP_COLORS.length})`}
-                  aria-pressed={color === c}
-                  onClick={() => setColor(c)}
-                  className={cn(
-                    "size-7 rounded-full ring-offset-2 ring-offset-card transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    color === c ? "ring-2 ring-ring" : "hover:ring-2 hover:ring-border",
-                  )}
-                  style={{ backgroundColor: c }}
-                />
-              ))}
-            </div>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Color
+          </span>
+          <div className="flex flex-wrap gap-2">
+            {GROUP_COLORS.map((c, i) => (
+              <button
+                key={c}
+                type="button"
+                aria-label={`${GROUP_COLOR_NAMES[i]} (color ${i + 1} of ${GROUP_COLORS.length})`}
+                aria-pressed={color === c}
+                onClick={() => setColor(c)}
+                className={cn(
+                  "size-7 rounded-full ring-offset-2 ring-offset-card transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  color === c ? "ring-2 ring-ring" : "hover:ring-2 hover:ring-border",
+                )}
+                style={{ backgroundColor: c }}
+              />
+            ))}
           </div>
-        )}
+        </div>
       </div>
 
       <div className="flex items-center gap-2 border-t border-border px-5 py-3">
@@ -179,7 +181,7 @@ export function GroupDialog({
           onClick={() => void submit()}
         >
           {busy && <Loader2 className="animate-spin" />}
-          {mode === "create" ? "Create group" : "Save name"}
+          {mode === "create" ? "Create group" : "Save changes"}
         </Button>
       </div>
     </Dialog>

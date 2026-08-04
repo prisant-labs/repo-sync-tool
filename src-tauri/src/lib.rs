@@ -27,11 +27,12 @@ use tauri_specta::{collect_commands, collect_events};
 
 use commands::{
     activity_list, app_check_for_update, app_install_update, db_recovery_notice, group_assign,
-    group_create, group_delete, group_list, group_rename, group_unassign, groups_for_repo,
-    repo_add_path, repo_check_all, repo_check_now, repo_get, repo_group_memberships, repo_list,
-    repo_open_editor, repo_open_folder, repo_open_remote, repo_open_terminal,
-    repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_cadence, repo_set_enabled,
-    repo_set_policy, repo_update_now, settings_get, settings_set, summary_today, summary_week,
+    group_create, group_delete, group_list, group_rename, group_unassign, group_update,
+    groups_for_repo, repo_add_path, repo_check_all, repo_check_now, repo_get,
+    repo_group_memberships, repo_list, repo_open_editor, repo_open_folder, repo_open_remote,
+    repo_open_terminal, repo_refresh_metadata, repo_remove, repo_scan_parent, repo_set_cadence,
+    repo_set_enabled, repo_set_policy, repo_update_now, settings_get, settings_set, summary_today,
+    summary_week,
 };
 use events::{
     CheckCompleted, CheckStarted, ErrorRaised, MetadataRefreshed, NavigateRequested,
@@ -96,6 +97,11 @@ pub struct AppState {
     pub github_budget: reposync_core::github::SharedBudgeter,
     pub db_recovered: bool,
     pub db_backup_path: Option<std::path::PathBuf>,
+    /// Live mirror of the `close_minimizes_to_tray` setting. The window
+    /// `CloseRequested` handler is synchronous and cannot await a DB read, so it
+    /// reads this flag instead (same Arc-flag pattern as `pause`). Seeded from
+    /// settings at setup; `settings_set` updates it when the toggle changes.
+    pub close_minimizes_to_tray: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Build the `tauri-specta` [`Builder`](tauri_specta::Builder) for the shell.
@@ -148,7 +154,10 @@ fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
             // groups / tags
             group_list,
             group_create,
+            // group_rename is the original name-only command, kept for E-06 additive
+            // compatibility; group_update is the newer name+color atomic edit the UI uses.
             group_rename,
+            group_update,
             group_delete,
             group_assign,
             group_unassign,
@@ -376,6 +385,16 @@ pub fn run() {
                     .as_ref()
                     .map(|s| s.auto_update_check)
                     .unwrap_or(true);
+                // Close-button behavior (default ON = minimize to tray). Mirrored into
+                // AppState + the window CloseRequested handler via a shared AtomicBool,
+                // since that handler is synchronous and cannot await a DB read.
+                let close_minimizes_to_tray_flag =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                        startup_settings
+                            .as_ref()
+                            .map(|s| s.close_minimizes_to_tray)
+                            .unwrap_or(true),
+                    ));
                 let engine = reposync_core::git::SystemGitEngine::new(configured_git_path);
                 let initial_git = if engine.availability().is_unavailable() {
                     tracing::warn!(
@@ -653,6 +672,7 @@ pub fn run() {
                     github_budget,
                     db_recovered,
                     db_backup_path,
+                    close_minimizes_to_tray: close_minimizes_to_tray_flag.clone(),
                 });
 
                 // Build the tray AFTER AppState is managed so a menu click can never
@@ -677,7 +697,7 @@ pub fn run() {
                 // the close - even an autostart launch ends visible and quittable
                 // (finding 2). The window was created hidden (`visible(false)`) in setup
                 // (BL-NI-59), so it stays hidden until this shows it, avoiding a flash.
-                windows::init(&handle, tray_available);
+                windows::init(&handle, tray_available, close_minimizes_to_tray_flag);
 
                 // E-18 auto-update: spawn the on-launch update check in the
                 // background, gated by the `auto_update_check` toggle AND the
