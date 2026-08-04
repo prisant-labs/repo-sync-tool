@@ -33,7 +33,11 @@ export function formatBytes(bytes: number | null): string {
  * quoted, truncated, or read quickly.
  */
 export function formatDiagnosticsReport(d: Diagnostics): string {
-  const git = `${d.gitAvailable ? "ok" : "unavailable"}${d.gitVersion ? ` ${d.gitVersion}` : ""}${
+  // Three states, not two: "not found" is a stop, "below 2.30" is a warning
+  // about a git RepoSync still runs (E-03 AC7). Reporting both as "unavailable"
+  // would send a reader chasing a missing binary that is sitting right there.
+  const gitState = !d.gitResolved ? "NOT FOUND" : d.gitMeetsFloor ? "ok" : "BELOW 2.30 FLOOR";
+  const git = `${gitState}${d.gitVersion ? ` ${d.gitVersion}` : ""}${
     d.gitPath ? ` (${d.gitPath})` : ""
   }`;
   const logging = d.loggingActive

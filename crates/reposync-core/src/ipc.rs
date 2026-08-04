@@ -124,8 +124,18 @@ pub struct Diagnostics {
     pub git_path: Option<String>,
     /// The probed git version, or `None` when git is unavailable.
     pub git_version: Option<String>,
-    /// Whether git is usable (found AND at or above the supported floor).
-    pub git_available: bool,
+    /// Whether a git executable was resolved at all. `false` is the only state
+    /// in which RepoSync will not run git.
+    pub git_resolved: bool,
+    /// Whether the resolved git is at or above the supported >= 2.30 floor.
+    ///
+    /// Split from `git_resolved` rather than folded into one "available" flag,
+    /// because [`crate::git::GitAvailability`] has THREE states and a single
+    /// boolean can only carry two. A below-floor git is explicitly "usable but
+    /// flagged - operations are still attempted" (E-03 AC7), so collapsing it
+    /// into "not available" would tell a user reading this panel that RepoSync
+    /// has stopped running git when it has not.
+    pub git_meets_floor: bool,
     /// Scheduler cycles completed since launch.
     pub scheduler_cycles: i64,
     /// Repos run across those cycles.

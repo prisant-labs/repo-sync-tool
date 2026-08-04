@@ -18,7 +18,8 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
     onedriveRooted: false,
     gitPath: "C:\\Program Files\\Git\\cmd\\git.exe",
     gitVersion: "2.40.1",
-    gitAvailable: true,
+    gitResolved: true,
+    gitMeetsFloor: true,
     schedulerCycles: 12,
     schedulerReposChecked: 30,
     schedulerOutcomePersistFailures: 0,
@@ -103,17 +104,24 @@ describe("formatDiagnosticsReport", () => {
   });
 
   /**
-   * A git below the >= 2.30 floor reports as unavailable but keeps its version.
-   * Either alone is a puzzle; together they explain themselves.
+   * A git below the >= 2.30 floor and a git that is missing entirely are
+   * DIFFERENT states, and only the second one stops RepoSync running git at all
+   * (E-03 AC7: a below-floor git is "usable but flagged"). Reporting both as
+   * "unavailable" would send a reader chasing a missing binary that is sitting
+   * right there at the path printed on the same line.
    */
-  it("reports an unavailable git with whatever version was probed", () => {
-    expect(formatDiagnosticsReport(diagnostics({ gitAvailable: false, gitVersion: "2.28.0" })))
-      .toContain("git: unavailable 2.28.0");
-    expect(
-      formatDiagnosticsReport(
-        diagnostics({ gitAvailable: false, gitVersion: null, gitPath: null }),
-      ),
-    ).toContain("git: unavailable");
+  it("distinguishes a below-floor git from a missing one", () => {
+    const belowFloor = formatDiagnosticsReport(
+      diagnostics({ gitResolved: true, gitMeetsFloor: false, gitVersion: "2.28.0" }),
+    );
+    expect(belowFloor).toContain("BELOW 2.30 FLOOR 2.28.0");
+    expect(belowFloor).toContain("git.exe");
+
+    const missing = formatDiagnosticsReport(
+      diagnostics({ gitResolved: false, gitMeetsFloor: false, gitVersion: null, gitPath: null }),
+    );
+    expect(missing).toContain("git: NOT FOUND");
+    expect(missing).not.toContain("BELOW");
   });
 
   /** BL-NI-14 reaching the surface: a silent retry storm has to be countable. */

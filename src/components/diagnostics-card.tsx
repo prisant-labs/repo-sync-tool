@@ -126,11 +126,18 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
       </Row>
       <PathRow value={d.dbPath} />
 
+      {/*
+        Three states, not two. A below-floor git is still the git RepoSync runs
+        (E-03 AC7), so it reads as a warning about the VERSION, not as "git is
+        missing" - which is the genuinely different, genuinely blocking state.
+      */}
       <Row label="Git" hint="The executable RepoSync runs for every fetch and pull.">
-        {d.gitAvailable ? (
+        {!d.gitResolved ? (
+          <Mono tone="warn">not found</Mono>
+        ) : d.gitMeetsFloor ? (
           <Mono>{d.gitVersion ?? "found"}</Mono>
         ) : (
-          <Mono tone="warn">{d.gitVersion ? `${d.gitVersion} (too old)` : "not found"}</Mono>
+          <Mono tone="warn">{d.gitVersion ?? "unknown"} (below 2.30)</Mono>
         )}
       </Row>
       {d.gitPath && <PathRow value={d.gitPath} />}

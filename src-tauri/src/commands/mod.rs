@@ -772,17 +772,20 @@ fn build_diagnostics(
         .unwrap_or_else(|| paths.log_dir());
     let stats = reposync_core::logging::log_dir_stats(&log_dir);
 
-    let (git_version, git_available) = match &git_availability {
+    // Three engine states map to two INDEPENDENT booleans, not one. A
+    // below-floor git is resolved and still used (E-03 AC7: "usable but
+    // flagged - operations are still attempted"), so folding it into a single
+    // `available: false` would tell the user RepoSync had stopped running git
+    // when it had not. Showing the version alongside is the point: "2.28.0"
+    // explains the flag by itself.
+    let (git_version, git_resolved, git_meets_floor) = match &git_availability {
         Some(reposync_core::git::GitAvailability::Available { version }) => {
-            (Some(version.to_string()), true)
+            (Some(version.to_string()), true, true)
         }
-        // Below the >= 2.30 floor is reported as NOT available, matching how the
-        // rest of the app treats it: usable but flagged. Showing the version
-        // alongside is the point - "2.28.0" explains the flag by itself.
         Some(reposync_core::git::GitAvailability::BelowFloor { version }) => {
-            (Some(version.to_string()), false)
+            (Some(version.to_string()), true, false)
         }
-        Some(reposync_core::git::GitAvailability::Unavailable) | None => (None, false),
+        Some(reposync_core::git::GitAvailability::Unavailable) | None => (None, false, false),
     };
 
     Diagnostics {
@@ -800,7 +803,8 @@ fn build_diagnostics(
         onedrive_rooted: paths.is_onedrive_rooted(),
         git_path: git_exe.map(|p| p.display().to_string()),
         git_version,
-        git_available,
+        git_resolved,
+        git_meets_floor,
         scheduler_cycles: health.cycles.load(Ordering::Relaxed) as i64,
         scheduler_repos_checked: health.repos_checked.load(Ordering::Relaxed) as i64,
         scheduler_outcome_persist_failures: health.outcome_persist_failures.load(Ordering::Relaxed)
@@ -1080,11 +1084,12 @@ mod tests {
         assert_eq!(d.log_max_bytes, Some(8 * 1024 * 1024));
     }
 
-    /// A git below the >= 2.30 floor is resolved but NOT available, and the
-    /// version is still reported. The pairing is the point: "2.28.0" plus "not
-    /// available" explains itself, where either alone reads as a bug.
+    /// The three-state engine mapped onto two booleans. A below-floor git is
+    /// RESOLVED (RepoSync still runs it, per E-03 AC7) but does NOT meet the
+    /// floor. One combined "available" boolean could not say both, and whichever
+    /// value it took would be a lie about the other half.
     #[test]
-    fn a_below_floor_git_is_reported_unavailable_but_keeps_its_version() {
+    fn a_below_floor_git_is_resolved_but_does_not_meet_the_floor() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let paths = AppPaths::new(tmp.path().to_path_buf());
         let old = reposync_core::git::discover::GitVersion {
@@ -1103,13 +1108,40 @@ mod tests {
             false,
         );
 
-        assert!(!d.git_available);
+        assert!(
+            d.git_resolved,
+            "a below-floor git is still the git RepoSync runs"
+        );
+        assert!(!d.git_meets_floor);
         assert_eq!(d.git_version.as_deref(), Some("2.28.0"));
         assert_eq!(d.git_path.as_deref(), Some("C:\\git\\git.exe"));
     }
 
+    /// The state that IS a stop: no git at all. Both booleans go false together,
+    /// which is what distinguishes it from the below-floor case above.
     #[test]
-    fn an_available_git_is_reported_available() {
+    fn an_absent_git_is_neither_resolved_nor_at_the_floor() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Unavailable),
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(!d.git_resolved);
+        assert!(!d.git_meets_floor);
+        assert_eq!(d.git_version, None);
+        assert_eq!(d.git_path, None);
+    }
+
+    #[test]
+    fn an_available_git_is_resolved_and_at_the_floor() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let paths = AppPaths::new(tmp.path().to_path_buf());
         let v = reposync_core::git::discover::GitVersion {
@@ -1128,7 +1160,8 @@ mod tests {
             false,
         );
 
-        assert!(d.git_available);
+        assert!(d.git_resolved);
+        assert!(d.git_meets_floor);
         assert_eq!(d.git_version.as_deref(), Some("2.40.1"));
     }
 
