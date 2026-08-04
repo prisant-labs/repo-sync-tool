@@ -17,12 +17,10 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   see the note at the end of that section for what has since changed.
 - Group colors can be edited after creation, not only at create time. A
   rejected duplicate name now leaves both the name and the color unchanged.
-  *(Not yet on `main`: pending PR #28, held for a packaged Windows dogfood.)*
 - The close (X) button is configurable: **Settings -> System -> "Close button
   minimizes to tray"**, on by default. Off makes the close button quit the app.
   Existing installs keep the previous behavior on upgrade. Tray **Quit** always
   exits either way.
-  *(Not yet on `main`: pending PR #28, held for a packaged Windows dogfood.)*
 
 ### Added
 - A published [security model](docs/security-model.md) describing trust
