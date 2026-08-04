@@ -94,7 +94,7 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
         label="Logging"
         hint={
           d.loggingActive
-            ? "Level and retention currently in force."
+            ? "Level and retention set at startup. The file count below is the live check."
             : "RepoSync could not open a log file, so nothing is being recorded."
         }
       >
@@ -108,9 +108,13 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
         )}
       </Row>
       <Row label="Log files on disk" hint="Counted now, not remembered.">
-        <Mono>
-          {d.logFileCount} {d.logFileCount === 1 ? "file" : "files"}, {formatBytes(d.logBytes)}
-        </Mono>
+        {d.logDirReadable ? (
+          <Mono tone={d.loggingActive && d.logFileCount === 0 ? "warn" : undefined}>
+            {d.logFileCount} {d.logFileCount === 1 ? "file" : "files"}, {formatBytes(d.logBytes)}
+          </Mono>
+        ) : (
+          <Mono tone="warn">folder unreadable</Mono>
+        )}
       </Row>
 
       <Row label="Data folder" hint="Settings, the repo registry, and the activity history.">
@@ -164,7 +168,23 @@ function Warnings({ d }: { d: Diagnostics }) {
   const items: string[] = [];
   if (!d.loggingActive) {
     items.push(
-      "Logging is not running, so nothing is being recorded. Check that the log folder below is writable.",
+      "Logging did not start, so nothing is being recorded. Check that the log folder below is writable.",
+    );
+  } else if (!d.logDirReadable) {
+    // Worse than an empty folder: a directory RepoSync cannot read is one it
+    // most likely cannot write either, and `loggingActive` cannot see that
+    // because it only records whether startup succeeded.
+    items.push(
+      "The log folder cannot be read. Logging started, but RepoSync can no longer see the folder it writes to.",
+    );
+  } else if (d.logFileCount === 0) {
+    // The observable contradiction. `tracing_appender` writes on a worker
+    // thread and reports no errors, so "logging started" stays true forever
+    // once it is true. The one thing that can be checked live is whether
+    // anything actually landed - and the startup banner alone should have
+    // produced a file.
+    items.push(
+      "Logging started but the folder contains no log files. Events may not be reaching disk.",
     );
   }
   if (d.onedriveRooted) {

@@ -38,13 +38,21 @@ export function formatDiagnosticsReport(d: Diagnostics): string {
   }`;
   const logging = d.loggingActive
     ? `${d.logLevel ?? "?"}, ${d.logMaxFiles} days, ${formatBytes(d.logMaxBytes)} max`
-    : "NOT RUNNING";
+    : "DID NOT START";
+  // "started but nothing on disk" is the only live evidence available that
+  // writes are failing, so it is marked rather than left for a reader to infer
+  // from a zero. `logging: started` alone would be a claim the app cannot back.
+  const files = !d.logDirReadable
+    ? "log files: FOLDER UNREADABLE"
+    : `log files: ${d.logFileCount} (${formatBytes(d.logBytes)})${
+        d.loggingActive && d.logFileCount === 0 ? " [NOTHING WRITTEN]" : ""
+      }`;
 
   return [
     `RepoSync ${d.appVersion}`,
     `git: ${git}`,
     `logging: ${logging}`,
-    `log files: ${d.logFileCount} (${formatBytes(d.logBytes)})`,
+    files,
     `log dir: ${d.logDir}`,
     `data dir: ${d.dataDir}${d.onedriveRooted ? " [ONEDRIVE-SYNCED]" : ""}`,
     `db: ${d.dbPath}${d.dbRecovered ? " [RECOVERED AT STARTUP]" : ""}`,

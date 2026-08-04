@@ -794,6 +794,7 @@ fn build_diagnostics(
         log_level: log_config.map(|c| c.level.to_string()),
         log_max_files: log_config.map(|c| c.retention.max_files as i64),
         log_max_bytes: log_config.map(|c| c.retention.max_bytes as i64),
+        log_dir_readable: stats.readable,
         log_file_count: stats.file_count as i64,
         log_bytes: stats.total_bytes as i64,
         onedrive_rooted: paths.is_onedrive_rooted(),
@@ -1008,6 +1009,46 @@ mod tests {
         // what lets someone check whether it is a permissions problem.
         assert_eq!(d.log_dir, paths.log_dir().display().to_string());
         assert_eq!(d.log_file_count, 0);
+        assert!(
+            !d.log_dir_readable,
+            "the directory does not exist here, and 'could not read' must not be \
+             reported as 'read it, found nothing'"
+        );
+    }
+
+    /// The gap Codex's second finding named, encoded as a test. `logging_active`
+    /// proves only that the subscriber installed at STARTUP; `tracing_appender`
+    /// writes on a worker thread with no error channel, so a later failure
+    /// leaves this true. The card must therefore never treat it as proof that
+    /// events are reaching disk - the live directory read is the corroborating
+    /// evidence, and the UI flags "started, but nothing on disk" as a warning.
+    #[test]
+    fn logging_active_and_files_on_disk_are_reported_independently() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let config = crate::logging::LogConfig {
+            dir: paths.log_dir(),
+            level: tracing::level_filters::LevelFilter::INFO,
+            retention: crate::logging::Retention::default(),
+        };
+        std::fs::create_dir_all(paths.log_dir()).expect("create log dir");
+
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            Some(&config),
+            None,
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+
+        assert!(d.logging_active, "the subscriber did install");
+        assert!(d.log_dir_readable, "and the directory is readable");
+        assert_eq!(
+            d.log_file_count, 0,
+            "yet nothing is on disk - the contradiction the card surfaces"
+        );
     }
 
     #[test]

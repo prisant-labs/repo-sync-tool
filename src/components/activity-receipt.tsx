@@ -90,9 +90,21 @@ export function ActivityReceipt({
         <Stream label="Errors" value={record.rawStderr} tone="bad" />
       </div>
 
+      {/*
+        The wording here is load-bearing and was deliberately weakened after an
+        adversarial review. It previously read "Credentials are stripped from
+        captured git output" full stop, which claims more than the redactor
+        delivers: URL credentials are removed structurally, but the token-prefix
+        list is short and best-effort by design, and the command line always
+        contains the repository's full local path. Sitting an unqualified
+        reassurance next to a Copy button is the worst place in the app to
+        overclaim, because the user acts on it immediately and irreversibly.
+      */}
       <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <p className="text-xs text-foreground/70">
-          Credentials are stripped from captured git output before it is stored.
+        <p className="text-xs text-foreground/80">
+          Before sharing: credentials embedded in URLs are removed and common token formats are
+          stripped where recognized, but this includes the repository&apos;s full local path and any
+          secret in an unfamiliar format.
         </p>
         <Button variant="secondary" size="sm" onClick={() => void copy()}>
           <ClipboardCopy /> Copy

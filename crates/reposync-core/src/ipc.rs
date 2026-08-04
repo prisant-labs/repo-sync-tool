@@ -92,8 +92,15 @@ pub struct Diagnostics {
     pub db_path: String,
     /// The rolling-log directory.
     pub log_dir: String,
-    /// Whether the rolling file appender is actually running. `false` means the
-    /// app started but could not open a log file, so nothing is being recorded.
+    /// Whether the logging subscriber was installed successfully AT STARTUP.
+    ///
+    /// Deliberately named for what it proves. `tracing_appender` writes on a
+    /// background worker thread and exposes no error channel, so a disk that
+    /// fills or an ACL that changes AFTER startup produces no signal here: this
+    /// stays `true` while nothing reaches disk. Pair it with `log_dir_readable`
+    /// and `log_file_count`, which are measured live - "started, but the
+    /// directory has no files in it" is the observable contradiction, and the
+    /// UI flags exactly that. Durable write-failure telemetry is BL-NI-63.
     pub logging_active: bool,
     /// The effective maximum level, e.g. `"INFO"`. `None` when logging is off.
     pub log_level: Option<String>,
@@ -101,7 +108,12 @@ pub struct Diagnostics {
     pub log_max_files: Option<i64>,
     /// The directory size budget in bytes (the SIZE half). `None` when off.
     pub log_max_bytes: Option<i64>,
-    /// Log files present right now.
+    /// Whether the log directory could be read at all. `false` is a distinct,
+    /// worse state than "readable and empty": a directory the app cannot read
+    /// is one it most likely cannot write to either. The counts below mean
+    /// nothing when this is `false`.
+    pub log_dir_readable: bool,
+    /// Log files present right now (measured, not remembered).
     pub log_file_count: i64,
     /// Bytes those files occupy right now.
     pub log_bytes: i64,

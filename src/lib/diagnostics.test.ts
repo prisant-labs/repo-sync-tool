@@ -12,6 +12,7 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
     logLevel: "info",
     logMaxFiles: 14,
     logMaxBytes: 32 * 1024 * 1024,
+    logDirReadable: true,
     logFileCount: 3,
     logBytes: 1024,
     onedriveRooted: false,
@@ -59,14 +60,40 @@ describe("formatDiagnosticsReport", () => {
    * than appended as a trailing section, so they survive being quoted,
    * truncated, or skimmed in an issue thread.
    */
-  it("marks a stopped logger loudly", () => {
+  it("marks a logger that never started loudly", () => {
     const text = formatDiagnosticsReport(
       diagnostics({ loggingActive: false, logLevel: null, logMaxFiles: null, logMaxBytes: null }),
     );
-    expect(text).toContain("logging: NOT RUNNING");
+    expect(text).toContain("logging: DID NOT START");
     // The directory is still reported: knowing where logs WOULD have gone is
     // what makes "is it a permissions problem" answerable.
     expect(text).toContain("log dir: ");
+  });
+
+  /**
+   * `loggingActive` only proves the subscriber installed at startup -
+   * `tracing_appender` writes on a worker thread and surfaces no later errors,
+   * so it stays true while a full disk silently swallows every event. The one
+   * live check available is whether anything actually landed, and a report that
+   * said "logging: info" beside a bare "0" would read as healthy.
+   */
+  it("marks a logger that started but wrote nothing", () => {
+    const text = formatDiagnosticsReport(diagnostics({ logFileCount: 0, logBytes: 0 }));
+    expect(text).toContain("[NOTHING WRITTEN]");
+  });
+
+  it("does not cry wolf when the logger never started in the first place", () => {
+    // Zero files is expected, not suspicious, when logging never started - the
+    // preceding line already says so, and two alarms for one fact is noise.
+    const text = formatDiagnosticsReport(
+      diagnostics({ loggingActive: false, logFileCount: 0, logBytes: 0 }),
+    );
+    expect(text).not.toContain("[NOTHING WRITTEN]");
+  });
+
+  it("reports an unreadable log folder as its own state, not as empty", () => {
+    const text = formatDiagnosticsReport(diagnostics({ logDirReadable: false, logFileCount: 0 }));
+    expect(text).toContain("log files: FOLDER UNREADABLE");
   });
 
   it("marks a OneDrive-rooted data directory and a recovered database", () => {
