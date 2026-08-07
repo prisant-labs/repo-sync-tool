@@ -230,11 +230,177 @@ pub fn prune_to_size_budget(dir: &Path, budget_bytes: u64) -> std::io::Result<Ve
     Ok(removed)
 }
 
+/// A `tracing` capture harness for tests in this crate.
+///
+/// WHY THIS IS HAND-ROLLED. The obvious tool is `tracing-subscriber`'s test
+/// writer, and this crate may not have it: `tracing-subscriber`'s timestamp
+/// formatting pulls `time`, which the workspace excludes from the core tree, and
+/// `cargo tree -p reposync-core` enforces that in CI. So the capture is built
+/// from the FACADE's own traits, which cost about forty lines and keep the
+/// dependency invariant intact rather than negotiating with it.
+///
+/// WHY IT EXISTS AT ALL. Several of this crate's most important behaviors are
+/// best-effort by design: an activity row that cannot be written is swallowed so
+/// a logging hiccup never aborts the git operation that already happened, and a
+/// scheduled outcome that cannot be persisted leaves the repo due to retry. In
+/// each case the log line is the ONLY trace that anything went wrong. Tests could
+/// previously assert that those paths do not panic, which is the easy half; the
+/// half that matters, that the diagnostic actually reaches a subscriber, had
+/// nothing checking it. A swallowed failure that also fails to log is
+/// indistinguishable from success, and that is the exact condition these events
+/// exist to prevent.
+#[cfg(test)]
+pub(crate) mod capture {
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Level, Metadata, Subscriber};
+
+    /// The `event = ...` names seen while the capture was installed, with the
+    /// level each was emitted at. Cheap to clone; the clone shares the buffer.
+    #[derive(Clone, Default)]
+    pub(crate) struct Captured(Arc<Mutex<Vec<(String, Level)>>>);
+
+    impl Captured {
+        /// Whether an event with this stable name was emitted.
+        pub(crate) fn saw(&self, event_name: &str) -> bool {
+            self.0.lock().unwrap().iter().any(|(n, _)| n == event_name)
+        }
+
+        /// Whether it was emitted at this level. Kept separate from [`saw`]
+        /// because level is part of the contract: a failure demoted to `debug`
+        /// vanishes from a default-filtered log while still passing a
+        /// name-only assertion.
+        pub(crate) fn saw_at(&self, event_name: &str, level: Level) -> bool {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(n, l)| n == event_name && *l == level)
+        }
+
+        /// Every captured name, for an assertion message worth reading.
+        pub(crate) fn names(&self) -> Vec<String> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect()
+        }
+    }
+
+    /// Pulls the value of the `event` field out of one tracing event.
+    ///
+    /// Both `record_str` and `record_debug` are implemented because the macro
+    /// chooses between them by how the value is typed at the call site: a plain
+    /// `event = "name"` literal arrives as a str, while `event = CONST` where the
+    /// constant is a `&'static str` may arrive through the debug path with
+    /// surrounding quotes. Handling only one of them silently captures nothing
+    /// for half the call sites, and a capture that quietly sees nothing would
+    /// make every assertion here vacuous.
+    struct EventName(Option<String>);
+
+    impl Visit for EventName {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "event" {
+                self.0 = Some(value.to_string());
+            }
+        }
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event" && self.0.is_none() {
+                self.0 = Some(format!("{value:?}").trim_matches('"').to_string());
+            }
+        }
+    }
+
+    struct CaptureSubscriber(Captured);
+
+    impl Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &Attributes<'_>) -> Id {
+            // Spans are not what this captures; a constant id is sufficient and
+            // never observed.
+            Id::from_u64(1)
+        }
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+        fn event(&self, event: &Event<'_>) {
+            let mut visitor = EventName(None);
+            event.record(&mut visitor);
+            if let Some(name) = visitor.0 {
+                self.0
+                     .0
+                    .lock()
+                    .unwrap()
+                    .push((name, *event.metadata().level()));
+            }
+        }
+        fn enter(&self, _span: &Id) {}
+        fn exit(&self, _span: &Id) {}
+    }
+
+    /// Install the capture for the current thread, returning the buffer and a
+    /// guard that uninstalls on drop.
+    ///
+    /// Thread-local by construction, via `set_default` rather than the global
+    /// `set_global_default`, so concurrently running tests cannot see each
+    /// other's events and no test can install a subscriber that outlives it.
+    ///
+    /// The consequence to know: a `#[tokio::test]` with the default
+    /// current-thread flavor polls its future on this thread and is captured. A
+    /// `flavor = "multi_thread"` test moves work to worker threads that do NOT
+    /// inherit the thread-local, so events emitted there are invisible here.
+    /// That is why the assertions below live on single-threaded tests.
+    pub(crate) fn install() -> (Captured, tracing::subscriber::DefaultGuard) {
+        let captured = Captured::default();
+        let guard = tracing::subscriber::set_default(CaptureSubscriber(captured.clone()));
+        (captured, guard)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    /// The capture harness has to be shown working before anything relies on it.
+    ///
+    /// A capture that silently sees nothing would make every assertion written
+    /// against it vacuous, and vacuous assertions are worse than absent ones
+    /// because they read as coverage. So: an event with a name is seen, its level
+    /// is recorded, an event WITHOUT an `event` field is ignored rather than
+    /// captured under some fallback name, and nothing is captured once the guard
+    /// has dropped.
+    #[test]
+    fn the_capture_harness_actually_captures() {
+        {
+            let (captured, _guard) = capture::install();
+            tracing::error!(event = event::ACTIVITY_WRITE_FAILED, "boom");
+            tracing::warn!(event = event::GIT_UNAVAILABLE, "missing");
+            tracing::info!("a line with no event field");
+
+            assert!(captured.saw(event::ACTIVITY_WRITE_FAILED));
+            assert!(captured.saw_at(event::ACTIVITY_WRITE_FAILED, tracing::Level::ERROR));
+            assert!(
+                !captured.saw_at(event::ACTIVITY_WRITE_FAILED, tracing::Level::WARN),
+                "the level is part of what is asserted, not incidental"
+            );
+            assert!(captured.saw_at(event::GIT_UNAVAILABLE, tracing::Level::WARN));
+            assert_eq!(
+                captured.names().len(),
+                2,
+                "a line with no `event` field must not be captured under a fallback name"
+            );
+            assert!(!captured.saw("never.emitted"));
+        }
+        // Outside the guard's scope the subscriber is uninstalled. Nothing to
+        // assert directly, but this pins that the guard is scoped rather than
+        // global, which is what keeps concurrent tests from seeing each other.
+    }
 
     /// Write a log file of `size` bytes named for `date`.
     fn write_log(dir: &Path, date: &str, size: usize) -> PathBuf {

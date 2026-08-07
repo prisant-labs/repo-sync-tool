@@ -482,14 +482,62 @@ mod tests {
         // A guaranteed write error (the target table is gone) must be logged and
         // swallowed: record returns normally and does not panic / propagate, so a
         // logging hiccup never aborts the git operation that already happened.
+        //
+        // "Swallowed" and "silent" are different, and only half of that was ever
+        // checked here. Not panicking was asserted by reaching the next line; the
+        // log line was asserted by nothing, even though it is the ONLY trace that
+        // the audit trail now has a hole in it. A `record` that swallowed the
+        // error AND failed to emit would have passed this test while destroying
+        // the one property the swallow is acceptable because of.
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         sqlx::query("DROP TABLE activity_records")
             .execute(&pool)
             .await
             .unwrap();
-        // Reaching the next line without a panic IS the assertion.
+
+        let (captured, _guard) = crate::logging::capture::install();
         record(&pool, &success_input(1, 1000)).await;
+
+        assert!(
+            captured.saw(crate::logging::event::ACTIVITY_WRITE_FAILED),
+            "a swallowed activity-write failure must still reach the log; \
+             captured events were {:?}",
+            captured.names()
+        );
+        assert!(
+            captured.saw_at(
+                crate::logging::event::ACTIVITY_WRITE_FAILED,
+                tracing::Level::ERROR
+            ),
+            "it must be ERROR: a hole in the audit trail demoted to warn or debug \
+             disappears from a default-filtered log, which is the same as not \
+             emitting it at all for the user who sends the log in"
+        );
+    }
+
+    /// The other half of the same contract: a SUCCESSFUL write must emit no
+    /// failure event.
+    ///
+    /// Without this, an implementation that logged `activity.write_failed`
+    /// unconditionally would satisfy the test above perfectly. An event that
+    /// fires on every write is not a signal, and the log it floods is the same
+    /// log someone is meant to read to find a real failure.
+    #[tokio::test]
+    async fn a_successful_record_emits_no_failure_event() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let repo = seed_repo(&pool, "ok").await;
+
+        let (captured, _guard) = crate::logging::capture::install();
+        record(&pool, &success_input(repo, 1000)).await;
+
+        assert!(
+            !captured.saw(crate::logging::event::ACTIVITY_WRITE_FAILED),
+            "a healthy write must be quiet; captured events were {:?}",
+            captured.names()
+        );
+        assert_eq!(count(&pool).await, 1, "and it must actually have written");
     }
 
     #[tokio::test]
