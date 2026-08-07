@@ -80,6 +80,14 @@ pub async fn repo_check_now(
 /// `check-completed`); a per-repo failure is surfaced via `error:raised` (the tray
 /// action is fire-and-forget, so there is no synchronous caller to receive it) and
 /// does not abort the run.
+///
+/// Since BL-NI-04 the returned count means "attempted", not "succeeded". A check
+/// whose fetch failed now returns `Ok` with `failed: true`, so it emits its
+/// completion event and counts here. That widening is deliberate and it is the
+/// honest reading of a tray item labelled "Check All Now": the user asked for N
+/// repos to be checked, N were checked, and some of them came back with bad news
+/// that the per-repo event now carries. The `error:raised` arm is left for the
+/// checks that could not RUN at all.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_check_all(

@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { deriveStatus, lagLabel, lagMagnitude, relativeTime } from "@/lib/status";
+import {
+  checkFailureMessage,
+  deriveStatus,
+  lagLabel,
+  lagMagnitude,
+  relativeTime,
+} from "@/lib/status";
 
 /**
  * The status taxonomy is a FRONTEND policy decision: the wire type carries only
@@ -161,5 +167,50 @@ describe("relativeTime", () => {
     const now = 1_700_000_000;
     atFixedNow(now);
     expect(relativeTime(now + 600)).toBe("just now");
+  });
+});
+
+/**
+ * A failed check now RESOLVES rather than rejecting (BL-NI-04), which moves the
+ * decision of what to tell the user out of the error path and into the screen.
+ * `checkFailureMessage` is that decision, and it is tested here for the same
+ * reason `deriveStatus` is: it is a policy call the backend deliberately does not
+ * make.
+ */
+describe("checkFailureMessage", () => {
+  it("names the credential problem for an auth failure", () => {
+    const m = checkFailureMessage("git.auth_failed");
+    expect(m).toContain("Authentication failed");
+    expect(m).toContain("Activity");
+  });
+
+  it("names the network for an offline failure", () => {
+    const m = checkFailureMessage("net.offline");
+    expect(m).toContain("Could not reach the remote");
+    expect(m).toContain("Activity");
+  });
+
+  it("falls back for the generic fetch failure", () => {
+    expect(checkFailureMessage("git.fetch_failed")).toContain("The fetch failed");
+  });
+
+  it("treats a null reason and an unknown code the same, and does not invent a cause", () => {
+    // A code the frontend has not been taught is still a failure. Guessing at a
+    // specific explanation would be worse than the generic one, because the
+    // receipt has the truth either way and a wrong guess sends the user after the
+    // wrong problem.
+    const unknown = checkFailureMessage("git.something_new");
+    expect(unknown).toBe(checkFailureMessage(null));
+    expect(unknown).not.toContain("Authentication");
+    expect(unknown).not.toContain("network");
+  });
+
+  it("always points at Activity, whatever the reason", () => {
+    // Every branch has to end somewhere the user can actually go. "Fetch failed"
+    // is not a next step; "the output is in Activity" is, and the receipt drawer
+    // that makes it true already exists.
+    for (const reason of ["git.auth_failed", "net.offline", "git.fetch_failed", null]) {
+      expect(checkFailureMessage(reason)).toContain("Activity");
+    }
   });
 });

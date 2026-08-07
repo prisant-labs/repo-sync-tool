@@ -31,6 +31,21 @@ pub struct CheckResult {
     pub is_dirty: bool,
     pub is_detached: bool,
     pub checked_at: i64,
+    /// Whether the check FAILED operationally, as opposed to completing with a
+    /// policy skip (BL-NI-04).
+    ///
+    /// Additive, and it exists so no consumer has to re-derive the distinction.
+    /// A failed fetch and a deliberate skip both arrive as
+    /// `decision == "skip-with-reason"`, and they must not read the same to a
+    /// user: "skipped, working tree is dirty" is the safety rule doing its job,
+    /// while "could not reach the remote" is a problem. Telling them apart from
+    /// `reason` alone means matching the operational reason codes as strings,
+    /// which is a classification the backend already performs and which a second
+    /// copy in TypeScript could only drift from.
+    ///
+    /// `true` for an auth, network, or otherwise non-zero fetch. `false` for
+    /// every policy decision, including every skip.
+    pub failed: bool,
 }
 
 /// Event payload emitted when a check completes (the slimmer broadcast form).
@@ -42,6 +57,15 @@ pub struct CheckCompletedPayload {
     pub ahead: Option<i64>,
     pub behind: Option<i64>,
     pub checked_at: i64,
+    /// The typed reason, when there is one, so a window that did not initiate the
+    /// check learns WHY it ended that way rather than only that it ended.
+    pub reason: Option<String>,
+    /// Whether the check failed operationally. See [`CheckResult::failed`].
+    ///
+    /// Before BL-NI-04 this payload could not carry either field for the simple
+    /// reason that it was never emitted for a failure at all: the command
+    /// short-circuited on the error first.
+    pub failed: bool,
 }
 
 // =============================================================================
