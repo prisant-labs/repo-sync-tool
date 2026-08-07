@@ -22,11 +22,21 @@ export function useSummaryToday() {
   return useAsync(() => unwrap(commands.summaryToday()), []);
 }
 
-/** Activity-log rows (newest first), re-run when the filter changes. */
+/**
+ * Activity-log rows (newest first), re-run when the filter changes.
+ *
+ * `clearDataOnDepsChange` is ON here and off everywhere else. The deps ARE the
+ * filter, so holding the previous result across a change would render the old
+ * filter's rows underneath the newly active controls: selecting "Failed" would
+ * briefly list successful entries, and clearing a filter that matched nothing
+ * would briefly claim "No activity yet". This is the audit trail, so a moment of
+ * showing the wrong rows is worse than a moment of showing none.
+ */
 export function useActivity(filter: ActivityFilter) {
   return useAsync(
     () => unwrap(commands.activityList(filter)),
     [filter.repoId, filter.actionType, filter.status, filter.limit],
+    { clearDataOnDepsChange: true },
   );
 }
 

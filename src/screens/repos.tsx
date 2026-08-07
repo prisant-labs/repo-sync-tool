@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
+import { FilterChip } from "@/components/filter-chip";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
 import { IntelSignals } from "@/components/intel-signals";
@@ -265,40 +266,6 @@ export function ReposScreen({
 
       <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
     </div>
-  );
-}
-
-function FilterChip({
-  label,
-  count,
-  active,
-  tone,
-  onClick,
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  tone?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
-        active
-          ? "border-primary bg-primary/10 text-primary"
-          : "border-border text-muted-foreground hover:bg-muted",
-      )}
-    >
-      <span className={cn(!active && tone)}>{label}</span>
-      <span
-        className={cn("rounded-full px-1.5 font-mono text-[10px]", active ? "bg-primary/15" : "bg-muted")}
-      >
-        {count}
-      </span>
-    </button>
   );
 }
 
