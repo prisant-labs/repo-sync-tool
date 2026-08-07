@@ -858,9 +858,22 @@ where
     //    transient failure, computes three, and pauses a repo that had
     //    demonstrably just recovered. Three strikes fired on one real failure.
     //
-    //    Reading here is atomic in the way that matters even though it is a
-    //    separate statement from the write: every writer of this repo's failure
-    //    state holds this repo's mutex, and this job is holding it.
+    //    Reading here is a separate statement from the write, and that is safe
+    //    WITHIN THIS PROCESS: every writer of this repo's failure state holds
+    //    this repo's mutex, and this job is holding it. There are exactly three
+    //    such writers (`clear_failure_state`, `run_update_inner`'s combined
+    //    UPDATE, and `DbOutcomeWriter::record`) and all three run under it.
+    //
+    //    The scope of that guarantee is worth stating rather than implying.
+    //    `RepoLocks` is an in-memory map, so it serializes one process only, and
+    //    nothing currently stops a user launching RepoSync twice against the same
+    //    WAL database. A second instance could write between this read and the
+    //    write below. That is NOT specific to this counter, though: two instances
+    //    would also double-fetch every repo, interleave activity rows, and run two
+    //    schedulers over one due set, so making this one read-modify-write
+    //    database-atomic would buy a false sense of safety while the larger
+    //    problem stayed. The singleton guard is the actual fix and is filed as
+    //    BL-NI-73.
     //
     //    A failed read falls back to the snapshot, which is exactly the old
     //    behavior and never worse than it. Refusing to classify because a
