@@ -560,11 +560,39 @@ product, and its data posture follows from that directly:
 
 ## 15. Troubleshooting
 
+**Start in Activity.** Before reaching for a log file, the Activity screen
+answers most "why did that not work" questions on its own, because it records
+every check and update RepoSync has run along with what git actually said.
+
+Two rows of filter chips sit above the list. The first narrows to **checks** or
+**updates**, the second to **succeeded** or **failed**, and combining them
+("updates", "failed") is usually the fastest way to find the run you are looking
+for. The filtering happens in the database rather than over the rows already on
+screen, so a filtered view searches your whole history, not just the most recent
+page of it. When the list is showing only the newest matches, it says so at the
+bottom, so a full screen of entries is never mistaken for the complete record.
+
+**Select any row for its receipt.** The drawer shows the exact command RepoSync
+ran, everything git printed on both its output streams, the exit code, and how
+long it took. That is the raw evidence, not a summary of it: if a check failed,
+the reason it failed is in there verbatim. Credentials are stripped from that
+output before it is stored, so what you see is what is on disk, and the caution
+below about local paths applies to it as well.
+
+**When a check fails, RepoSync now says which kind of failure it was.** A failed
+check is reported as a completed check that went wrong, not as an error that
+vanishes: the repository detail view names the cause (a credential problem, an
+unreachable remote, or something else) and points you here for the rest. A
+"Check All Now" run in which several repositories failed reports once for the
+whole run rather than once per repository, and names the most actionable problem
+it saw, since a credential failure will not fix itself and a dropped network
+usually will.
+
 **Something went wrong while you weren't watching, and you want to know what.**
-RepoSync keeps a diagnostic log. This is the place to look when a check failed
-overnight, a repo stopped updating, or the app did something you can't
-reproduce on demand, because those failures happen with no window open to
-report them in.
+RepoSync keeps a diagnostic log. This is the place to look when Activity is not
+enough: a failure that happened before a repository was even reached, a check
+that failed overnight, or the app doing something you can't reproduce on demand,
+because those failures happen with no window open to report them in.
 
 The logs live next to your data, in `logs/` under the app data directory. On
 Windows that is `%LOCALAPPDATA%\RepoSync\logs\`, one file per day named

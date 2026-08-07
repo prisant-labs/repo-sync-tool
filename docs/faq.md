@@ -103,7 +103,9 @@ There is **no telemetry, no crash reporting, and no cloud sync.** RepoSync makes
 outbound network calls beyond the Git fetches and the optional unauthenticated GitHub
 metadata lookups that you configure. The activity log shows the exact commands it ran,
 so nothing is hidden: select any row in **Activity** for the full receipt, including
-git's own output on both streams, the exit code, and how long it took.
+git's own output on both streams, the exit code, and how long it took. The list can be
+narrowed to checks or updates and to successes or failures, and that filtering runs over
+your whole history rather than only the entries currently on screen.
 
 ## Is it safe to point at many repos?
 
