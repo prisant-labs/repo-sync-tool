@@ -120,11 +120,24 @@ pub struct LogConfig {
 /// non-zero byte count is the positive evidence that the whole pipe, subscriber
 /// to worker thread to file, carried something.
 ///
+/// WHAT THIS STILL CANNOT SEE, stated because a diagnostic that overclaims is
+/// the problem it was written to fix. `tracing_appender::non_blocking` defaults
+/// to LOSSY (`is_lossy: true`): when its bounded channel is full it DROPS events
+/// rather than blocking the caller. A dropped event never reaches this writer at
+/// all, so it costs no bytes and raises no failure, and the counters below stay
+/// perfectly healthy while output is being lost. That trade is the right one for
+/// a tray app, since blocking a git operation to write a log line would be worse
+/// than losing the line, but it means these counters answer "is the WRITER
+/// working" and not "did every event reach disk". The second question needs the
+/// dropped-event count, which this version of the crate does not expose.
+///
 /// Atomics rather than a mutex because the writer runs on the appender's worker
 /// thread and the reader is an IPC command on another: this is counted on a hot
 /// path and read rarely, so the cheapest correct thing wins. `Relaxed` ordering
 /// is sufficient because these are independent counters, not a protocol; nothing
-/// reads one to decide something about another.
+/// reads one to decide something about another. A reader can therefore observe a
+/// failure count one tick before its timestamp, which is harmless: the count is
+/// what triggers the warning, and the timestamp only refines the wording.
 #[derive(Debug, Default)]
 pub struct LogHealth {
     /// Write or flush errors seen by the appender since startup.
