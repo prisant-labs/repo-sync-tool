@@ -60,15 +60,21 @@ A Personal Access Token stored in the OS keyring (to raise the GitHub rate limit
 
 ## Which platforms are supported?
 
-Windows is the supported platform for V1 GA. It is built and validated on Windows
-first, and Windows is the real "done" bar.
+**Windows is the only supported platform.** It is built, tested, and dogfooded there,
+and Windows is the real "done" bar.
 
-macOS is a first-class long-term goal and the codebase is built to be cross-platform,
-but for now the macOS build only **compiles and bundles in CI**. It is not yet
-human-validated or signed, because full macOS support is gated on real Mac hardware
-access. Treat macOS as "coming, kept honest in CI" rather than "shipping today." See
-the architecture brief for why this split exists
+**macOS is experimental and unsupported.** The codebase is cross-platform and the macOS
+build is kept compiling and bundling in CI so it does not rot, but no one has ever run
+it on real Mac hardware, and it is neither signed nor notarized, so Gatekeeper will
+refuse to open it without an explicit override. There is no packaged macOS download
+today. If you are on macOS you can build from source, but treat the result as
+unvalidated: a macOS bug may sit unanswered for want of hardware to reproduce it.
+Full support is gated on Mac hardware access and on Apple Developer Program enrollment
+for notarization, neither of which exists yet. See the architecture brief for why this
+split exists
 ([v1-architecture-and-decisions.md, Section 2](internal/v1-architecture-and-decisions.md)).
+
+**Linux is not a target.**
 
 ## Where is my data stored?
 
