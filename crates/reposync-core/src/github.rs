@@ -1756,6 +1756,79 @@ mod tests {
         );
     }
 
+    /// The DEFAULTS matter more than the parse, and had no test.
+    ///
+    /// `remaining` defaults high on purpose: it is the value the backoff decision
+    /// reads, so a default of 0 would make every response that omits the header
+    /// look rate-limited. GitHub does send these on the unauthenticated path, but
+    /// a proxy, a cached 304, or an error response need not, and the failure mode
+    /// would be the enrichment quietly switching itself off with no error anywhere
+    /// - the user would just see release and PR counts stop updating.
+    #[test]
+    fn rate_limit_from_defaults_high_when_headers_are_absent() {
+        let rl = ReqwestTransport::rate_limit_from(&reqwest::header::HeaderMap::new());
+        assert_eq!(
+            rl.remaining,
+            i64::MAX,
+            "a missing remaining header must never read as rate-limited"
+        );
+        assert_eq!(rl.limit, 60, "the documented unauthenticated limit");
+        assert_eq!(rl.reset_at, 0);
+    }
+
+    /// A header present but unparseable must fall back to the same safe default,
+    /// not to zero and not by panicking.
+    ///
+    /// This is the case a strict parser gets wrong: `"unknown"` or an empty value
+    /// is not a number, and treating "I could not read it" as "none left" is the
+    /// same silent shutdown as above, reached by a different route.
+    #[test]
+    fn rate_limit_from_falls_back_on_an_unparseable_header() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("x-ratelimit-remaining", "not-a-number".parse().unwrap());
+        h.insert("x-ratelimit-limit", "".parse().unwrap());
+        h.insert("x-ratelimit-reset", "12.5".parse().unwrap());
+        let rl = ReqwestTransport::rate_limit_from(&h);
+        assert_eq!(rl.remaining, i64::MAX);
+        assert_eq!(rl.limit, 60);
+        assert_eq!(rl.reset_at, 0, "a non-integer reset is not a reset time");
+    }
+
+    /// `etag_of` had no test at all, and it gates the entire conditional-request
+    /// path: no etag means no `If-None-Match`, which means every refresh is a full
+    /// response and spends real budget instead of returning 304.
+    #[test]
+    fn etag_of_reads_the_header_or_reports_absence() {
+        let mut h = reqwest::header::HeaderMap::new();
+        assert_eq!(
+            ReqwestTransport::etag_of(&h),
+            None,
+            "absent must be None, not an empty string: an empty If-None-Match is a \
+             different request from sending none"
+        );
+
+        h.insert("etag", "\"abc123\"".parse().unwrap());
+        assert_eq!(
+            ReqwestTransport::etag_of(&h).as_deref(),
+            Some("\"abc123\""),
+            "the quotes are part of the entity tag and must survive round-tripping \
+             back into If-None-Match"
+        );
+    }
+
+    /// A header whose bytes are not valid ASCII must read as absent rather than
+    /// panic. `to_str()` fails on such a value, and the `.ok()` is what turns that
+    /// into "no etag" instead of unwinding inside a background refresh.
+    #[test]
+    fn etag_of_treats_a_non_ascii_header_as_absent() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            "etag",
+            reqwest::header::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        );
+        assert_eq!(ReqwestTransport::etag_of(&h), None);
+    }
+
     // --- RateBudgeter (E-17 AC16) -------------------------------------------
 
     #[test]
