@@ -489,6 +489,91 @@ mod tests {
         );
     }
 
+    /// The attention query must fire on state a REAL failing run produced, not only
+    /// on state a test fabricated.
+    ///
+    /// The test above is a good query test and a misleading coverage signal, and the
+    /// difference is worth naming because it hid a live bug for months. It calls
+    /// `seed_state`, a raw-SQL helper in this module's own `#[cfg(test)]` block, and
+    /// that helper was the ONLY thing in the entire tree that ever wrote
+    /// `repo_local_state.last_error_code`. Production wrote it nowhere. So the error
+    /// half of `WHERE last_error_code IS NOT NULL OR is_dirty = 1` could never fire
+    /// against real data: a repo that had been failing to fetch for a week was
+    /// reported as needing attention only if it also happened to be dirty. Every
+    /// assertion above still passed, because the fixture supplied the very value the
+    /// production path was failing to produce.
+    ///
+    /// This test closes that loop by driving the scheduler's own `DbOutcomeWriter`
+    /// and then reading through `summary_today`. It spans two modules on purpose:
+    /// the defect lived in the seam between them, so a test confined to either side
+    /// could not see it.
+    #[tokio::test]
+    async fn attention_fires_on_state_the_real_outcome_writer_produced() {
+        use crate::ipc::RepoId;
+        use crate::policy::RepoStatus;
+        use crate::scheduler::{DbOutcomeWriter, DueRepo, OutcomeWriter};
+
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+
+        let failing = seed_repo(&pool, "failing").await;
+        let healthy = seed_repo(&pool, "healthy").await;
+        // The state rows the writer will UPDATE. No error code is seeded: every
+        // value this test asserts on has to come from the production path.
+        for id in [failing, healthy] {
+            sqlx::query(
+                "INSERT INTO repo_local_state (repo_id, consecutive_failures, auto_paused) \
+                 VALUES (?, 0, 0)",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let writer = DbOutcomeWriter::new(pool.clone());
+        let due = |id: i64| DueRepo {
+            id: RepoId(id),
+            check_frequency_min: 60,
+            consecutive_failures: 0,
+        };
+
+        writer
+            .record(&due(healthy), w.start_unix, RepoStatus::Active)
+            .await
+            .unwrap();
+        writer
+            .record(&due(failing), w.start_unix, RepoStatus::PausedOnAuth)
+            .await
+            .unwrap();
+
+        let s = summary_today(&pool, &w).await.unwrap();
+        assert_eq!(
+            s.attention_count, 1,
+            "a repo the scheduler recorded an auth failure against must need attention, \
+             and a healthy one must not"
+        );
+        assert_eq!(s.attention[0].repo_id, failing);
+        assert_eq!(
+            s.attention[0].detail.as_deref(),
+            Some("git.auth_failed"),
+            "the summary's human-facing hint must carry the code the scheduler persisted"
+        );
+
+        // And it must LEAVE the list once the repo recovers, through the same path.
+        writer
+            .record(&due(failing), w.start_unix, RepoStatus::Active)
+            .await
+            .unwrap();
+        let s = summary_today(&pool, &w).await.unwrap();
+        assert_eq!(
+            s.attention_count, 0,
+            "a recovered repo must drop out of attention; a code that never clears \
+             would pin it there forever"
+        );
+    }
+
     #[tokio::test]
     async fn day_window_is_half_open_start_inclusive_end_exclusive() {
         // The day boundary is `[start, end)`: a row at `start` counts, a row at `end`

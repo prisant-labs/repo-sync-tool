@@ -928,14 +928,23 @@ impl OutcomeWriter for DbOutcomeWriter {
         let freq = effective_frequency_min(repo.check_frequency_min, global_default);
         let next = next_check_at(now_unix, freq);
         let (consecutive_failures, auto_paused) = persist_columns(status);
+        // `last_error_code` is written from the SAME classifier the edge uses for
+        // the `repo:state-changed` payload (`policy::status_error_code`), so the
+        // persisted fact and the live event cannot disagree. Writing `None` on a
+        // healthy run is load-bearing, not incidental: it is what clears a stale
+        // code once a repo recovers, and `summary`'s needs-attention query tests
+        // `last_error_code IS NOT NULL`, so a code that never clears would pin a
+        // recovered repo to the attention list forever.
         sqlx::query(
             "UPDATE repo_local_state \
-             SET next_check_at = ?, consecutive_failures = ?, auto_paused = ? \
+             SET next_check_at = ?, consecutive_failures = ?, auto_paused = ?, \
+             last_error_code = ? \
              WHERE repo_id = ?",
         )
         .bind(next)
         .bind(consecutive_failures)
         .bind(if auto_paused { 1_i64 } else { 0_i64 })
+        .bind(crate::policy::status_error_code(status))
         .bind(repo.id.0)
         .execute(&self.pool)
         .await?;
@@ -2322,6 +2331,128 @@ mod tests {
             read_next_check_at(&pool, overridden).await,
             Some(now + 45 * 60),
             "a positive per-repo override wins over the global cadence"
+        );
+    }
+
+    /// `DbOutcomeWriter::record` must PERSIST the run's error code, and must clear
+    /// it again when the repo recovers.
+    ///
+    /// This is the regression guard for a column that was declared in migration
+    /// 0001, read by `store::repo_list`, `store::repo_get`, and `summary`'s
+    /// needs-attention query, and written by NOTHING in production. The only write
+    /// anywhere in the tree was a raw-SQL helper inside `summary`'s own `#[cfg(test)]`
+    /// block, which is exactly why the gap survived: the summary test seeded the
+    /// column by hand and so proved its query could READ a value that the real code
+    /// never produced.
+    ///
+    /// The clearing half matters as much as the writing half. `summary`'s attention
+    /// query tests `last_error_code IS NOT NULL`, so a code that is written on
+    /// failure and never cleared would pin a recovered repo to the attention list
+    /// permanently, which is a worse bug than the one being fixed.
+    #[tokio::test]
+    async fn db_outcome_writer_persists_and_clears_last_error_code() {
+        async fn insert_repo(pool: &SqlitePool, name: &str) -> i64 {
+            let id = sqlx::query(
+                "INSERT INTO repos (local_name, local_path, created_at, check_frequency_min) \
+                 VALUES (?, ?, 0, 60)",
+            )
+            .bind(name)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+            sqlx::query(
+                "INSERT INTO repo_local_state (repo_id, consecutive_failures, auto_paused) \
+                 VALUES (?, 0, 0)",
+            )
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+            id
+        }
+
+        async fn read_error_code(pool: &SqlitePool, id: i64) -> Option<String> {
+            sqlx::query("SELECT last_error_code FROM repo_local_state WHERE repo_id = ?")
+                .bind(id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("last_error_code")
+                .unwrap()
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = crate::db::open_pool(&tmp.path().join("errcode.db"))
+            .await
+            .unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let repo = insert_repo(&pool, "errcode").await;
+        let writer = DbOutcomeWriter::new(pool.clone());
+        let now = 1_000_000i64;
+        let due = |failures: i64| DueRepo {
+            id: RepoId(repo),
+            check_frequency_min: 60,
+            consecutive_failures: failures,
+        };
+
+        // Baseline: the column starts NULL, which is what made the dead-write
+        // invisible - it looked exactly like "no failures yet" forever.
+        assert_eq!(read_error_code(&pool, repo).await, None);
+
+        // A transient failure persists the transient code.
+        writer
+            .record(
+                &due(0),
+                now,
+                RepoStatus::Retry {
+                    consecutive_failures: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            read_error_code(&pool, repo).await.as_deref(),
+            Some("git.fetch_failed"),
+            "a retryable failure must persist its error code, not just put it on the event"
+        );
+
+        // An auth failure overwrites it with the DISTINCT auth code. The two must
+        // not collapse: the policy engine pauses immediately on auth and retries
+        // with backoff on network, so a reader that cannot tell them apart cannot
+        // explain why one repo paused and another did not.
+        writer
+            .record(&due(1), now, RepoStatus::PausedOnAuth)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_error_code(&pool, repo).await.as_deref(),
+            Some("git.auth_failed"),
+            "an auth pause must be distinguishable from a transient failure in the persisted column"
+        );
+
+        // Auto-pause after the third strike keeps a failure code on record.
+        writer
+            .record(&due(2), now, RepoStatus::AutoPaused)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_error_code(&pool, repo).await.as_deref(),
+            Some("git.fetch_failed")
+        );
+
+        // Recovery CLEARS it. Without this the repo stays in the summary's
+        // needs-attention list forever.
+        writer
+            .record(&due(0), now, RepoStatus::Active)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_error_code(&pool, repo).await,
+            None,
+            "a healthy run must clear the error code, or a recovered repo never leaves the attention list"
         );
     }
 
