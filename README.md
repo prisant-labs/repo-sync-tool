@@ -32,26 +32,28 @@ A repo that is dirty, detached, divergent, or otherwise outside policy is report
 
 RepoSync is local-first: your data stays in a local SQLite database, there is **no telemetry**, and **no account is required**. The only network calls are to your own Git remotes and, optionally, to the public GitHub API for release and pull-request counts.
 
-## Status: pre-release, and honest about it
+## Status: public beta, and honest about it
 
-RepoSync works and is used daily by its author, but it is **not yet packaged for general consumption.** Read this before installing.
+RepoSync is in **public beta**. It works, it is actively developed, and it is used daily by its author, but it is **not yet packaged to the standard a stranger should expect.** Read this table before installing.
 
 | | Status |
 |---|---|
 | **Windows** | The genuinely supported target. Built, tested, and dogfooded. |
-| **macOS** | Compiles and bundles in CI, but is **unsigned** and has **not been validated on real hardware**. Treat it as experimental. |
+| **macOS** | **Experimental and unsupported.** Compiles and bundles in CI so the codebase does not rot, but it has **never been run on real Mac hardware by anyone**, and it is neither signed nor notarized. No packaged macOS download is published. Build from source if you want to try it, and expect Gatekeeper to block it. |
 | **Linux** | Not a target. |
-| **Installers** | **Unsigned.** Windows will show a SmartScreen "unknown publisher" warning. There is no Authenticode certificate yet. |
-| **Auto-updater** | Wired but deliberately **dark**. It ships with a placeholder signing key and will not fetch or apply updates. Update by downloading a new release manually. |
-| **Latest release** | [v0.9.0](https://github.com/prisant-labs/repo-sync-tool/releases/tag/v0.9.0), marked pre-release. |
+| **Installers** | **Unsigned.** Windows will show a SmartScreen "unknown publisher" warning on first run. There is no Authenticode certificate yet. |
+| **Auto-updater** | Wired but deliberately **dark**. It ships with a placeholder signing key and will not fetch or apply updates. **Update by downloading a new release manually; the in-app updater will not notice one.** |
+| **Latest release** | [v0.9.0](https://github.com/prisant-labs/repo-sync-tool/releases/tag/v0.9.0), marked pre-release. Windows artifacts only. |
 
-None of that is an oversight. Code signing and updater key custody are deliberate, human-gated steps that have not happened yet, and shipping an unsigned binary while claiming otherwise would be the real problem. When they land, this table changes and the release stops being a pre-release.
+None of that is an oversight. Code signing, Apple enrollment, and updater key custody are deliberate, human-gated steps that cost money or legal identity and have not happened yet. Shipping an unsigned binary while claiming otherwise would be the real problem. When they land, this table changes.
 
 ## Install
 
 Download the Windows installer from the [Releases page](https://github.com/prisant-labs/repo-sync-tool/releases). Both NSIS (`.exe`) and MSI artifacts are produced; the NSIS installer is the one the updater path is built around.
 
-Expect a SmartScreen warning on first run, per the table above. If that is not acceptable to you, build from source instead.
+**Expect a SmartScreen warning on first run.** Windows will say "Windows protected your PC" and name an unknown publisher. Click **More info**, then **Run anyway**. That warning is the honest consequence of an unsigned installer, and it will keep appearing until an Authenticode certificate exists. If that is not acceptable to you, build from source instead, which is the better choice anyway if you are the sort of person who reads the code first.
+
+On **macOS** there is nothing to download. If you build from source, the result is unsigned and un-notarized, so Gatekeeper will refuse to open it. Right-click the app and choose **Open**, or clear the quarantine attribute with `xattr -dr com.apple.quarantine /Applications/RepoSync.app`. Only do that for a build you produced yourself: clearing quarantine on a downloaded binary is exactly the step an attacker needs you to take.
 
 ## Build from source
 

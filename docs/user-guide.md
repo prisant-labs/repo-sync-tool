@@ -64,30 +64,50 @@ don't develop" mental model:
 
 ## 2. Install and first run
 
-**Platform status for this release.** RepoSync v0.9.0 is Windows-first: the
-Windows build is the fully supported target, packaged as an installer (both MSI
-and NSIS installer artifacts come out of the build; the auto-updater path in
-particular is built around the NSIS installer, see
-[section 11](#11-auto-update-honest-about-where-it-stands)). macOS is kept
-**compiling and bundling in CI** so the codebase does not rot on that platform,
-but it is not distributed as a signed, ready-to-run build in v0.9.0. If you are
-on macOS today, you can build from source, but there is no packaged download
-for you yet.
+**Platform status for this release.** RepoSync is in **public beta**: it works,
+it is actively developed, and it is used daily by its author, but it is not yet
+packaged to the standard a stranger should expect from a finished product.
 
-**This is a private, unsigned build.** RepoSync is an open-source (MIT)
-personal utility, not a commercial product, and this release ships privately
-before a later public flip. Two practical consequences:
+- **Windows** is the supported target, packaged as an installer (both MSI and
+  NSIS installer artifacts come out of the build; the auto-updater path in
+  particular is built around the NSIS installer, see
+  [section 11](#11-auto-update-honest-about-where-it-stands)).
+- **macOS is experimental and unsupported.** The codebase is cross-platform and
+  the macOS build is kept compiling and bundling in CI so it does not rot, but it
+  has **never been run on real Mac hardware by anyone**, and it is neither signed
+  nor notarized. No packaged macOS download is published today: the v0.9.0
+  release carries Windows artifacts only. If you are on macOS, build from source
+  and read the Gatekeeper note below. Nothing about the macOS path is supported,
+  and a macOS bug report may sit unanswered for want of hardware to reproduce it.
+- **Linux** is not a target.
+
+**This is an unsigned build.** RepoSync is an open-source (MIT) personal
+utility, not a commercial product. Two practical consequences:
 
 - The Windows installer is **not code-signed**. Windows SmartScreen will warn
   "Windows protected your PC" / "unknown publisher" the first time you run it.
   This is expected and documented, not a sign anything is wrong; you'll need to
   click "More info" then "Run anyway." Code signing is planned as a fast-follow,
   not shipped yet.
-- Because the repository is private while it stays this way, the in-app
-  auto-updater cannot yet reach its update server (more in
-  [section 11](#11-auto-update-honest-about-where-it-stands)). It is fully
-  built and will start working the moment the project goes public, with no
-  reinstall required.
+- On macOS, a build you produce yourself is unsigned and un-notarized, so
+  **Gatekeeper will refuse to open it** with "RepoSync.app is damaged and can't
+  be opened" or "cannot be opened because the developer cannot be verified."
+  That message is Gatekeeper's generic wording for "no valid signature," not a
+  statement about the file's integrity. To run it anyway, either right-click the
+  app and choose **Open** (then confirm in the dialog), or clear the quarantine
+  attribute from a terminal:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/RepoSync.app
+  ```
+
+  Only do that for a build you produced yourself from source you have read.
+  Clearing quarantine on a binary you downloaded from anywhere is exactly the
+  step an attacker needs you to take, and RepoSync cannot help you tell the
+  difference.
+- The in-app auto-updater is **dark** and will stay dark until a production
+  signing key exists. It is not waiting on anything that will resolve on its own.
+  See [section 11](#11-auto-update-honest-about-where-it-stands).
 
 **First run.** The first time you launch RepoSync, your library is empty and
 the Dashboard and Repos screens both show a plain "No repositories yet" empty
@@ -407,21 +427,24 @@ touches telemetry or an account, the update channel is a public GitHub
 Release manifest, checked anonymously.
 
 **What's honestly not live yet:** this v0.9.0 build ships with the updater
-**disabled in practice**, "dark" is the internal term for it, because two
-things haven't happened yet: the repository is still private (so the update
-manifest can't actually be downloaded even by an unauthenticated request), and
-the production cryptographic signing key that would authorize real update
-artifacts hasn't been generated and installed yet, that step is deliberately
-a human-only action, not something automated. Until both of those land,
-"Check for updates" will honestly report **"Could not reach the update
-server"**, phrased gently rather than as an alarming error, because from the
-app's point of view that's exactly what's happening: the endpoint isn't
-reachable yet.
+**disabled in practice**, "dark" is the internal term for it. It originally had
+two causes: the repository was private, so the update manifest could not be
+downloaded even anonymously, and no production signing key existed. **The first
+cause is gone** (the repository has been public since 2026-07-17) and updating
+did **not** start working, which is the useful thing to know: the remaining
+blocker is the signing key, and it is not a condition that resolves on its own.
 
-The mechanism itself is fully built and end-to-end tested against a local
-test channel, so once the project goes public and the signing key is in
-place, updating will simply start working for existing installs with no
-reinstall and no code change required on your end.
+Generating that key and installing it is deliberately a human-only action, not
+something automated, because whoever holds it can authorize an update that every
+installed copy will trust. Until it exists, the app ships with a placeholder
+public key, no release carries update artifacts or a `latest.json` manifest, and
+"Check for updates" will honestly report **"Could not reach the update server"**,
+phrased gently rather than as an alarming error, because from the app's point of
+view that is exactly what is happening.
+
+The mechanism itself is fully built and end-to-end tested against a local test
+channel. **Until the key lands, update by downloading a new release manually.**
+Do not wait for the in-app updater to notice; it cannot.
 
 ## 12. Settings reference
 
