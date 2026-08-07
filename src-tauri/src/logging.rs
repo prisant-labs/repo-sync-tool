@@ -18,7 +18,7 @@ use std::sync::Arc;
 use reposync_core::logging as core_logging;
 use reposync_core::paths::AppPaths;
 use tracing::level_filters::LevelFilter;
-use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::non_blocking::{ErrorCounter, WorkerGuard};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::time::UtcTime;
 
@@ -120,24 +120,33 @@ pub struct LogConfig {
 /// non-zero byte count is the positive evidence that the whole pipe, subscriber
 /// to worker thread to file, carried something.
 ///
-/// WHAT THIS STILL CANNOT SEE, stated because a diagnostic that overclaims is
-/// the problem it was written to fix. `tracing_appender::non_blocking` defaults
-/// to LOSSY (`is_lossy: true`): when its bounded channel is full it DROPS events
-/// rather than blocking the caller. A dropped event never reaches this writer at
-/// all, so it costs no bytes and raises no failure, and the counters below stay
-/// perfectly healthy while output is being lost. That trade is the right one for
-/// a tray app, since blocking a git operation to write a log line would be worse
-/// than losing the line, but it means these counters answer "is the WRITER
-/// working" and not "did every event reach disk". The second question needs the
-/// dropped-event count, which this version of the crate does not expose.
+/// THE THIRD FAILURE MODE, which the writer itself cannot see.
+/// `tracing_appender::non_blocking` defaults to LOSSY (`is_lossy: true`): when
+/// its bounded channel fills it DROPS the line, increments its own counter, and
+/// returns success. That drop happens UPSTREAM of this writer, so it costs no
+/// bytes and raises no failure here, and `write_failures` can sit at zero with
+/// `bytes_written` climbing while events disappear.
+///
+/// Keeping lossy mode is the right call: the alternative exerts backpressure on
+/// whatever thread emitted the event, which for this app means blocking a git
+/// operation so a log line can be written. But "the writer is healthy" and "no
+/// events were lost" are then different claims, and `dropped_lines` carries the
+/// second so the card is not left implying it. The count comes from
+/// `NonBlocking::error_counter()`, which the pinned crate does expose.
 ///
 /// Atomics rather than a mutex because the writer runs on the appender's worker
-/// thread and the reader is an IPC command on another: this is counted on a hot
-/// path and read rarely, so the cheapest correct thing wins. `Relaxed` ordering
-/// is sufficient because these are independent counters, not a protocol; nothing
-/// reads one to decide something about another. A reader can therefore observe a
-/// failure count one tick before its timestamp, which is harmless: the count is
-/// what triggers the warning, and the timestamp only refines the wording.
+/// thread and the reader is an IPC command on another: counted on a hot path,
+/// read rarely, so the cheapest correct thing wins.
+///
+/// The failure count and its timestamp are NOT independent, and are ordered
+/// accordingly: `record_failure` stores the timestamp first and publishes the
+/// count with `Release`, and `write_failures()` loads with `Acquire`. Relaxed on
+/// both would let a reader see a positive count with the timestamp still zero,
+/// and since the card renders "N failed, last {relativeTime}" and
+/// `relativeTime(null)` is the string "never", the visible result is
+/// "1 failed, last never" - a diagnostic contradicting itself in the one place
+/// someone looks when they already suspect a problem. `bytes_written` genuinely
+/// is independent and stays Relaxed.
 #[derive(Debug, Default)]
 pub struct LogHealth {
     /// Write or flush errors seen by the appender since startup.
@@ -146,11 +155,22 @@ pub struct LogHealth {
     last_failure_unix: AtomicI64,
     /// Bytes the appender reported writing. The positive-evidence counter.
     bytes_written: AtomicU64,
+    /// The non-blocking queue's own dropped-line counter, captured at init.
+    ///
+    /// `Option` because it only exists once `non_blocking` has been built, and
+    /// the tests construct a bare `LogHealth` to exercise the writer half. A
+    /// `None` here means "not wired", which is why the accessor returns `Option`
+    /// rather than a confident zero.
+    dropped: Option<ErrorCounter>,
 }
 
 impl LogHealth {
     pub fn write_failures(&self) -> u64 {
-        self.write_failures.load(AtomicOrdering::Relaxed)
+        // Acquire pairs with the Release in `record_failure`, so a caller that
+        // sees a non-zero count is guaranteed to see the timestamp stored just
+        // before it. Without that pairing the card can render "1 failed, last
+        // never".
+        self.write_failures.load(AtomicOrdering::Acquire)
     }
 
     /// The most recent failure, or `None` if there has not been one.
@@ -165,18 +185,47 @@ impl LogHealth {
         self.bytes_written.load(AtomicOrdering::Relaxed)
     }
 
+    /// Lines the non-blocking queue discarded because its buffer was full.
+    ///
+    /// Distinct from `write_failures` and reported separately, because the two
+    /// mean different things to whoever is reading: a write failure is the disk
+    /// refusing, a dropped line is RepoSync choosing to lose the line rather
+    /// than block the work that produced it. Only the first suggests the machine
+    /// is broken.
+    pub fn dropped_lines(&self) -> u64 {
+        self.dropped
+            .as_ref()
+            .map(|c| c.dropped_lines() as u64)
+            .unwrap_or(0)
+    }
+
+    fn with_dropped_counter(mut self, counter: ErrorCounter) -> Self {
+        self.dropped = Some(counter);
+        self
+    }
+
     fn record_success(&self, bytes: usize) {
         self.bytes_written
             .fetch_add(bytes as u64, AtomicOrdering::Relaxed);
     }
 
     fn record_failure(&self) {
-        self.write_failures.fetch_add(1, AtomicOrdering::Relaxed);
+        // Timestamp FIRST, then publish the count with Release. The reader loads
+        // the count with Acquire before reading the timestamp, so a positive
+        // count always comes with the timestamp that belongs to it.
+        //
+        // The other order is a real defect rather than a theoretical one: the
+        // card renders "N failed, last {relativeTime(timestamp)}", and
+        // `relativeTime(null)` is the string "never". Incrementing first lets a
+        // reader land between the two writes and display "1 failed, last never",
+        // which is a diagnostic contradicting itself in the one place a user
+        // looks when they already suspect something is wrong.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
         self.last_failure_unix.store(now, AtomicOrdering::Relaxed);
+        self.write_failures.fetch_add(1, AtomicOrdering::Release);
     }
 }
 
@@ -329,6 +378,14 @@ pub fn init(paths: &AppPaths) -> Result<(LogGuard, LogConfig), String> {
         health: Arc::clone(&health),
     };
     let (writer, worker) = tracing_appender::non_blocking(counting);
+    // Capture the queue's own dropped-line counter before the writer is moved
+    // into the subscriber. This is the ONLY view of events discarded upstream of
+    // the CountingWriter, which never sees them at all.
+    let health = Arc::new(
+        Arc::try_unwrap(health)
+            .unwrap_or_else(|_| unreachable!("health is not shared until after this point"))
+            .with_dropped_counter(writer.error_counter()),
+    );
 
     let level = level_from_env(std::env::var(LOG_LEVEL_ENV).ok().as_deref());
 
@@ -597,5 +654,48 @@ mod tests {
             None,
             "zero must read as never, not as an epoch timestamp"
         );
+    }
+
+    /// The failure count and its timestamp must be coherent to any reader.
+    ///
+    /// Relaxed on both let a reader observe a positive count with the timestamp
+    /// still zero, and because the card renders "N failed, last {relativeTime}"
+    /// and `relativeTime(null)` is "never", the visible result was
+    /// "1 failed, last never": a diagnostic contradicting itself in the one place
+    /// someone looks when they already suspect a problem. The store/Release,
+    /// load/Acquire pairing is what makes that unobservable.
+    #[test]
+    fn a_positive_failure_count_always_carries_a_timestamp() {
+        let health = Arc::new(LogHealth::default());
+        let mut w = CountingWriter {
+            inner: FlakyWriter {
+                ok_writes: 0,
+                written: 0,
+            },
+            health: Arc::clone(&health),
+        };
+        assert!(w.write(b"x").is_err());
+
+        // Single-threaded here, so this pins the INVARIANT rather than the race:
+        // whenever the count is positive the timestamp is set. The ordering in
+        // `record_failure` is what extends that to a concurrent reader.
+        assert!(health.write_failures() > 0);
+        assert!(
+            health.last_failure_unix().is_some(),
+            "a failure count without its timestamp renders as \"last never\""
+        );
+    }
+
+    /// Dropped lines are a THIRD state and default to zero when not wired.
+    ///
+    /// A bare `LogHealth` has no queue behind it, and reporting a confident 0
+    /// there is correct: nothing has been dropped because nothing is running.
+    /// The real counter is captured in `init` from `NonBlocking::error_counter()`,
+    /// which is the only view of events discarded UPSTREAM of this writer, where
+    /// they cost no bytes and raise no failure.
+    #[test]
+    fn dropped_lines_defaults_to_zero_without_a_queue() {
+        let health = LogHealth::default();
+        assert_eq!(health.dropped_lines(), 0);
     }
 }

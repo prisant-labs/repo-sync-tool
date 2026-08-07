@@ -18,6 +18,7 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
     logWriteFailures: 0,
     logLastWriteFailureAt: null,
     logBytesWritten: 4096,
+    logDroppedLines: 0,
     onedriveRooted: false,
     gitPath: "C:\\Program Files\\Git\\cmd\\git.exe",
     gitVersion: "2.40.1",
@@ -175,5 +176,21 @@ describe("formatDiagnosticsReport, log write health", () => {
     const report = formatDiagnosticsReport(diagnostics({ loggingActive: false }));
     expect(report).not.toContain("log writes:");
     expect(report).toContain("DID NOT START");
+  });
+});
+
+describe("formatDiagnosticsReport, dropped log lines", () => {
+  it("reports drops separately from write failures", () => {
+    // A third state, and it means something different: a write failure is the
+    // disk refusing, a dropped line is RepoSync choosing to lose the line rather
+    // than stall the work that produced it. Only the first suggests a broken
+    // machine, so they must not be collapsed into one number.
+    const report = formatDiagnosticsReport(diagnostics({ logDroppedLines: 12 }));
+    expect(report).toContain("12 DROPPED");
+    expect(report).not.toContain("WRITE FAILURES");
+  });
+
+  it("says nothing about drops when there are none", () => {
+    expect(formatDiagnosticsReport(diagnostics())).not.toContain("DROPPED");
   });
 });

@@ -133,7 +133,9 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
               ? `${d.logWriteFailures} failed, last ${relativeTime(d.logLastWriteFailureAt)}`
               : d.logBytesWritten === 0
                 ? "nothing written yet"
-                : `${formatBytes(d.logBytesWritten)} written`}
+                : `${formatBytes(d.logBytesWritten)} written${
+                    d.logDroppedLines > 0 ? `, ${d.logDroppedLines} dropped` : ""
+                  }`}
           </Mono>
         </Row>
       )}
@@ -231,6 +233,16 @@ function Warnings({ d }: { d: Diagnostics }) {
     // removed it.
     items.push(
       "Logging started but the folder contains no log files. Events may not be reaching disk.",
+    );
+  }
+  if (d.logDroppedLines > 0) {
+    // A separate condition from a write failure, and phrased to say which it is.
+    // A dropped line is RepoSync choosing to lose output rather than stall the
+    // work that produced it, so the disk is fine and the log simply has holes.
+    // Calling that a write failure would send someone to check permissions on a
+    // folder that is working correctly.
+    items.push(
+      `${d.logDroppedLines} log line(s) were dropped because RepoSync was producing them faster than they could be written. The log has gaps; nothing is broken.`,
     );
   }
   if (d.onedriveRooted) {

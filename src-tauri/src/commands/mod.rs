@@ -889,6 +889,9 @@ fn build_diagnostics(
         log_bytes_written: log_config
             .map(|c| c.health.bytes_written() as i64)
             .unwrap_or(0),
+        log_dropped_lines: log_config
+            .map(|c| c.health.dropped_lines() as i64)
+            .unwrap_or(0),
         onedrive_rooted: paths.is_onedrive_rooted(),
         git_path: git_exe.map(|p| p.display().to_string()),
         git_version,

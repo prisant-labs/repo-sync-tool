@@ -65,7 +65,9 @@ export function formatDiagnosticsReport(d: Diagnostics): string {
               d.logLastWriteFailureAt,
             )})`
           : ""
-      }${d.logBytesWritten === 0 ? " [NOTHING HAS REACHED THE WRITER]" : ""}`
+      }${d.logBytesWritten === 0 ? " [NOTHING HAS REACHED THE WRITER]" : ""}${
+        d.logDroppedLines > 0 ? `, ${d.logDroppedLines} DROPPED` : ""
+      }`
     : null;
 
   return [

@@ -446,6 +446,18 @@ export type Diagnostics = {
 	 */
 	logBytesWritten: number,
 	/**
+	 *  Log lines the non-blocking queue DISCARDED because its buffer was full.
+	 * 
+	 *  A third state, distinct from both counters above and reported separately
+	 *  because it means something different to whoever reads it. A write failure
+	 *  is the disk refusing; a dropped line is RepoSync choosing to lose the line
+	 *  rather than block the work that produced it. Only the first suggests the
+	 *  machine is broken. The queue is lossy on purpose: the alternative exerts
+	 *  backpressure on the emitting thread, which here would mean stalling a git
+	 *  operation so a log line could be written.
+	 */
+	logDroppedLines: number,
+	/**
 	 *  Whether the data directory sits under a OneDrive-synced tree, where a sync
 	 *  agent can corrupt the SQLite WAL sidecars mid-write (BL-NI-12).
 	 */
