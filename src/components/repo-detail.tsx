@@ -448,7 +448,15 @@ function Focal({
           disabled={isBusy}
           onClick={onCheckNow}
         >
-          <RefreshCw className={busy === "retry" ? "animate-spin" : undefined} /> Retry check
+          {/*
+            "check", not "retry". Both this button and the header's "Check now"
+            run the same handler, which sets the busy key to "check"; the two
+            differ only in where they sit and what they say. Left as "retry" the
+            spinner would simply never appear, which is the least visible kind of
+            regression: the click works, the state updates, and the only thing
+            missing is the feedback that it is running.
+          */}
+          <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Retry check
         </Button>
       </>
     );
