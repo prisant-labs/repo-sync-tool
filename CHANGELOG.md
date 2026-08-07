@@ -23,6 +23,13 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   exits either way.
 
 ### Added
+- **Activity can be filtered by action and outcome.** Two rows of chips above the
+  list narrow it to checks or updates, and to successes or failures, so finding
+  the one failed update for one repository no longer means scrolling. The filter
+  runs in the database, not over the rows already on screen, so "show me failures"
+  searches the whole log rather than the most recent page of it. The list also now
+  says when it is showing only the newest matching entries, instead of leaving a
+  full page looking like the complete history.
 - **Activity entries open a full receipt.** Selecting a row in Activity shows
   what RepoSync actually ran, what git printed back on both streams, the exit
   code, and how long it took. RepoSync has always recorded this; nothing
@@ -59,6 +66,30 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   history or a smaller footprint.
 
 ### Fixed
+- **A repository whose checks are failing now actually appears in "Needs
+  attention", and shows as failed in the Repos list.** It previously appeared
+  only if it also happened to have uncommitted changes. The error code every one
+  of those views reads was declared in the database and read in three places, and
+  nothing ever wrote it, so it was empty forever: a repository that had been
+  unable to reach its remote for a week looked healthy everywhere except the
+  activity log. The failure reason is now recorded whenever a check or update
+  fails, and cleared again when the repository recovers.
+- **A failed check now reports itself instead of disappearing.** Checking a
+  repository whose fetch fails used to raise an error that stopped the completion
+  from being announced at all, so other open views never learned the check had
+  finished and the tray's "Check All Now" did not count it. A failed check is now
+  a completed check that reports what went wrong, carrying the reason with it, and
+  the repository detail view says which of the three causes it was (credentials,
+  network, or something else) and points at the Activity receipt for the exact
+  git output. A run of "Check All Now" in which some repositories failed reports
+  once for the whole run rather than once per repository, and names the most
+  actionable problem it saw: a credential failure is reported ahead of a network
+  failure, because the first will not fix itself.
+- **A manual update that recovers a repository now lifts everything together.**
+  Clearing the error, the failure streak, and the automatic pause used to be two
+  separate writes, so a failure between them could leave a repository paused out
+  of scheduled checking while looking healthy in every view that would have told
+  you about it.
 - **Adding a repository is now atomic.** Previously the registry row and its
   local-state row were written separately, so a failure between them left a
   repository that would list forever, never record a check, never report an
