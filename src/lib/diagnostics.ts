@@ -1,4 +1,5 @@
 import type { Diagnostics } from "@/lib/bindings";
+import { relativeTime } from "@/lib/status";
 
 /**
  * Formatting for the Settings -> Diagnostics card.
@@ -52,11 +53,29 @@ export function formatDiagnosticsReport(d: Diagnostics): string {
         d.loggingActive && d.logFileCount === 0 ? " [NOTHING WRITTEN]" : ""
       }`;
 
+  // What the writer has actually DONE, as opposed to whether it started
+  // (BL-NI-63). The byte count is reported even when it is healthy, because the
+  // absence of failures is not by itself evidence of anything: a writer that has
+  // written nothing also has no failures. A number here is the proof that the
+  // subscriber, the worker thread, and the file are all connected.
+  const writes = d.loggingActive
+    ? `log writes: ${formatBytes(d.logBytesWritten)} written${
+        d.logWriteFailures > 0
+          ? `, ${d.logWriteFailures} WRITE FAILURES (last ${relativeTime(
+              d.logLastWriteFailureAt,
+            )})`
+          : ""
+      }${d.logBytesWritten === 0 ? " [NOTHING HAS REACHED THE WRITER]" : ""}${
+        d.logDroppedLines > 0 ? `, ${d.logDroppedLines} DROPPED` : ""
+      }`
+    : null;
+
   return [
     `RepoSync ${d.appVersion}`,
     `git: ${git}`,
     `logging: ${logging}`,
     files,
+    writes,
     `log dir: ${d.logDir}`,
     `data dir: ${d.dataDir}${d.onedriveRooted ? " [ONEDRIVE-SYNCED]" : ""}`,
     `db: ${d.dbPath}${d.dbRecovered ? " [RECOVERED AT STARTUP]" : ""}`,

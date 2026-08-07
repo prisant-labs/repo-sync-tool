@@ -4,6 +4,7 @@ import { AlertTriangle, ClipboardCopy, FolderOpen, RefreshCw } from "lucide-reac
 import { commands } from "@/lib/bindings";
 import type { Diagnostics } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
+import { relativeTime } from "@/lib/status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { AsyncPanel } from "@/components/async-panel";
@@ -116,6 +117,28 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
           <Mono tone="warn">folder unreadable</Mono>
         )}
       </Row>
+      {/*
+        What the writer has DONE, as distinct from whether it started. "Logging
+        running" above reports that the subscriber installed at startup, which is
+        a fact about one moment; this row reports the writes since. The byte count
+        shows even when healthy, because no-failures is not evidence on its own:
+        a writer that has written nothing also has no failures.
+      */}
+      {d.loggingActive && (
+        <Row label="Log writes" hint="What has actually reached the file since launch.">
+          <Mono
+            tone={d.logWriteFailures > 0 || d.logBytesWritten === 0 ? "warn" : undefined}
+          >
+            {d.logWriteFailures > 0
+              ? `${d.logWriteFailures} failed, last ${relativeTime(d.logLastWriteFailureAt)}`
+              : d.logBytesWritten === 0
+                ? "nothing written yet"
+                : `${formatBytes(d.logBytesWritten)} written${
+                    d.logDroppedLines > 0 ? `, ${d.logDroppedLines} dropped` : ""
+                  }`}
+          </Mono>
+        </Row>
+      )}
 
       <Row label="Data folder" hint="Settings, the repo registry, and the activity history.">
         <Mono>{d.onedriveRooted ? "OneDrive-synced" : "local"}</Mono>
@@ -184,14 +207,42 @@ function Warnings({ d }: { d: Diagnostics }) {
     items.push(
       "The log folder cannot be read. Logging started, but RepoSync can no longer see the folder it writes to.",
     );
+  } else if (d.logWriteFailures > 0) {
+    // Direct evidence now, rather than the inference below it (BL-NI-63). The
+    // writer itself counts its io errors, so this is the writer reporting a
+    // failure rather than the UI deducing one from an empty folder. It is
+    // ordered ABOVE the file-count check because it is the more specific fact:
+    // a folder can be empty for several reasons, but a non-zero failure count
+    // has exactly one meaning, and it means events have been lost.
+    items.push(
+      `The log writer has failed ${d.logWriteFailures} time(s), most recently ${relativeTime(
+        d.logLastWriteFailureAt,
+      )}. Some events have been lost, and the log itself cannot tell you about it.`,
+    );
+  } else if (d.logBytesWritten === 0) {
+    // Installed, no errors, and nothing written. Silence that looks exactly
+    // like health, which is the condition `loggingActive` is structurally
+    // unable to distinguish from working.
+    items.push(
+      "Logging started but nothing has reached the writer. The startup banner alone should have produced output.",
+    );
   } else if (d.logFileCount === 0) {
-    // The observable contradiction. `tracing_appender` writes on a worker
-    // thread and reports no errors, so "logging started" stays true forever
-    // once it is true. The one thing that can be checked live is whether
-    // anything actually landed - and the startup banner alone should have
-    // produced a file.
+    // Kept as a backstop below the two direct checks above. The counters can
+    // only report what the writer saw; this catches the case where writes were
+    // accepted and the file is gone anyway, for instance because something else
+    // removed it.
     items.push(
       "Logging started but the folder contains no log files. Events may not be reaching disk.",
+    );
+  }
+  if (d.logDroppedLines > 0) {
+    // A separate condition from a write failure, and phrased to say which it is.
+    // A dropped line is RepoSync choosing to lose output rather than stall the
+    // work that produced it, so the disk is fine and the log simply has holes.
+    // Calling that a write failure would send someone to check permissions on a
+    // folder that is working correctly.
+    items.push(
+      `${d.logDroppedLines} log line(s) were dropped because RepoSync was producing them faster than they could be written. The log has gaps; nothing is broken.`,
     );
   }
   if (d.onedriveRooted) {

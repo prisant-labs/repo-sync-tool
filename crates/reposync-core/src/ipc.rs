@@ -141,6 +141,34 @@ pub struct Diagnostics {
     pub log_file_count: i64,
     /// Bytes those files occupy right now.
     pub log_bytes: i64,
+    /// Write or flush errors the log writer has hit since launch (BL-NI-63).
+    ///
+    /// The counterpart `logging_active` cannot provide. That flag reports that the
+    /// subscriber INSTALLED, a fact about one moment during startup; this reports
+    /// what the writer has done since. Non-zero means events have been lost, and
+    /// the log is by definition not the place to find out about it.
+    pub log_write_failures: i64,
+    /// Unix seconds of the most recent write failure, or `None` for none.
+    /// Distinguishes "broken since launch" from "broke ten minutes ago".
+    pub log_last_write_failure_at: Option<i64>,
+    /// Bytes the writer has successfully written since launch.
+    ///
+    /// The POSITIVE evidence, and the reason this is not just a failure counter.
+    /// Zero failures is equally consistent with "working" and "nothing was ever
+    /// written", and only the second is a problem. A non-zero value here is proof
+    /// the whole path (subscriber, worker thread, file) carried something, which
+    /// is the claim `logging_active` looks like it is making and is not.
+    pub log_bytes_written: i64,
+    /// Log lines the non-blocking queue DISCARDED because its buffer was full.
+    ///
+    /// A third state, distinct from both counters above and reported separately
+    /// because it means something different to whoever reads it. A write failure
+    /// is the disk refusing; a dropped line is RepoSync choosing to lose the line
+    /// rather than block the work that produced it. Only the first suggests the
+    /// machine is broken. The queue is lossy on purpose: the alternative exerts
+    /// backpressure on the emitting thread, which here would mean stalling a git
+    /// operation so a log line could be written.
+    pub log_dropped_lines: i64,
     /// Whether the data directory sits under a OneDrive-synced tree, where a sync
     /// agent can corrupt the SQLite WAL sidecars mid-write (BL-NI-12).
     pub onedrive_rooted: bool,
