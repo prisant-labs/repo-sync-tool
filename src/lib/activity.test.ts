@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityRecord } from "@/lib/bindings";
-import { formatReceipt } from "@/lib/activity";
+import { ACTIVITY_PAGE_LIMIT, formatReceipt, toActivityFilter } from "@/lib/activity";
 
 /**
  * The receipt string is what a user pastes into a bug report, so a field
@@ -111,5 +111,73 @@ describe("formatReceipt", () => {
   it("keeps a zero exit code rather than treating it as absent", () => {
     expect(formatReceipt(record({ exitCode: 0 }), "r")).toContain("exit: 0");
     expect(formatReceipt(record({ durationMs: 0 }), "r")).toContain("duration: 0 ms");
+  });
+});
+
+/**
+ * `toActivityFilter` maps two chip selections onto the wire filter, and the one
+ * rule that matters is that "all" becomes `null` rather than the string "all".
+ *
+ * The backend treats a null field as "no constraint" and applies a literal
+ * equality comparison otherwise. Sending "all" would therefore ask for rows
+ * whose `action_type` is the string "all", of which there are none, and the
+ * screen would render the empty state. That failure is nasty precisely because
+ * it is not loud: an empty Activity screen is indistinguishable from a fresh
+ * install, so the bug reads as "the filter works, I just have no activity".
+ */
+describe("toActivityFilter", () => {
+  it("maps the unfiltered selection to all-null, not to the string 'all'", () => {
+    expect(toActivityFilter("all", "all")).toEqual({
+      repoId: null,
+      actionType: null,
+      status: null,
+      limit: ACTIVITY_PAGE_LIMIT,
+    });
+  });
+
+  it("passes a concrete action type through and leaves status unconstrained", () => {
+    expect(toActivityFilter("update", "all")).toEqual({
+      repoId: null,
+      actionType: "update",
+      status: null,
+      limit: ACTIVITY_PAGE_LIMIT,
+    });
+  });
+
+  it("passes a concrete status through and leaves action type unconstrained", () => {
+    expect(toActivityFilter("all", "failed")).toEqual({
+      repoId: null,
+      actionType: null,
+      status: "failed",
+      limit: ACTIVITY_PAGE_LIMIT,
+    });
+  });
+
+  it("combines both axes independently", () => {
+    expect(toActivityFilter("check", "success")).toEqual({
+      repoId: null,
+      actionType: "check",
+      status: "success",
+      limit: ACTIVITY_PAGE_LIMIT,
+    });
+  });
+
+  it("always sends an explicit limit, so the backend default is never silently in play", () => {
+    // The core's own default is 200 and its ceiling is 1000. The screen's cap is
+    // a frontend choice, and the truncation notice in the UI is written against
+    // THIS number, so the two must not be able to drift apart.
+    expect(toActivityFilter("all", "all").limit).toBe(ACTIVITY_PAGE_LIMIT);
+    expect(ACTIVITY_PAGE_LIMIT).toBeGreaterThan(0);
+  });
+
+  it("never scopes to a repo, since no control sets one yet", () => {
+    // Guards against a future edit wiring repoId here without also adding the
+    // control and the label that say the view is scoped. A silently repo-scoped
+    // audit trail is worse than an unscoped one.
+    for (const a of ["all", "check", "update"] as const) {
+      for (const s of ["all", "success", "failed"] as const) {
+        expect(toActivityFilter(a, s).repoId).toBeNull();
+      }
+    }
   });
 });
