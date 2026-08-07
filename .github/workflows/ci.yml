@@ -300,52 +300,6 @@ jobs:
           fi
           echo "git $num satisfies the >= 2.30 floor."
 
-      # Pin git EXACTLY, for this job only (BL-NI-03).
-      #
-      # This is the only job that needs it. The E-04 fixture harness cross-checks
-      # git2 reads against `git` CLI porcelain, so its assertions are written
-      # against one version's exact output; the fast `build` job never runs those
-      # fixtures and is deliberately left on the floor check so the hot pull-request
-      # path does not pay for a package install.
-      #
-      # `choco upgrade`, not `choco install`. That distinction is the whole of
-      # BL-NI-03: the hosted image ships git preinstalled, `choco install git
-      # --version=X` errors out on an already-installed package, and the row
-      # recorded that as the mechanism failing. `upgrade` is chocolatey's verb for
-      # "this package exists, put this version there", and `--allow-downgrade`
-      # covers the runner image being AHEAD of the pin, which it usually is.
-      #
-      # The assertion after it is not optional politeness. A silent no-op here
-      # would leave the harness running against whatever the image happened to
-      # ship while the log claimed a pin, which is worse than not pinning: the
-      # fixtures would drift and the failure would surface as an unexplained
-      # porcelain mismatch weeks later.
-      #
-      # THE COST, stated so it is not a surprise later: this makes GIT_VERSION a
-      # maintained dependency. Chocolatey does not keep every historical version
-      # forever, so when that version ages out this job fails and someone must
-      # bump the pin AND re-record any fixture output that changed. That is the
-      # actual price of byte-stability, and paying it visibly is the point.
-      - name: Pin git to the exact E-04 target
-        shell: bash
-        run: |
-          echo "Pinning git to $GIT_VERSION for the fixture harness."
-          choco upgrade git --version="$GIT_VERSION" -y --allow-downgrade --no-progress
-          # Chocolatey installs into a path the current shell may not have picked
-          # up yet; re-resolve rather than trusting the cached PATH entry.
-          hash -r || true
-          installed="$(git --version)"
-          echo "Now: $installed"
-          num="$(echo "$installed" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
-          if [ "$num" != "$GIT_VERSION" ]; then
-            echo "::error::git is $num but the fixture harness targets $GIT_VERSION."
-            echo "::error::The pin did not take. Either the version is no longer in chocolatey"
-            echo "::error::(bump GIT_VERSION and re-record any changed fixture output), or the"
-            echo "::error::install landed somewhere not on PATH. See BL-NI-03 in docs/backlog.md."
-            exit 1
-          fi
-          echo "git is pinned at $num."
-
       # rust-toolchain.toml is the single source of truth for the compiler version.
       # dtolnay/rust-toolchain does NOT read that file (it derives the toolchain from
       # its @rev, or from an explicit `toolchain` input), so read the pin out and pass
