@@ -1758,12 +1758,21 @@ mod tests {
 
     /// The DEFAULTS matter more than the parse, and had no test.
     ///
-    /// `remaining` defaults high on purpose: it is the value the backoff decision
-    /// reads, so a default of 0 would make every response that omits the header
-    /// look rate-limited. GitHub does send these on the unauthenticated path, but
-    /// a proxy, a cached 304, or an error response need not, and the failure mode
-    /// would be the enrichment quietly switching itself off with no error anywhere
-    /// - the user would just see release and PR counts stop updating.
+    /// What the default actually decides, stated precisely because an earlier
+    /// version of this comment named the wrong mechanism: `fetch_repo` classifies
+    /// a response as `RepoFetch::RateLimited` only when the status is 403 AND
+    /// `rate_limit.remaining <= 0`, and `refresh_pass` BREAKS out of the whole
+    /// pass on that outcome. So a low default would turn any headerless 403 - a
+    /// genuine permission error, a proxy interposing, a blocked request - into
+    /// "rate limited", stopping the refresh for every remaining repo in the pass
+    /// and timing a resume against a reset that was never reported. Defaulting
+    /// high keeps such a response on the `NetworkLost` path, where it costs one
+    /// repo instead of the pass.
+    ///
+    /// It does NOT decide proactive backoff. `should_backoff` reads the same
+    /// field and would be the mechanism for stopping BEFORE the limit is hit, but
+    /// it has no production caller (see BL-NI-69), so a successful response with a
+    /// nearly-exhausted budget does not slow the pass down today.
     #[test]
     fn rate_limit_from_defaults_high_when_headers_are_absent() {
         let rl = ReqwestTransport::rate_limit_from(&reqwest::header::HeaderMap::new());
@@ -1780,8 +1789,9 @@ mod tests {
     /// not to zero and not by panicking.
     ///
     /// This is the case a strict parser gets wrong: `"unknown"` or an empty value
-    /// is not a number, and treating "I could not read it" as "none left" is the
-    /// same silent shutdown as above, reached by a different route.
+    /// is not a number, and treating "I could not read it" as "none left" reaches
+    /// the same pass-stopping 403 misclassification described above by a different
+    /// route.
     #[test]
     fn rate_limit_from_falls_back_on_an_unparseable_header() {
         let mut h = reqwest::header::HeaderMap::new();
