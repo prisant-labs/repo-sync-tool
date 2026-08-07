@@ -201,13 +201,27 @@ pub fn candidate_paths_from_env(explicit: Option<&str>) -> Vec<PathBuf> {
 /// conditions: nothing configured is normal, and no git at all is
 /// [`crate::git::GitAvailability::Unavailable`] and already reported.
 ///
-/// Comparison is deliberately lenient rather than canonicalizing. Both sides are
-/// host paths a user typed or the app discovered, not attacker input, and
-/// `canonicalize` would need the file to still exist, which is precisely not
-/// guaranteed in the case worth catching. Separators are normalized and, on
+/// WHY FALSE POSITIVES ARE STRUCTURALLY UNLIKELY, which matters more than the
+/// comparison being clever: [`candidate_paths`] pushes the explicit value
+/// VERBATIM (`PathBuf::from(p.trim())`), and `git_exe()` returns whichever
+/// candidate resolved. So when the configured path works, the resolved value IS
+/// the configured string, and this compares a string against itself, immune to
+/// formatting. A mismatch means a DIFFERENT candidate won, which is exactly the
+/// condition worth reporting. That is the real guarantee; the normalization below
+/// is a second belt for the case where a future change starts transforming the
+/// candidate on the way through.
+///
+/// Comparison is therefore deliberately lenient rather than canonicalizing.
+/// `canonicalize` would need the file to still exist, which is precisely what is
+/// not guaranteed in the case worth catching. Separators are normalized and, on
 /// Windows, case is ignored, because `C:\Program Files\Git\cmd\git.exe` and
 /// `c:/program files/git/cmd/git.exe` are the same file and flagging them as a
 /// mismatch would train the user to ignore the warning.
+///
+/// One case that looks like a false positive and is not: a user who pastes a
+/// QUOTED path. The quoted candidate genuinely fails to spawn, RepoSync genuinely
+/// falls back, and "configured path ignored" is both true and the actionable
+/// thing to say.
 pub fn explicit_path_honored(explicit: &str, resolved: &std::path::Path) -> bool {
     fn normalize(p: &str) -> String {
         let flat = p.trim().replace('\\', "/");
