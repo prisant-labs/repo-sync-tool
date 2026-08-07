@@ -427,6 +427,30 @@ pub trait OutcomeWriter: Send + Sync {
         now_unix: i64,
         status: RepoStatus,
     ) -> impl std::future::Future<Output = Result<(), AppError>> + Send;
+
+    /// The repo's CURRENT consecutive-failure count, read fresh (BL-NI-72).
+    ///
+    /// The count on [`DueRepo`] is a snapshot taken by the due query, before the
+    /// job acquired the repo's mutex. Anything that cleared the streak in between
+    /// is invisible to it, and `check_now` / `update_now` both clear it on
+    /// success, under the very mutex the job was waiting on.
+    ///
+    /// This lives on the writer rather than being passed in because [`run_job`]
+    /// is deliberately pool-free: the persistence seam is the only participant
+    /// that can read the row.
+    ///
+    /// A failing read is not fatal. The caller falls back to the snapshot, which
+    /// is the behavior that existed before this method and is never worse than
+    /// it: refusing to classify an outcome because a bookkeeping read failed
+    /// would turn a stale number into a lost check.
+    /// Takes the whole [`DueRepo`] rather than just an id so an implementation
+    /// that cannot read a store (the test fake) can fall back to the snapshot on
+    /// it, leaving every scheduler test that stages a failure count meaning
+    /// exactly what it meant before this method existed.
+    fn current_failures(
+        &self,
+        repo: &DueRepo,
+    ) -> impl std::future::Future<Output = Result<i64, AppError>> + Send;
 }
 
 // =============================================================================
@@ -821,9 +845,40 @@ where
     // job"), read here from the injected clock - NOT from the tick-start time,
     // which would schedule a slow repo's next check in the past and busy-loop it.
     let completed = clock.now_unix();
-    // 4. Classify via the E-07 failure state machine (using the prior count read
-    //    with the due repo) and persist the outcome (a short txn).
-    let status = classify_failure(repo.consecutive_failures, outcome);
+    // 4. Classify via the E-07 failure state machine and persist the outcome
+    //    (a short txn).
+    //
+    //    The prior count is RE-READ here rather than taken from `repo`
+    //    (BL-NI-72). The count on `DueRepo` was snapshotted by the due query,
+    //    before this job acquired the repo's mutex, and `check_now` /
+    //    `update_now` both CLEAR the streak on success under that same mutex.
+    //    Using the stale value produced a false auto-pause: a repo at two
+    //    failures is selected as due, a manual check wins the mutex and succeeds
+    //    and resets it to zero, this job then runs with its stale two, hits one
+    //    transient failure, computes three, and pauses a repo that had
+    //    demonstrably just recovered. Three strikes fired on one real failure.
+    //
+    //    Reading here is atomic in the way that matters even though it is a
+    //    separate statement from the write: every writer of this repo's failure
+    //    state holds this repo's mutex, and this job is holding it.
+    //
+    //    A failed read falls back to the snapshot, which is exactly the old
+    //    behavior and never worse than it. Refusing to classify because a
+    //    bookkeeping read failed would turn a stale number into a lost check.
+    let prior_failures = match outcome_writer.current_failures(&repo).await {
+        Ok(current) => current,
+        Err(e) => {
+            tracing::warn!(
+                event = crate::logging::event::SCHEDULER_OUTCOME_PERSIST_FAILED,
+                repo_id = repo.id.0,
+                error = %e,
+                "could not re-read the failure count; classifying against the \
+                 due-query snapshot, which may be stale"
+            );
+            repo.consecutive_failures
+        }
+    };
+    let status = classify_failure(prior_failures, outcome);
     // BL-NI-14: the failure is still ABSORBED here - the cycle continues and the
     // repo simply stays due and retries - but it is now carried out of the job
     // as a value as well as into the log. The log line remains the record a user
@@ -967,6 +1022,21 @@ impl OutcomeWriter for DbOutcomeWriter {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn current_failures(&self, repo: &DueRepo) -> Result<i64, AppError> {
+        // A repo whose state row is missing reads as zero rather than erroring.
+        // That is the same answer a fresh repo gives, and it is the safe one: the
+        // alternative would auto-pause off a number nobody wrote.
+        let row =
+            sqlx::query("SELECT consecutive_failures FROM repo_local_state WHERE repo_id = ?")
+                .bind(repo.id.0)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row
+            .map(|r| r.try_get::<i64, _>("consecutive_failures"))
+            .transpose()?
+            .unwrap_or(0))
     }
 }
 
@@ -1588,6 +1658,12 @@ mod tests {
         inst: Option<Instrument>,
         recorded: Arc<StdMutex<Vec<(i64, i64, RepoStatus)>>>,
         failing_ids: Arc<Vec<i64>>,
+        /// Failure counts the STORE would report, standing in for a value some
+        /// other path changed after the due query snapshotted it (BL-NI-72).
+        staged_failures: HashMap<i64, i64>,
+        /// Make the re-read fail, to prove the caller falls back rather than
+        /// losing the check.
+        failures_read_fails: bool,
     }
     impl FakeOutcomeWriter {
         fn new() -> FakeOutcomeWriter {
@@ -1595,6 +1671,8 @@ mod tests {
                 inst: None,
                 recorded: Arc::new(StdMutex::new(Vec::new())),
                 failing_ids: Arc::new(Vec::new()),
+                staged_failures: HashMap::new(),
+                failures_read_fails: false,
             }
         }
         fn instrumented(inst: Instrument) -> FakeOutcomeWriter {
@@ -1602,6 +1680,8 @@ mod tests {
                 inst: Some(inst),
                 recorded: Arc::new(StdMutex::new(Vec::new())),
                 failing_ids: Arc::new(Vec::new()),
+                staged_failures: HashMap::new(),
+                failures_read_fails: false,
             }
         }
         /// A writer whose `record` returns `Err` for the listed repo ids and
@@ -1611,7 +1691,24 @@ mod tests {
                 inst: None,
                 recorded: Arc::new(StdMutex::new(Vec::new())),
                 failing_ids: Arc::new(ids.to_vec()),
+                staged_failures: HashMap::new(),
+                failures_read_fails: false,
             }
+        }
+
+        /// Stage the count the STORE would report for a repo, as distinct from
+        /// the snapshot on its `DueRepo`. That divergence is the whole of
+        /// BL-NI-72.
+        fn with_store_failures(mut self, repo_id: i64, current: i64) -> FakeOutcomeWriter {
+            self.staged_failures.insert(repo_id, current);
+            self
+        }
+
+        /// Make the re-read fail, to prove the job falls back to the snapshot
+        /// rather than losing the check over a bookkeeping error.
+        fn with_failing_failure_read(mut self) -> FakeOutcomeWriter {
+            self.failures_read_fails = true;
+            self
         }
         fn recorded(&self) -> Vec<(i64, i64, RepoStatus)> {
             self.recorded.lock().unwrap().clone()
@@ -1647,6 +1744,25 @@ mod tests {
                 }
             }
             Ok(())
+        }
+
+        /// Returns whatever the test staged for this repo, falling back to the
+        /// snapshot on the `DueRepo`.
+        ///
+        /// The fallback is what keeps every pre-existing scheduler test meaning
+        /// what it meant: none of them stage anything, so they all classify
+        /// against the same number they always did.
+        async fn current_failures(&self, repo: &DueRepo) -> Result<i64, AppError> {
+            if self.failures_read_fails {
+                return Err(AppError::Unexpected {
+                    context: format!("induced failure-count read error for {}", repo.id.0),
+                });
+            }
+            Ok(self
+                .staged_failures
+                .get(&repo.id.0)
+                .copied()
+                .unwrap_or(repo.consecutive_failures))
         }
     }
 
@@ -2916,6 +3032,97 @@ mod tests {
             recorded,
             vec![1, 3],
             "the two healthy repos still recorded their outcomes"
+        );
+    }
+
+    /// A job must classify against the CURRENT failure count, not the one the due
+    /// query snapshotted (BL-NI-72).
+    ///
+    /// The scenario, which is ordinary rather than exotic: a repo sits at two
+    /// consecutive failures and is selected as due. Before the job takes its
+    /// mutex, a manual check or a tray "Check All Now" wins the lock, succeeds,
+    /// and clears the streak to zero. The job then runs and hits ONE transient
+    /// failure.
+    ///
+    /// Against the stale snapshot that is 2 + 1 = 3, the three-strikes threshold,
+    /// and the repo is persisted `auto_paused` and silently stops being checked,
+    /// having demonstrably recovered a moment earlier. Against the current count
+    /// it is 0 + 1 = 1: a retry, which is the truth.
+    #[tokio::test]
+    async fn a_job_classifies_against_the_current_failure_count_not_the_snapshot() {
+        let inst = Instrument::default();
+        // The due query saw 2; the store now says 0, because something cleared it.
+        let writer = FakeOutcomeWriter::new().with_store_failures(7, 0);
+        let handle = writer.clone();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![DueRepo {
+                    id: RepoId(7),
+                    check_frequency_min: 60,
+                    consecutive_failures: 2,
+                }]),
+            },
+            FakeJobRunner::with_outcomes(
+                inst.clone(),
+                HashMap::from([(7, RunOutcome::NetworkFailure)]),
+            ),
+            writer,
+            4,
+        );
+
+        sched.tick_once().await.expect("tick");
+
+        let recorded = handle.recorded();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].2,
+            RepoStatus::Retry {
+                consecutive_failures: 1
+            },
+            "one failure after a recovery is a RETRY; classifying against the stale              snapshot makes it the third strike and auto-pauses a healthy repo"
+        );
+    }
+
+    /// The snapshot is still the fallback when the re-read fails.
+    ///
+    /// A bookkeeping read that errors must not cost the check its classification.
+    /// Falling back reproduces exactly the behavior that existed before the
+    /// re-read, which is stale but never worse than losing the outcome.
+    #[tokio::test]
+    async fn a_failed_failure_count_read_falls_back_to_the_snapshot() {
+        let inst = Instrument::default();
+        let writer = FakeOutcomeWriter::new().with_failing_failure_read();
+        let handle = writer.clone();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![DueRepo {
+                    id: RepoId(7),
+                    check_frequency_min: 60,
+                    consecutive_failures: 2,
+                }]),
+            },
+            FakeJobRunner::with_outcomes(
+                inst.clone(),
+                HashMap::from([(7, RunOutcome::NetworkFailure)]),
+            ),
+            writer,
+            4,
+        );
+
+        sched.tick_once().await.expect("the tick must not fail");
+
+        let recorded = handle.recorded();
+        assert_eq!(recorded.len(), 1, "the outcome is still recorded");
+        assert_eq!(
+            recorded[0].2,
+            RepoStatus::AutoPaused,
+            "with the snapshot of 2, one more failure is the third strike; the              point is that the job still CLASSIFIED rather than dropping the check"
         );
     }
 

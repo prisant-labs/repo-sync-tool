@@ -248,6 +248,13 @@ impl OutcomeWriter for CollectingOutcomeWriter {
         }
         Ok(())
     }
+
+    /// Delegates to the inner DB writer, which is the only participant that can
+    /// read the row (BL-NI-72). This wrapper adds notifications, not persistence,
+    /// so it has nothing of its own to contribute to the answer.
+    async fn current_failures(&self, repo: &DueRepo) -> Result<i64, AppError> {
+        self.inner.current_failures(repo).await
+    }
 }
 
 /// The notifiable-event kind for a persisted [`RepoStatus`], or `None` for a
