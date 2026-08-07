@@ -121,6 +121,11 @@ pub fn emit_check_completed(app: &AppHandle, r: &CheckResult) {
         ahead: r.ahead,
         behind: r.behind,
         checked_at: r.checked_at,
+        // Carried so a window that did not initiate the check learns WHY it ended
+        // that way. Before BL-NI-04 this event simply never fired for a failure,
+        // so there was nothing to carry.
+        reason: r.reason.clone(),
+        failed: r.failed,
     };
     let _ = CheckCompleted(payload).emit(app);
 }

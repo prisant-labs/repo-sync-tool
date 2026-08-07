@@ -221,8 +221,16 @@ pub async fn add(
 /// Re-inspects, fetches (recording the raw command/output even on failure),
 /// computes ahead/behind when an upstream is known, applies the tracer-inline
 /// decision policy, updates `repo_local_state`, and appends an
-/// `activity_records` row. A non-zero fetch records the activity row, then
-/// returns [`AppError::FetchFailed`].
+/// `activity_records` row.
+///
+/// A non-zero fetch returns `Ok(CheckResult)` with `failed: true`, a
+/// `"skip-with-reason"` decision, and the typed reason (BL-NI-04). It does NOT
+/// return `Err`: a check that ran and came back with bad news COMPLETED, and
+/// reporting it as an error short-circuited the completion event so no window
+/// ever heard about the failures anyone actually cares about.
+///
+/// `Err` is reserved for a check that could not RUN: git missing, the path gone,
+/// the directory no longer a working tree.
 ///
 /// This wrapper exists so the two failure classes both leave a record. A SOFT
 /// failure (git ran, came back non-zero) is persisted inside the outcome the
@@ -414,15 +422,30 @@ async fn check_now_inner(
     //    everything below observes a fully-written check.
     tx.commit().await?;
 
-    // 9. A failed fetch records the activity row above, then surfaces the error.
-    //    This runs AFTER the commit so the receipt survives the error return.
-    if let Some(f) = fetch.as_ref().filter(|f| !f.success) {
-        return Err(AppError::FetchFailed {
-            exit_code: f.exit_code,
-            stderr: f.raw_stderr.clone(),
-        });
-    }
-
+    // 9. A failed fetch RETURNS its outcome; it does not raise it (BL-NI-04).
+    //
+    //    This used to `return Err(AppError::FetchFailed { .. })` here, after the
+    //    commit, and that one line had a disproportionate effect. The edge's
+    //    `repo_check_now` calls this with `?` and only then emits
+    //    `repo:check-completed`, so erroring short-circuited the emit and NO
+    //    window ever learned that a failed check had finished. `check_all_enabled`
+    //    routed the same error into its `error:raised` arm and never counted the
+    //    repo as checked. `notify.rs` even carried a comment asserting that the
+    //    manual path emits its own completion event, which was true for every
+    //    outcome except the one people most want to hear about.
+    //
+    //    Everything needed to report it properly was already computed above: step
+    //    5 derives `decision = "skip-with-reason"` and the typed `reason`
+    //    (`git.auth_failed`, `net.offline`, `git.fetch_failed`) from the fetch
+    //    class, and then the error return threw both away. So this is less a
+    //    behavior change than the removal of one that was discarding its own work.
+    //
+    //    `AppError::FetchFailed` is deliberately KEPT in the taxonomy: it is part
+    //    of the frozen tracer-subset wire shape, and callers may still construct
+    //    it. It is simply no longer how a completed-but-failed check reports
+    //    itself. A HARD failure (git missing, path gone) still returns `Err`, and
+    //    that distinction is the point: one is a check that ran and came back
+    //    with bad news, the other is a check that could not run.
     Ok(CheckResult {
         repo_id,
         decision,
@@ -432,6 +455,7 @@ async fn check_now_inner(
         is_dirty: inspect.is_dirty,
         is_detached: inspect.is_detached,
         checked_at: now,
+        failed: fetch_failed,
     })
 }
 
@@ -1614,6 +1638,146 @@ mod tests {
             .execute(pool)
             .await
             .expect("set update_mode");
+    }
+
+    /// A failed fetch must COMPLETE, not error (BL-NI-04).
+    ///
+    /// The distinction this pins is between a check that ran and came back with
+    /// bad news, and a check that could not run. Only the second is an `Err`.
+    /// Returning `Err` for the first is what made failed checks invisible: the
+    /// edge calls this with `?` and only then emits `repo:check-completed`, so the
+    /// error short-circuited the emit and no other window ever heard that a check
+    /// had finished badly. `check_all_enabled` likewise never counted the repo.
+    ///
+    /// Everything the result needed was already computed and then discarded, so
+    /// the assertions check that the decision and the typed reason survive, not
+    /// merely that the call stopped erroring.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn a_failed_fetch_completes_with_a_reason_instead_of_erroring() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping a_failed_fetch_completes_with_a_reason_instead_of_erroring: git missing"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+        set_mode(&pool, id, "fetch_only").await;
+
+        // Break the remote by pointing origin at a path that does not exist:
+        // deterministic, offline-safe, and needs no DNS.
+        let ok = std::process::Command::new("git")
+            .args([
+                "remote",
+                "set-url",
+                "origin",
+                &dbtmp
+                    .path()
+                    .join("definitely-not-a-repo")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            ])
+            .current_dir(fx.working_path())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git remote set-url should succeed");
+
+        let result = check_now(&pool, &git, id)
+            .await
+            .expect("a failed FETCH is a completed check, not an error");
+
+        assert!(result.failed, "the result must say it failed");
+        assert_eq!(
+            result.decision, "skip-with-reason",
+            "the decision computed before the old error return must survive"
+        );
+        let reason = result
+            .reason
+            .expect("a failed fetch always carries a reason");
+        assert!(
+            matches!(
+                reason.as_str(),
+                "git.fetch_failed" | "net.offline" | "git.auth_failed"
+            ),
+            "the reason must come from the frozen fetch-failure vocabulary, got {reason:?}"
+        );
+
+        // The receipt is still written, which was already true and must stay true:
+        // the old code recorded the activity row before erroring, and a refactor
+        // that moved the return could silently drop it.
+        let status: String = sqlx::query(
+            "SELECT status FROM activity_records WHERE repo_id = ? AND action_type = 'check'",
+        )
+        .bind(id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+        .try_get("status")
+        .unwrap();
+        assert_eq!(
+            status, "failed",
+            "the audit trail still records the failure"
+        );
+    }
+
+    /// The inverse: a SUCCESSFUL check must not claim to have failed.
+    ///
+    /// Without this, hardcoding `failed: true` would satisfy the test above, and
+    /// every healthy check would toast an error at the user.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn a_successful_check_is_not_marked_failed() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping a_successful_check_is_not_marked_failed: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+        set_mode(&pool, id, "fetch_only").await;
+
+        let result = check_now(&pool, &git, id).await.expect("check_now ok");
+        assert!(!result.failed, "a healthy check must not report failure");
+    }
+
+    /// A DIRTY repo skips, and that skip must NOT be marked as a failure.
+    ///
+    /// This is the boundary the `failed` flag exists to draw. Both a failed fetch
+    /// and a policy skip arrive as `decision == "skip-with-reason"`, so a consumer
+    /// keying on the decision alone cannot tell them apart. They must not read the
+    /// same to a user: "skipped, the working tree is dirty" is the safety rule
+    /// doing exactly its job, and presenting it as an error would train people to
+    /// ignore the errors that matter.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn a_policy_skip_is_not_a_failure() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping a_policy_skip_is_not_a_failure: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Dirty);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+        set_mode(&pool, id, "pull_ff_only").await;
+
+        let result = check_now(&pool, &git, id).await.expect("check_now ok");
+        assert!(
+            !result.failed,
+            "a dirty-tree skip is the policy working, not an operational failure"
+        );
+        assert!(
+            result.is_dirty,
+            "and the dirty state is still reported on its own field"
+        );
     }
 
     /// A HARD failure on a manual command must still leave an error code behind.

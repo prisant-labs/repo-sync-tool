@@ -92,3 +92,32 @@ export function relativeTime(epochSeconds: number | null): string {
   const days = Math.round(hr / 24);
   return `${days}d ago`;
 }
+
+/**
+ * A human sentence for a failed check's typed reason code.
+ *
+ * A check that failed now RESOLVES rather than rejecting (BL-NI-04), so the
+ * screen decides what to say about it instead of falling back to whatever the
+ * error carried. The codes are the frozen operational set the backend produces
+ * on a non-zero fetch: `git.auth_failed`, `net.offline`, and the catch-all
+ * `git.fetch_failed`.
+ *
+ * Every branch points at the Activity receipt, because that is where the actual
+ * git output now lives, and "check Activity" is a next step the user can take
+ * where "fetch failed" alone is not.
+ *
+ * The `null` and unrecognized branches say the same thing on purpose. A code the
+ * frontend has not been taught is still a failure, and inventing a specific
+ * explanation for it would be worse than admitting the generic one: the receipt
+ * has the truth either way.
+ */
+export function checkFailureMessage(reason: string | null): string {
+  switch (reason) {
+    case "git.auth_failed":
+      return "Authentication failed. RepoSync uses the credentials your system git already has, so check that they are still valid for this remote. The full output is in Activity.";
+    case "net.offline":
+      return "Could not reach the remote. Check the network connection, then try again. The full output is in Activity.";
+    default:
+      return "The fetch failed. Select this repository's newest entry in Activity for the exact command and git's own output.";
+  }
+}

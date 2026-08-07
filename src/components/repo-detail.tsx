@@ -31,6 +31,7 @@ import {
   useSettings,
 } from "@/hooks/queries";
 import {
+  checkFailureMessage,
   deriveStatus,
   lagLabel,
   lagMagnitude,
@@ -112,6 +113,41 @@ export function RepoDetailPanel({
     [toast, refetch, onChanged],
   );
 
+  /**
+   * "Check now" cannot use `run`, because `run` decides success from whether the
+   * promise resolved and that stopped being the right question.
+   *
+   * Since BL-NI-04 a check whose fetch failed RESOLVES, carrying `failed: true`
+   * and a typed reason, so that the completion event fires and every window hears
+   * about it. Routed through `run`, the same failed check would toast
+   * "Checked <name>" in the success style: strictly worse than the bug that was
+   * fixed, because silence about a failure is bad and a green confirmation of one
+   * is a lie.
+   *
+   * A rejected promise still means the check could not RUN at all (git missing,
+   * path gone), which is a different message and keeps the generic error arm.
+   */
+  const repoName = detail.data?.localName ?? "this repository";
+  const checkNow = useCallback(() => {
+    setBusy("check");
+    unwrap(commands.repoCheckNow(id))
+      .then(
+        (result) => {
+          if (result.failed) {
+            toast("error", `Check failed for ${repoName}`, checkFailureMessage(result.reason));
+          } else {
+            toast("ok", `Checked ${repoName}`);
+          }
+          refetch();
+          onChanged();
+        },
+        (e: unknown) => {
+          toast("error", "Could not check", e instanceof IpcError ? e.message : String(e));
+        },
+      )
+      .finally(() => setBusy(null));
+  }, [id, repoName, toast, refetch, onChanged]);
+
   const toggleGroup = useCallback(
     async (group: GroupSummary, isMember: boolean) => {
       setGroupBusyId(group.id);
@@ -152,6 +188,7 @@ export function RepoDetailPanel({
               r={r}
               busy={busy}
               run={run}
+              onCheckNow={checkNow}
               globalMinutes={settings.data?.globalCheckMinutes ?? null}
               groups={groupsState.data ?? []}
               memberIds={memberships.data ?? []}
@@ -169,6 +206,7 @@ function DetailBody({
   r,
   busy,
   run,
+  onCheckNow,
   globalMinutes,
   groups,
   memberIds,
@@ -178,6 +216,7 @@ function DetailBody({
   r: RepoDetailData;
   busy: string | null;
   run: RunFn;
+  onCheckNow: () => void;
   globalMinutes: number | null;
   groups: GroupSummary[];
   memberIds: number[];
@@ -206,7 +245,7 @@ function DetailBody({
       </div>
 
       <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
-        <Focal r={r} status={status} busy={busy} run={run} />
+        <Focal r={r} status={status} busy={busy} run={run} onCheckNow={onCheckNow} />
       </div>
 
       <IntelSection r={r} />
@@ -216,7 +255,7 @@ function DetailBody({
           variant="outline"
           size="sm"
           disabled={isBusy}
-          onClick={() => run("check", () => unwrap(commands.repoCheckNow(r.id)), `Checked ${r.localName}`)}
+          onClick={onCheckNow}
         >
           <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Check now
         </Button>
@@ -344,11 +383,13 @@ function Focal({
   status,
   busy,
   run,
+  onCheckNow,
 }: {
   r: RepoDetailData;
   status: RepoStatus;
   busy: string | null;
   run: RunFn;
+  onCheckNow: () => void;
 }) {
   const style = STATUS_STYLE[status];
   const isBusy = busy !== null;
@@ -405,9 +446,17 @@ function Focal({
           variant="outline"
           size="sm"
           disabled={isBusy}
-          onClick={() => run("retry", () => unwrap(commands.repoCheckNow(r.id)), `Retried ${r.localName}`)}
+          onClick={onCheckNow}
         >
-          <RefreshCw className={busy === "retry" ? "animate-spin" : undefined} /> Retry check
+          {/*
+            "check", not "retry". Both this button and the header's "Check now"
+            run the same handler, which sets the busy key to "check"; the two
+            differ only in where they sit and what they say. Left as "retry" the
+            spinner would simply never appear, which is the least visible kind of
+            regression: the click works, the state updates, and the only thing
+            missing is the feedback that it is running.
+          */}
+          <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Retry check
         </Button>
       </>
     );
