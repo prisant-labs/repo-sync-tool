@@ -600,6 +600,24 @@ where
         self.locks.clone()
     }
 
+    /// The GLOBAL concurrency cap, shared so the manual "check all" burst is
+    /// bounded by the same semaphore the scheduler is (BL-NI-41).
+    ///
+    /// Exposed rather than letting the edge build its own for one reason: two
+    /// independent caps do not compose. A second `Semaphore` of the same size
+    /// would let a tray "Check All Now" that lands during a scheduler tick put
+    /// twice the configured number of `git` processes on the disk at once, which
+    /// is precisely the number this cap exists to control. One semaphore, one
+    /// bound, whoever asks.
+    ///
+    /// Anyone using this MUST take the per-repo mutex FIRST and the permit
+    /// SECOND, matching `run_job`. That order is not stylistic: a task blocked on
+    /// a per-repo mutex while holding a permit could starve the global cap
+    /// against the task that would release the mutex.
+    pub fn concurrency_semaphore(&self) -> Arc<Semaphore> {
+        self.semaphore.clone()
+    }
+
     /// Run ONE steady-state tick: select due repos, apply the quiet-hours gate,
     /// and fan the due set out through the concurrency composition with NO jitter.
     /// Returns a [`TickReport`]: how many repos ran, plus any job that finished
@@ -2899,6 +2917,49 @@ mod tests {
             vec![1, 3],
             "the two healthy repos still recorded their outcomes"
         );
+    }
+
+    /// The exposed semaphore must be THE scheduler's, not a copy of its size.
+    ///
+    /// This is the property that makes sharing it with the manual "check all"
+    /// burst safe (BL-NI-41). Two independent semaphores of the same size do not
+    /// compose: a check-all landing during a tick would put twice the configured
+    /// number of git processes on the disk, which is exactly the number the cap
+    /// exists to control. Handing back a clone of the `Arc` is what makes the
+    /// bound global; handing back `Semaphore::new(DEFAULT_CONCURRENCY)` would
+    /// compile, look identical at the call site, and silently double the limit.
+    #[tokio::test]
+    async fn the_exposed_semaphore_is_the_same_one_the_scheduler_uses() {
+        let inst = Instrument::default();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(1)]),
+            },
+            FakeJobRunner::new(inst.clone()),
+            FakeOutcomeWriter::new(),
+            2,
+        );
+
+        let borrowed = sched.concurrency_semaphore();
+        assert_eq!(
+            borrowed.available_permits(),
+            2,
+            "starts at the configured cap"
+        );
+
+        // Taking a permit through the handle must reduce what the scheduler has
+        // left. If these were separate semaphores the count would not move.
+        let held = borrowed.clone().acquire_owned().await.unwrap();
+        assert_eq!(
+            sched.concurrency_semaphore().available_permits(),
+            1,
+            "a permit taken via the exposed handle must come out of the SAME pool              the scheduler draws from, or the two caps sum instead of binding"
+        );
+        drop(held);
+        assert_eq!(sched.concurrency_semaphore().available_permits(), 2);
     }
 
     /// A job that VANISHES must not take the cycle with it.

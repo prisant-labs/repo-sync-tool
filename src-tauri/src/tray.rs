@@ -162,11 +162,18 @@ fn toggle_pause(app: &AppHandle, pause_item: &MenuItem<Wry>) {
 fn spawn_check_all(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let (pool, git, locks) = {
+        let (pool, git, locks, semaphore) = {
             let state = app.state::<AppState>();
-            (state.pool.clone(), state.git.clone(), state.locks.clone())
+            (
+                state.pool.clone(),
+                state.git.clone(),
+                state.locks.clone(),
+                std::sync::Arc::clone(&state.check_all_semaphore),
+            )
         };
-        if let Err(e) = crate::commands::check_all_enabled(&app, &pool, &git, &locks).await {
+        if let Err(e) =
+            crate::commands::check_all_enabled(&app, &pool, &git, &locks, &semaphore).await
+        {
             crate::events::emit_error_raised(&app, &e);
             tracing::warn!("tray: check all now failed: {e}");
         }

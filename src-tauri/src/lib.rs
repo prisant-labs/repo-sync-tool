@@ -79,6 +79,11 @@ pub struct AppState {
     /// per-repo mutex the scheduler's jobs do, so a "check now" and a scheduled
     /// check never run two `git` processes in one working tree.
     pub locks: reposync_core::scheduler::RepoLocks,
+    /// The scheduler's GLOBAL concurrency cap, shared with the manual "check all"
+    /// burst (BL-NI-41) so both are bounded by one semaphore rather than two that
+    /// can sum. Users of it must take the per-repo mutex first and the permit
+    /// second, matching the scheduler's fixed order.
+    pub check_all_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
     /// Single-flight guard serializing the `settings_set` persist/reschedule/
     /// probe/swap sequence (BL-NI-35), so overlapping saves cannot race on which
     /// probe result wins the final engine swap.
@@ -507,7 +512,11 @@ pub fn run() {
                 // both the tick loop (which bumps them) and AppState (which serves
                 // them to `diagnostics_get`).
                 let scheduler_health: SchedulerHealth = Default::default();
-                let locks = {
+                // Both the per-repo lock map and the GLOBAL concurrency cap come
+                // out of the scheduler, so the manual command paths contend the
+                // exact locks the jobs do AND share the one bound on concurrent
+                // git processes (BL-NI-41).
+                let (locks, check_all_semaphore) = {
                     use reposync_core::scheduler::{
                         DbDueQuery, Scheduler, SharedGitEngineSource, SystemClock, SystemJitter,
                         UpdateNowJobRunner, DEFAULT_CONCURRENCY, ONE_MINUTE,
@@ -543,6 +552,12 @@ pub fn run() {
                     // E-13: the scheduler honors the shared global-pause flag.
                     .with_pause(pause.clone());
                     let locks = scheduler.locks();
+                    // BL-NI-41: the manual "check all" burst shares the SAME global
+                    // cap the scheduler uses, so a tray check-all landing during a
+                    // tick cannot put twice the configured number of git processes
+                    // on the disk. Two independent caps of the same size do not
+                    // compose into one.
+                    let check_all_semaphore = scheduler.concurrency_semaphore();
                     let tick_handle = handle.clone();
                     // The firing site reads settings (the notify toggles + quiet
                     // hours) fresh per cycle from this pool clone.
@@ -641,7 +656,7 @@ pub fn run() {
                             }
                         }
                     });
-                    locks
+                    (locks, check_all_semaphore)
                 };
 
                 // E-17: the resident background GitHub metadata + branch/PR
@@ -736,6 +751,7 @@ pub fn run() {
                     pool,
                     git: git_handle,
                     locks,
+                    check_all_semaphore,
                     settings_write_lock: tokio::sync::Mutex::new(()),
                     pause,
                     github_budget,

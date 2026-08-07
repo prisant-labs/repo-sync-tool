@@ -94,7 +94,14 @@ pub async fn repo_check_all(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<u32, AppError> {
-    check_all_enabled(&app, &state.pool, &state.git, &state.locks).await
+    check_all_enabled(
+        &app,
+        &state.pool,
+        &state.git,
+        &state.locks,
+        &state.check_all_semaphore,
+    )
+    .await
 }
 
 /// Shared "check all enabled repos" implementation, called by [`repo_check_all`] and
@@ -108,6 +115,7 @@ pub(crate) async fn check_all_enabled(
     pool: &SqlitePool,
     git: &SharedGitEngine,
     locks: &RepoLocks,
+    semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
 ) -> Result<u32, AppError> {
     // Resolve the live engine once (cloned out of the read lock, guard dropped
     // immediately, per BL-NI-19); a check-all with no git is one clear error.
@@ -116,17 +124,55 @@ pub(crate) async fn check_all_enabled(
     let flags = reposync_core::store::repo_enabled_flags(pool).await?;
     let targets = reposync_core::store::select_check_all_targets(&flags);
 
+    // Fan out under the scheduler's OWN semaphore, rather than one repo at a time
+    // (BL-NI-41).
+    //
+    // The loop this replaces awaited each `check_now` fully before starting the
+    // next, so a forty-repo library ran forty git fetches end to end while the
+    // scheduler beside it was allowed four at once. The tray item says "Check All
+    // Now" and took minutes.
+    //
+    // THE LOCK ORDER IS NOT A DETAIL. Per-repo mutex FIRST, global permit SECOND,
+    // exactly as `scheduler::run_job` does, and the scheduler's own module doc
+    // calls that fixed order one of two load-bearing correctness properties.
+    // Reversed, a task holding a permit while waiting on a per-repo mutex can
+    // starve the global cap against the task that would release that mutex. The
+    // permit is dropped before the guard for the same reason.
+    //
+    // The semaphore is the scheduler's, not a new one of the same size. Two
+    // independent caps do not compose: a check-all landing during a tick would put
+    // twice the configured number of git processes on the disk, which is the exact
+    // number this cap exists to control.
+    let mut tasks = tokio::task::JoinSet::new();
+    for id in targets {
+        let app = app.clone();
+        let pool = pool.clone();
+        let git = git.clone();
+        let locks = locks.clone();
+        let semaphore = std::sync::Arc::clone(semaphore);
+        tasks.spawn(async move {
+            let lock = locks.lock_handle(RepoId(id));
+            let _guard = lock.lock_owned().await;
+            let permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("the scheduler semaphore is never closed");
+
+            emit_check_started(&app, id);
+            let outcome = reposync_core::repo::check_now(&pool, &git, RepoId(id)).await;
+            drop(permit);
+            outcome
+        });
+    }
+
     let mut checked = 0u32;
     // Failures that COMPLETED (a non-zero fetch), collected rather than announced
     // one at a time. See the coalescing note below.
     let mut soft_failures: Vec<Option<String>> = Vec::new();
 
-    for id in targets {
-        // Serialize per repo against the scheduler via the SAME per-repo lock.
-        let _lock = locks.lock_handle(RepoId(id)).lock_owned().await;
-        emit_check_started(app, id);
-        match reposync_core::repo::check_now(pool, &git, RepoId(id)).await {
-            Ok(result) => {
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok(result)) => {
                 // The completion event fires for EVERY outcome, including a failed
                 // one (BL-NI-04). That is the whole point: an open window learns
                 // that this repo's check finished and how.
@@ -139,7 +185,19 @@ pub(crate) async fn check_all_enabled(
             // A check that could not RUN at all (git vanished mid-burst, the path
             // is gone). Still surfaced immediately and individually: it is rare,
             // and it usually means the next repo will fail the same way.
-            Err(e) => emit_error_raised(app, &e),
+            Ok(Err(e)) => emit_error_raised(app, &e),
+            // The task did not return a value: it panicked or was cancelled. Under
+            // the release profile's `panic = "abort"` a panicking task takes the
+            // process with it, so this arm is unreachable in a shipped build and is
+            // deliberately NOT counted or reported as a check failure, which would
+            // be a different and misleading claim. It is logged, because a debug or
+            // dev run can reach it and that repo's check vanished. Same reasoning,
+            // and the same event name, as the scheduler's equivalent arm.
+            Err(e) => tracing::error!(
+                event = reposync_core::logging::event::SCHEDULER_JOB_ABORTED,
+                error = %e,
+                "a check-all task did not complete; that repo was not checked"
+            ),
         }
     }
 

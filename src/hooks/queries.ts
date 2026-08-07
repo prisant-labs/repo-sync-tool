@@ -126,15 +126,44 @@ export function useRepoGroupMemberships() {
  */
 export function useBackendEvents(onChange: () => void) {
   useEffect(() => {
+    // Trailing debounce on the AGGREGATE refetch (BL-NI-70).
+    //
+    // The per-repo completion events were reasoned about as manual, one-at-a-time
+    // actions, and for a single "Check now" they are. "Check All Now" is not: it
+    // emits one per repository, so a forty-repo library produced forty full
+    // repo_list + membership refetches for one click. That was already true when
+    // the burst ran serially, and making it concurrent (BL-NI-41) compresses the
+    // same storm into a couple of seconds.
+    //
+    // A trailing window collapses a burst into one refetch and leaves a single
+    // event behaving as before, at the cost of one frame of latency that nobody
+    // can perceive next to a git fetch. The alternative, a dedicated
+    // check-all:completed event the aggregates key off (mirroring how
+    // scheduler:tick already solves exactly this for the scheduled path), is more
+    // honest about what happened but changes the event contract; this is the
+    // smaller half and also helps any other burst.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const coalesced = () => {
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        onChange();
+      }, AGGREGATE_REFETCH_DEBOUNCE_MS);
+    };
+
     const subscriptions = [
-      events.repoCheckCompleted.listen(() => onChange()),
-      events.repoUpdateCompleted.listen(() => onChange()),
+      events.repoCheckCompleted.listen(coalesced),
+      events.repoUpdateCompleted.listen(coalesced),
       events.schedulerTick.listen((e) => {
+        // A tick is ALREADY one event per cycle, so it needs no coalescing and
+        // is called directly. Routing it through the debounce would only add
+        // latency to the path that was designed to avoid the storm.
         if (e.payload.checked > 0) onChange();
       }),
       events.repoMetadataRefreshed.listen(() => onChange()),
     ];
     return () => {
+      if (timer !== null) clearTimeout(timer);
       void Promise.all(subscriptions).then((unlisteners) => {
         for (const off of unlisteners) off();
       });
@@ -143,6 +172,15 @@ export function useBackendEvents(onChange: () => void) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }
+
+/**
+ * How long the aggregate refetch waits for a burst to finish before running.
+ *
+ * Short enough to be imperceptible next to a git fetch, long enough to swallow a
+ * whole "Check All Now" now that it runs concurrently under the scheduler's
+ * bounded semaphore rather than one repo at a time.
+ */
+const AGGREGATE_REFETCH_DEBOUNCE_MS = 250;
 
 /**
  * Like `useBackendEvents`, but scoped to one repo: only calls `onChange` when
