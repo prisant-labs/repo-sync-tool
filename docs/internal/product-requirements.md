@@ -7,6 +7,32 @@
 - **Purpose:** The single requirements view for v0.9.0. It states the problem, the users, the principles, the scope as a table of capabilities mapped to owning efforts, the non-goals, the measurable success criteria, the release posture, and the constraints. Requirements aggregate here; acceptance criteria live in each effort's `spec.md` and are never restated in this document.
 - **Sources:** [PRODUCT.md](../../PRODUCT.md) (users, purpose, principles), [DESIGN.md](../../DESIGN.md) (experience commitments), [features-and-outcomes.md](release-plans/plan_v0.9.0/features-and-outcomes.md) (product-facing feature detail), [feature-inventory.md](release-plans/plan_v0.9.0/feature-inventory.md) (build readiness), [program-roadmap.md](program-roadmap.md) (scope ledger, dependency graph, descope triggers), [plan_v0.9.0.md](release-plans/plan_v0.9.0/plan_v0.9.0.md) (release plan).
 
+> **RELEASE-POSTURE SECTIONS ARE SUPERSEDED as of 2026-08-07.** The requirements
+> themselves (problem, users, principles, scope, non-goals, success criteria) still
+> stand. What has gone stale is every statement in this document about VISIBILITY and
+> DISTRIBUTION, which was written on 2026-07-04 against a private-repo ship plan.
+> Specifically:
+>
+> - **The repository is PUBLIC**, since 2026-07-17, at `github.com/prisant-labs/repo-sync-tool`
+>   under MIT. Read "private until the public flip", "ships complete but private", and
+>   the Section 9 release posture as the state at the time of the v0.9.0 tag.
+> - **"The updater and winget manifest are built and verified in this release"
+>   overstates what happened.** The pure decision logic is unit-tested and the wiring
+>   is complete, but the detect / download / verify / install / relaunch loop has never
+>   been run, tracked as BL-NI-42 (run the updater E2E install proof). "Built" is
+>   accurate; "verified" is not.
+> - **"Only the endpoint activation is deferred" understates what remains.** Going
+>   public removed one blocker and revealed it was not the binding one: the public key
+>   is compiled into each build, so every installed v0.9.0 carries the ship-dark
+>   placeholder and concludes it has no update channel before reaching the network.
+>   Publishing a signed release cannot reach those copies; a manual bootstrap install
+>   is required. The ordered remaining sequence is in
+>   [`scripts/updater-e2e.md`](../../scripts/updater-e2e.md).
+> - **The ratified maturity label is "public beta, unsigned"** and **macOS is
+>   "experimental / unsupported"** (both decided 2026-08-07). The
+>   [README](../../README.md#status-public-beta-and-honest-about-it) is the current
+>   status surface.
+
 ---
 
 ## 1. Problem statement

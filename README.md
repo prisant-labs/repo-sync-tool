@@ -53,7 +53,7 @@ Download the Windows installer from the [Releases page](https://github.com/prisa
 
 **Expect a SmartScreen warning on first run.** Windows will say "Windows protected your PC" and name an unknown publisher. Click **More info**, then **Run anyway**. That warning is the honest consequence of an unsigned installer, and it will keep appearing until an Authenticode certificate exists. If that is not acceptable to you, build from source instead, which is the better choice anyway if you are the sort of person who reads the code first.
 
-On **macOS** there is nothing to download. If you build from source, the result is unsigned and un-notarized, so Gatekeeper will refuse to open it. Right-click the app and choose **Open**, or clear the quarantine attribute with `xattr -dr com.apple.quarantine /Applications/RepoSync.app`. Only do that for a build you produced yourself: clearing quarantine on a downloaded binary is exactly the step an attacker needs you to take.
+On **macOS** there is nothing to download, and macOS is unsupported. If you build from source, the result is unsigned and un-notarized, so macOS will refuse to open it on the grounds that it cannot verify the developer. Use Apple's per-app exception: try to open it, then go to **System Settings > Privacy & Security** and choose **Open Anyway** for RepoSync specifically. Do not disable Gatekeeper, and do not apply a blanket quarantine override. If macOS instead says the app is **damaged**, that is a different message and it should be believed rather than worked around: RepoSync has never been run on Mac hardware by anyone, so a broken bundle is a live possibility and we cannot tell you which of the two you will see.
 
 ## Build from source
 
