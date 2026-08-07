@@ -58,11 +58,17 @@ env:
   # Documented EXACT git target for the E-04 fixture harness (Windows-only), which
   # cross-checks git2 reads against git CLI porcelain output and therefore wants
   # BYTE-STABLE output. The harness DOES exist - see crates/reposync-core/src/git/fixtures.rs
-  # and the "slow git-fixture tests (windows)" job below - but pinning an exact git on the
-  # hosted runners proved unreliable (choco's installer conflicts; MinGit PATH ordering is
-  # finicky), so CI VERIFIES the >= 2.30 floor (the E-03 engine requirement) instead of
-  # enforcing this exact value. The robust exact-pin mechanism is tracked in
-  # docs/backlog.md (BL-NI-03).
+  # and the "slow git-fixture tests (windows)" job below.
+  #
+  # This value is ENFORCED in that job and merely reported in the fast `build` job,
+  # which checks only the >= 2.30 floor (the E-03 engine requirement) so the hot
+  # pull-request path does not pay for a package install it does not need.
+  # Enforcement uses `choco upgrade --allow-downgrade`, not `choco install`: the
+  # earlier attempt failed because the hosted image ships git preinstalled and
+  # `install` errors on an already-installed package (BL-NI-03).
+  #
+  # Bumping this is a two-part change: the version has to be available in chocolatey,
+  # AND any fixture output whose porcelain differs has to be re-recorded.
   GIT_VERSION: "2.47.1"
   # Faster, quieter cargo in CI.
   CARGO_TERM_COLOR: always
@@ -143,10 +149,10 @@ jobs:
       # pnpm version comes from the "packageManager" field in package.json (single source of
       # truth). Do NOT also set a "version" input here - action-setup errors if both exist.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -393,7 +399,7 @@ jobs:
       # The npm side of the same question. --prod scopes to what actually ships in the bundle;
       # a dev-only advisory is real debt but is not in the artifact a user installs.
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       # Deliberately NO `cache: pnpm` here, unlike the other jobs. This job never runs
       # `pnpm install` - `pnpm audit --prod` resolves straight from pnpm-lock.yaml - so
@@ -401,7 +407,7 @@ jobs:
       # trying to save one. (Observed on the first real run of this job, PR #30: every
       # substantive step passed and only `Post Setup Node` failed.)
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
