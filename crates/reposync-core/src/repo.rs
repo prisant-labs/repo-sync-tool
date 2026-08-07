@@ -269,11 +269,22 @@ pub async fn check_now(
     //     fresh inspect so a branch switch since `add` is reflected; omitting it
     //     leaves stale state. upstream_branch is also refreshed here since it was
     //     already inspected.
+    //
+    //     `last_error_code` carries the reason ONLY for an operational failure
+    //     (auth, network, an unclassified non-zero fetch), and is cleared to NULL
+    //     otherwise. A policy skip is deliberately NOT an error: "dirty" and
+    //     "detached" are the designed outcome of a rule the user chose, they are
+    //     already represented by `is_dirty` / `is_detached`, and writing them here
+    //     would make `summary`'s needs-attention query double-count a dirty repo
+    //     under both halves of its `last_error_code IS NOT NULL OR is_dirty = 1`
+    //     condition. This mirrors the `status` line just below, which draws the
+    //     same boundary for the activity receipt.
+    let last_error_code = if fetch_failed { reason.clone() } else { None };
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
          head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
-         last_attempted_at = ? \
+         last_attempted_at = ?, last_error_code = ? \
          WHERE repo_id = ?",
     )
     .bind(&inspect.active_branch)
@@ -286,6 +297,7 @@ pub async fn check_now(
     .bind(inspect.last_commit_at)
     .bind(now)
     .bind(now)
+    .bind(&last_error_code)
     .bind(repo_id)
     .execute(&mut *tx)
     .await?;
@@ -460,11 +472,21 @@ async fn run_update_inner(
     } else {
         None
     };
+    // Same boundary as `check_now`: the reason is persisted as an error code only
+    // when the run actually FAILED. `execute_action` reports `status == "failed"`
+    // for operational failures and leaves policy skips on the success path, so
+    // reusing that flag keeps the two entry points writing the column identically.
+    let last_error_code = if status == "failed" {
+        reason_code.clone()
+    } else {
+        None
+    };
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
          head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
-         last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at) \
+         last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at), \
+         last_error_code = ? \
          WHERE repo_id = ?",
     )
     .bind(&post.active_branch)
@@ -478,6 +500,7 @@ async fn run_update_inner(
     .bind(now)
     .bind(now)
     .bind(updated_at_col)
+    .bind(&last_error_code)
     .bind(repo_id)
     .execute(pool)
     .await?;
@@ -1586,6 +1609,107 @@ mod tests {
         // The working tree was NOT mutated: it is still dirty.
         let still = git.inspect(fx.working_path()).expect("inspect");
         assert!(still.is_dirty, "the skip must not have touched the tree");
+    }
+
+    /// A failed fetch must PERSIST its reason into `repo_local_state.last_error_code`,
+    /// and a later successful check must clear it.
+    ///
+    /// The column was declared in migration 0001 and read by `store::repo_list`,
+    /// `store::repo_get`, and `summary`'s needs-attention query, but written by
+    /// nothing in production, so every one of those readers saw `NULL` forever.
+    /// This covers the `check_now` write; the scheduler's write has its own test in
+    /// `scheduler.rs`, and the two are asserted to agree through `summary`.
+    ///
+    /// The remote is broken by pointing `origin` at a path that does not exist,
+    /// deliberately rather than at an unroutable host: it fails the same way on a
+    /// machine with no network and on CI, and it needs no DNS, so this test cannot
+    /// become flaky for a reason that has nothing to do with what it is checking.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn check_now_persists_and_clears_last_error_code() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping check_now_persists_and_clears_last_error_code: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+        set_mode(&pool, id, "fetch_only").await;
+
+        async fn read_code(pool: &SqlitePool, id: RepoId) -> Option<String> {
+            sqlx::query("SELECT last_error_code FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("last_error_code")
+                .unwrap()
+        }
+
+        // Capture the real origin so it can be restored for the recovery half.
+        let good_origin = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["remote", "get-url", "origin"])
+                .current_dir(fx.working_path())
+                .output()
+                .expect("git remote get-url")
+                .stdout,
+        )
+        .expect("utf8")
+        .trim()
+        .to_string();
+
+        let set_origin = |url: &str| {
+            let ok = std::process::Command::new("git")
+                .args(["remote", "set-url", "origin", url])
+                .current_dir(fx.working_path())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            assert!(ok, "git remote set-url should succeed");
+        };
+
+        // Break the remote, then check. The fetch fails and the reason lands in the
+        // column that every state reader consults.
+        set_origin(
+            &dbtmp
+                .path()
+                .join("definitely-not-a-repo")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+        let _ = check_now(&pool, &git, id).await;
+        let code = read_code(&pool, id).await;
+        assert!(
+            code.is_some(),
+            "a failed fetch must persist an error code; before this fix the column \
+             was written by nothing in production and stayed NULL forever"
+        );
+        // The exact code depends on git's stderr wording, which varies by version.
+        // What must hold is that it is one of the frozen fetch-failure codes and
+        // NOT a policy-skip label, because the summary renders it to the user.
+        let code = code.unwrap();
+        assert!(
+            matches!(
+                code.as_str(),
+                "git.fetch_failed" | "net.offline" | "git.auth_failed"
+            ),
+            "persisted code must come from the frozen fetch-failure vocabulary, got {code:?}"
+        );
+
+        // Repair the remote. A successful check must CLEAR the code, or a recovered
+        // repo stays in the summary's needs-attention list permanently.
+        set_origin(&good_origin);
+        check_now(&pool, &git, id)
+            .await
+            .expect("check_now succeeds once the remote is reachable again");
+        assert_eq!(
+            read_code(&pool, id).await,
+            None,
+            "a successful check must clear the error code"
+        );
     }
 
     #[tokio::test]

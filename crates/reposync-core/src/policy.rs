@@ -378,6 +378,37 @@ pub enum RepoStatus {
     AutoPaused,
 }
 
+/// The stable error code for a repo status: `None` for a healthy run, and the
+/// matching [`AppError`](crate::error::AppError) code for a failing one.
+///
+/// This is the SINGLE source of truth for that mapping, and it lives here rather
+/// than at either call site on purpose. Two consumers need the same answer and
+/// they must not be able to disagree:
+///
+/// - the scheduler persists it into `repo_local_state.last_error_code`, which is
+///   what `store::repo_list` / `store::repo_get` return to the GUI and what
+///   `summary`'s needs-attention query tests for;
+/// - the edge puts it on the `repo:state-changed` event payload so an open window
+///   learns why a background job failed without waiting for a refetch.
+///
+/// Before this function existed the edge computed the code privately and nothing
+/// wrote the column at all, so the live event carried the right value while every
+/// subsequent read of the same fact returned `NULL`. Deriving both from one
+/// function is what makes that class of drift impossible rather than merely fixed.
+///
+/// The vocabulary is deliberately the frozen error-code set, not an invented one:
+/// an auth pause reports `git.auth_failed`, and a transient or auto-paused failure
+/// reports `git.fetch_failed`. `Retry` and `AutoPaused` share a code because the
+/// distinction between them is carried by `consecutive_failures` and
+/// `auto_paused`, which are persisted alongside it.
+pub fn status_error_code(status: RepoStatus) -> Option<&'static str> {
+    match status {
+        RepoStatus::Active => None,
+        RepoStatus::PausedOnAuth => Some("git.auth_failed"),
+        RepoStatus::Retry { .. } | RepoStatus::AutoPaused => Some("git.fetch_failed"),
+    }
+}
+
 /// The consecutive-failure count at which a repo auto-pauses (AC5: "3 consecutive
 /// failures -> auto-pause").
 pub const AUTO_PAUSE_THRESHOLD: i64 = 3;
