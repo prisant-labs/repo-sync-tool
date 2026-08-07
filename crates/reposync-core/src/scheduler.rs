@@ -2445,7 +2445,10 @@ mod tests {
 
         // Recovery CLEARS it. Without this the repo stays in the summary's
         // needs-attention list forever.
-        writer.record(&due(0), now, RepoStatus::Active).await.unwrap();
+        writer
+            .record(&due(0), now, RepoStatus::Active)
+            .await
+            .unwrap();
         assert_eq!(
             read_error_code(&pool, repo).await,
             None,
