@@ -1,0 +1,29 @@
+# Dependabot configuration.
+#
+# WHY THIS EXISTS. Until now, the only way anyone learned that a pinned GitHub
+# Action had aged out of support was for a human to open a workflow run and read
+# the annotations. That is how the Node 20 deprecation was found: as a warning
+# printed on every run for an unknown number of runs before anyone looked. A
+# deprecation nobody reads is a deprecation that becomes a broken build on the
+# day the runtime is finally removed, which is always a day nobody chose.
+#
+# Scope is deliberately GITHUB-ACTIONS ONLY, not cargo and not npm. Those two
+# already have a gate that fails a pull request on a known advisory (the
+# `dependency advisories` job runs `cargo audit` and `pnpm audit --prod`), so
+# what they lack is not visibility. Adding them here would open a steady stream
+# of version-bump pull requests on a project with one maintainer, and a bot that
+# produces more noise than anyone can triage teaches people to ignore it, which
+# costs more than it saves. Actions are different: nothing else watches them, and
+# there are only a handful.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+    commit-message:
+      # Matches this repo's convention (scope prefix, imperative subject).
+      prefix: "ci"
+    labels:
+      - "dependencies"
