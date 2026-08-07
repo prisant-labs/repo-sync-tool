@@ -64,7 +64,14 @@ The dev-server allowance is gated on `tauri::is_dev()` rather than `cfg!(debug_a
 
 Updates are verified against a committed minisign public key before installation, and a signature failure aborts and keeps the current version. Updates are never silent; the user confirms.
 
-**Current state:** the updater ships **dark**, configured with a placeholder public key, so it does not fetch or apply anything. It activates when the production key is generated and custodied. See the status table in the [README](../README.md).
+**Current state:** the updater ships **dark**, configured with a placeholder public key, so it does not fetch or apply anything.
+
+Two qualifications, because "it activates when the key is generated" is the intuitive reading and it is wrong in a way that matters for patch delivery:
+
+- **The key does not reach copies already installed.** The public key is compiled into the binary, and the app decides whether it has an update channel by inspecting its own embedded key. Every existing v0.9.0 carries the placeholder, so it stops before touching the network. Publishing a signed release cannot reach it; only a manual install of a build carrying the real key puts a machine on the update path. **Until then there is no automatic patch delivery, including for a security fix.**
+- **The verify-before-apply behavior above is designed and wired, not demonstrated.** Its pure parts are unit-tested, but the full detect / download / verify / install / relaunch loop and its negatives (tampered artifact, downgrade, offline) have never been executed. Tracked as BL-NI-42 (run the updater E2E install proof) in [the backlog](backlog.md); the ordered activation sequence is in [`scripts/updater-e2e.md`](../scripts/updater-e2e.md).
+
+See the status table in the [README](../README.md).
 
 ### Data stays local
 

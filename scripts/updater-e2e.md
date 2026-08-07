@@ -1,19 +1,29 @@
 # Updater end-to-end proof (local channel) - E-18
 
-The auto-updater (E-18) is fully wired and signed, but the LIVE GitHub Releases
-endpoint cannot be exercised while the repo is private (an unauthenticated GET of
-`releases/latest/download/latest.json` returns 404). This runbook proves the whole
-mechanism NOW against a local `http://localhost` channel, using a **disposable test
-keypair** an agent may freely generate (it never ships) and the **test-only config
-overlay** `src-tauri/tauri.updater-e2e.conf.json`. It exercises every step the live
-endpoint will later exercise except the live endpoint itself.
+> **STATUS, 2026-08-07: this procedure has NEVER BEEN RUN.** It is tracked as
+> **BL-NI-42 (run the updater E2E install proof)** in [`docs/backlog.md`](../docs/backlog.md).
+> Nothing below is a record of a passing run; every "proves" in this file is what the
+> procedure WOULD prove once executed. Do not cite it as evidence that the updater
+> works.
+>
+> **The private-repo framing this file was written under is also gone.** The
+> repository has been PUBLIC since 2026-07-17, so the live endpoint is no longer
+> blocked by visibility. What blocks it now is different and larger, and is set out
+> under "The real remaining sequence" below.
+
+The auto-updater (E-18) is fully wired. This runbook drives the whole mechanism
+against a local `http://localhost` channel, using a **disposable test keypair** an
+agent may freely generate (it never ships) and the **test-only config overlay**
+`src-tauri/tauri.updater-e2e.conf.json`. It exercises every step the live endpoint
+will later exercise except the live endpoint itself.
 
 This is a dogfood / manual procedure: it builds two full `dist` bundles and drives a
 real OS install, so it is NOT run in the fast gate. The pure decision logic (version
 gating, the reachable-vs-unreachable mapping, the ship-dark decision, and the
-config-hygiene grep) is unit-tested in `src-tauri/src/updates.rs`.
+config-hygiene grep) is unit-tested in `src-tauri/src/updates.rs`. That unit coverage
+is what exists today; this runbook is what does not.
 
-## What this proves locally (while private)
+## What this procedure would prove locally
 
 - detect -> download -> **signature-verify** -> install -> relaunch-at-new-version
 - tampered artifact is rejected (verification failure, current version retained)
@@ -21,11 +31,35 @@ config-hygiene grep) is unit-tested in `src-tauri/src/updates.rs`.
 - downgrade protection (an equal/older manifest version yields "up to date")
 - the `auto_update_check` toggle gates the launch check but not the manual button
 
-## What waits for the PUBLIC FLIP (cannot run while private)
+## The real remaining sequence (supersedes "waits for the public flip")
 
-- the LIVE TLS endpoint serving `latest.json` from a public GitHub Release
-- a shipped client (which enforces TLS) fetching + installing over the real endpoint
-- the winget submission (`wingetcreate submit`)
+Going public removed one blocker and revealed that it was never the binding one.
+The steps below are ORDERED; each depends on the one before it.
+
+1. **Generate and custody the production keypair.** Human-only. The private key goes
+   to CI secrets (`TAURI_SIGNING_PRIVATE_KEY`), and whoever holds it can authorize an
+   update every installed copy will trust.
+2. **Commit the real public key** to `plugins.updater.pubkey` in
+   `src-tauri/tauri.conf.json`, replacing the ship-dark placeholder. This is what
+   `updates::updater_is_live` inspects, and it is compiled INTO each build.
+3. **Verify the release workflow's updater arguments** before relying on a real cut.
+   `.github/workflows/release.yml` still carries an explicit note that how its args
+   thread through (Tauri CLI vs cargo passthrough) needs confirming. Related and
+   larger: **the Release workflow has never completed successfully.** Its only run,
+   for `v0.9.0` on 2026-07-05, failed in under four seconds with zero steps executed,
+   and the Windows installers on that release were produced outside the pipeline.
+4. **Cut a release that actually produces signed artifacts plus `latest.json`,** and
+   confirm both are attached.
+5. **Manually install that build as a bootstrap.** This step is easy to miss and is
+   the reason the key alone changes nothing for existing users: every already-installed
+   copy has the PLACEHOLDER key compiled in and concludes it has no update channel
+   before touching the network. Publishing a signed release does not reach it. Only a
+   manual install of a build carrying the real public key puts a machine on the update
+   path.
+6. **Run this local runbook** (the negatives are the valuable part), then **repeat the
+   detect-and-install proof against the live endpoint** from the bootstrap build.
+7. **The winget submission** (`wingetcreate submit`), which needs public artifact URLs
+   and is independent of the updater.
 
 ## Prerequisites
 

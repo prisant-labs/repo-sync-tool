@@ -131,7 +131,7 @@ production artifacts) is a later milestone.
 > the other reason given above: the production signing key is still a
 > human-gated step and the shipped config carries a placeholder public key. The
 > installers are still unsigned. Current status is in the
-> [README](README.md#status-pre-release-and-honest-about-it).
+> [README](README.md#status-public-beta-and-honest-about-it).
 - Desktop notifications, launch-on-login, and the system tray are wired to the OS in this release (`tauri-plugin-notification` / `tauri-plugin-autostart` / the native tray). Their Settings toggles take effect at runtime.
 - The tray menu and the OS-integration surface (menu actions, close-to-tray, autostart-hidden launch, live toasts, quiet-hours suppression) are verified in the dogfood pass, not by automated tests, because they live outside the webview and the packaged shell.
 - Auto-update ships DARK: the updater is wired but disabled until the maintainer generates the production signing key and the update endpoint is reachable (both are public-flip steps). See `docs/backlog.md` for the remaining deferred items.
