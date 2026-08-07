@@ -183,6 +183,43 @@ pub fn candidate_paths_from_env(explicit: Option<&str>) -> Vec<PathBuf> {
     )
 }
 
+/// Whether the `git` RepoSync actually resolved is the one the user CONFIGURED
+/// (BL-NI-39).
+///
+/// `resolve_and_probe` tries the explicit `settings.git_executable_path` first and
+/// then falls through to bare `git` on PATH and the well-known install locations.
+/// That fallback is the right behavior - a wrong path in Settings should not stop
+/// the app working - but until now it happened in complete silence. A user who
+/// typed a path with a typo, or pointed at a git they later uninstalled, got a
+/// working RepoSync running a DIFFERENT git from the one the Settings field
+/// claims, with nothing anywhere saying so. The Settings screen shows the
+/// configured value and the Diagnostics card shows the resolved one, and nothing
+/// ever compared them.
+///
+/// `false` means "configured and IGNORED". The caller decides what an absent
+/// configuration or an unresolved git means, because those are different
+/// conditions: nothing configured is normal, and no git at all is
+/// [`crate::git::GitAvailability::Unavailable`] and already reported.
+///
+/// Comparison is deliberately lenient rather than canonicalizing. Both sides are
+/// host paths a user typed or the app discovered, not attacker input, and
+/// `canonicalize` would need the file to still exist, which is precisely not
+/// guaranteed in the case worth catching. Separators are normalized and, on
+/// Windows, case is ignored, because `C:\Program Files\Git\cmd\git.exe` and
+/// `c:/program files/git/cmd/git.exe` are the same file and flagging them as a
+/// mismatch would train the user to ignore the warning.
+pub fn explicit_path_honored(explicit: &str, resolved: &std::path::Path) -> bool {
+    fn normalize(p: &str) -> String {
+        let flat = p.trim().replace('\\', "/");
+        if cfg!(windows) {
+            flat.to_lowercase()
+        } else {
+            flat
+        }
+    }
+    normalize(explicit) == normalize(&resolved.to_string_lossy())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +420,65 @@ mod tests {
                 .join("bin")
                 .join("git.exe")
         );
+    }
+
+    // --- explicit_path_honored (BL-NI-39) -----------------------------------
+
+    #[test]
+    fn an_exactly_matching_path_is_honored() {
+        assert!(explicit_path_honored(
+            "C:/Program Files/Git/cmd/git.exe",
+            std::path::Path::new("C:/Program Files/Git/cmd/git.exe")
+        ));
+    }
+
+    #[test]
+    fn separators_do_not_make_a_mismatch() {
+        // The user types backslashes; discovery reports whatever the OS handed
+        // back. Flagging these as different would be a warning that fires on the
+        // normal case, which is a warning people learn to ignore.
+        assert!(explicit_path_honored(
+            r"C:\Program Files\Git\cmd\git.exe",
+            std::path::Path::new("C:/Program Files/Git/cmd/git.exe")
+        ));
+    }
+
+    #[test]
+    fn surrounding_whitespace_does_not_make_a_mismatch() {
+        assert!(explicit_path_honored(
+            "  C:/Program Files/Git/cmd/git.exe  ",
+            std::path::Path::new("C:/Program Files/Git/cmd/git.exe")
+        ));
+    }
+
+    /// A genuinely different path is the case worth catching: the user configured
+    /// one git, RepoSync silently fell back to another, and every screen showed
+    /// one of the two without ever comparing them.
+    #[test]
+    fn a_different_path_is_not_honored() {
+        assert!(!explicit_path_honored(
+            "C:/tools/git/bin/git.exe",
+            std::path::Path::new("C:/Program Files/Git/cmd/git.exe")
+        ));
+    }
+
+    #[test]
+    fn a_typo_in_the_configured_path_is_not_honored() {
+        // The motivating case. One wrong character, a working app, and no signal.
+        assert!(!explicit_path_honored(
+            "C:/Program Files/Git/cmd/gti.exe",
+            std::path::Path::new("C:/Program Files/Git/cmd/git.exe")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn case_is_ignored_on_windows_only() {
+        // Windows paths are case-insensitive, so treating a case difference as a
+        // mismatch would fire on two spellings of the same file.
+        assert!(explicit_path_honored(
+            "c:/program files/git/cmd/git.exe",
+            std::path::Path::new("C:/Program Files/Git/cmd/git.exe")
+        ));
     }
 }

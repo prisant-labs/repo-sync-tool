@@ -22,6 +22,8 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
     onedriveRooted: false,
     gitPath: "C:\\Program Files\\Git\\cmd\\git.exe",
     gitVersion: "2.40.1",
+    gitExplicitPath: null,
+    gitExplicitPathHonored: true,
     gitResolved: true,
     gitMeetsFloor: true,
     schedulerCycles: 12,
@@ -192,5 +194,36 @@ describe("formatDiagnosticsReport, dropped log lines", () => {
 
   it("says nothing about drops when there are none", () => {
     expect(formatDiagnosticsReport(diagnostics())).not.toContain("DROPPED");
+  });
+});
+
+describe("formatDiagnosticsReport, an ignored git path", () => {
+  it("marks a configured path that is not the one running", () => {
+    // The condition BL-NI-39 exists for. Settings showed one path, Diagnostics
+    // showed another, and nothing compared them.
+    const report = formatDiagnosticsReport(
+      diagnostics({
+        gitExplicitPath: "C:/tools/git/bin/git.exe",
+        gitExplicitPathHonored: false,
+      }),
+    );
+    expect(report).toContain("CONFIGURED PATH IGNORED");
+    expect(report).toContain("C:/tools/git/bin/git.exe");
+  });
+
+  it("says nothing when the configured path IS the one running", () => {
+    const report = formatDiagnosticsReport(
+      diagnostics({
+        gitExplicitPath: "C:/Program Files/Git/cmd/git.exe",
+        gitExplicitPathHonored: true,
+      }),
+    );
+    expect(report).not.toContain("CONFIGURED PATH IGNORED");
+  });
+
+  it("says nothing when no path is configured", () => {
+    // The default setup. A warning here would fire for everyone and teach people
+    // to skip the section.
+    expect(formatDiagnosticsReport(diagnostics())).not.toContain("CONFIGURED PATH IGNORED");
   });
 });

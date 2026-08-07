@@ -878,6 +878,14 @@ pub async fn diagnostics_get(state: tauri::State<'_, AppState>) -> Result<Diagno
     // Clone the engine out of the read lock and drop the guard immediately, per
     // BL-NI-19, so reading diagnostics can never block a settings re-probe.
     let git = { state.git.read().await.clone() };
+    // The CONFIGURED git path, read so it can be compared against the RESOLVED
+    // one (BL-NI-39). Best-effort: a settings read that fails must not take down
+    // the diagnostics view, which is the thing someone opens when other things
+    // are already failing.
+    let explicit_git = reposync_core::store::settings_get(&state.pool)
+        .await
+        .ok()
+        .and_then(|s| s.git_executable_path);
     Ok(build_diagnostics(
         env!("CARGO_PKG_VERSION"),
         &paths,
@@ -885,6 +893,7 @@ pub async fn diagnostics_get(state: tauri::State<'_, AppState>) -> Result<Diagno
         git.as_ref().map(|g| g.availability().clone()),
         git.as_ref()
             .and_then(|g| g.git_exe().map(|p| p.to_path_buf())),
+        explicit_git,
         &state.scheduler_health,
         state.db_recovered,
     ))
@@ -922,6 +931,7 @@ fn build_diagnostics(
     log_config: Option<&crate::logging::LogConfig>,
     git_availability: Option<reposync_core::git::GitAvailability>,
     git_exe: Option<std::path::PathBuf>,
+    explicit_git: Option<String>,
     health: &crate::SchedulerHealth,
     db_recovered: bool,
 ) -> Diagnostics {
@@ -941,6 +951,9 @@ fn build_diagnostics(
     // `available: false` would tell the user RepoSync had stopped running git
     // when it had not. Showing the version alongside is the point: "2.28.0"
     // explains the flag by itself.
+    // Kept as a PathBuf for the comparison below: explicit_path_honored
+    // normalizes separators and wants the path, not its display string.
+    let git_exe_for_compare = git_exe;
     let (git_version, git_resolved, git_meets_floor) = match &git_availability {
         Some(reposync_core::git::GitAvailability::Available { version }) => {
             (Some(version.to_string()), true, true)
@@ -978,9 +991,24 @@ fn build_diagnostics(
             .map(|c| c.health.dropped_lines() as i64)
             .unwrap_or(0),
         onedrive_rooted: paths.is_onedrive_rooted(),
-        git_path: git_exe.map(|p| p.display().to_string()),
+        git_path: git_exe_for_compare
+            .as_ref()
+            .map(|p| p.display().to_string()),
         git_version,
         git_resolved,
+        // "Honored" is only a claim when something was configured. With nothing
+        // set there is nothing to honor, so `true` here is an absence, and the
+        // field's doc says so rather than leaving a reader to infer it. A
+        // configured path with NO resolved git is also not a mismatch: that is
+        // GitAvailability::Unavailable, already reported on its own field, and
+        // flagging it twice would send the user after the wrong problem.
+        git_explicit_path_honored: match (explicit_git.as_deref(), git_exe_for_compare.as_deref()) {
+            (Some(explicit), Some(resolved)) if !explicit.trim().is_empty() => {
+                reposync_core::git::discover::explicit_path_honored(explicit, resolved)
+            }
+            _ => true,
+        },
+        git_explicit_path: explicit_git,
         git_meets_floor,
         scheduler_cycles: health.cycles.load(Ordering::Relaxed) as i64,
         scheduler_repos_checked: health.repos_checked.load(Ordering::Relaxed) as i64,
@@ -1145,6 +1173,113 @@ pub async fn repo_group_memberships(
 mod tests {
     use super::*;
     use reposync_core::git::GitAvailability;
+    // --- explicit git path honored (BL-NI-39) --------------------------------
+
+    /// A configured path that IS the one running reports honored.
+    #[test]
+    fn a_configured_git_path_that_resolved_reports_honored() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Available {
+                version: reposync_core::git::discover::GitVersion {
+                    major: 2,
+                    minor: 47,
+                    patch: 1,
+                },
+            }),
+            Some(std::path::PathBuf::from("C:/Program Files/Git/cmd/git.exe")),
+            Some("C:/Program Files/Git/cmd/git.exe".to_string()),
+            &health_with(0, 0, 0),
+            false,
+        );
+        assert!(d.git_explicit_path_honored);
+        assert_eq!(
+            d.git_explicit_path.as_deref(),
+            Some("C:/Program Files/Git/cmd/git.exe")
+        );
+    }
+
+    /// The case this exists for: configured one git, running another, silently.
+    #[test]
+    fn a_configured_git_path_that_was_ignored_reports_unhonored() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Available {
+                version: reposync_core::git::discover::GitVersion {
+                    major: 2,
+                    minor: 47,
+                    patch: 1,
+                },
+            }),
+            Some(std::path::PathBuf::from("C:/Program Files/Git/cmd/git.exe")),
+            Some("C:/tools/git/bin/git.exe".to_string()),
+            &health_with(0, 0, 0),
+            false,
+        );
+        assert!(
+            !d.git_explicit_path_honored,
+            "a configured path RepoSync could not use, with a different git running,              is the whole condition BL-NI-39 exists to surface"
+        );
+    }
+
+    /// Nothing configured is not a mismatch. Reporting one would put a warning on
+    /// the default setup, which is the fastest way to teach people to ignore it.
+    #[test]
+    fn no_configured_git_path_is_not_a_mismatch() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Available {
+                version: reposync_core::git::discover::GitVersion {
+                    major: 2,
+                    minor: 47,
+                    patch: 1,
+                },
+            }),
+            Some(std::path::PathBuf::from("C:/Program Files/Git/cmd/git.exe")),
+            None,
+            &health_with(0, 0, 0),
+            false,
+        );
+        assert!(d.git_explicit_path_honored);
+        assert!(d.git_explicit_path.is_none());
+    }
+
+    /// A configured path with NO git at all is not a mismatch either: that is
+    /// GitAvailability::Unavailable, already reported on its own field. Flagging
+    /// it twice would send the user after the wrong problem.
+    #[test]
+    fn a_configured_path_with_no_git_resolved_is_not_reported_as_a_mismatch() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let paths = AppPaths::new(tmp.path().to_path_buf());
+        let d = build_diagnostics(
+            "0.9.0",
+            &paths,
+            None,
+            Some(GitAvailability::Unavailable),
+            None,
+            Some("C:/tools/git/bin/git.exe".to_string()),
+            &health_with(0, 0, 0),
+            false,
+        );
+        assert!(!d.git_resolved, "the real condition is reported here");
+        assert!(
+            d.git_explicit_path_honored,
+            "and NOT duplicated as a path mismatch"
+        );
+    }
+
     // --- check-all failure signalling (BL-NI-04 fallout) ---------------------
 
     fn r(code: &str) -> Option<String> {
@@ -1250,6 +1385,7 @@ mod tests {
             None,
             Some(GitAvailability::Unavailable),
             None,
+            None,
             &health_with(0, 0, 0),
             false,
         );
@@ -1293,6 +1429,7 @@ mod tests {
             Some(&config),
             None,
             None,
+            None,
             &health_with(0, 0, 0),
             false,
         );
@@ -1325,6 +1462,7 @@ mod tests {
             Some(&config),
             None,
             None,
+            None,
             &health_with(0, 0, 0),
             false,
         );
@@ -1355,6 +1493,7 @@ mod tests {
             None,
             Some(GitAvailability::BelowFloor { version: old }),
             Some(std::path::PathBuf::from("C:\\git\\git.exe")),
+            None,
             &health_with(0, 0, 0),
             false,
         );
@@ -1380,6 +1519,7 @@ mod tests {
             &paths,
             None,
             Some(GitAvailability::Unavailable),
+            None,
             None,
             &health_with(0, 0, 0),
             false,
@@ -1407,6 +1547,7 @@ mod tests {
             None,
             Some(GitAvailability::Available { version: v }),
             Some(std::path::PathBuf::from("git")),
+            None,
             &health_with(0, 0, 0),
             false,
         );
@@ -1426,6 +1567,7 @@ mod tests {
         let d = build_diagnostics(
             "0.9.0",
             &paths,
+            None,
             None,
             None,
             None,
@@ -1455,6 +1597,7 @@ mod tests {
         let d = build_diagnostics(
             "0.9.0",
             &paths,
+            None,
             None,
             None,
             None,
