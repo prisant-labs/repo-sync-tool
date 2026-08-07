@@ -229,6 +229,11 @@ impl OutcomeWriter for CollectingOutcomeWriter {
         // NOTHING the frontend hears, so this is what makes the dashboard rows and the
         // open repo-detail drawer refresh on a BACKGROUND check. The manual command
         // paths emit their own check/update-completed events. Best-effort.
+        //
+        // That last sentence was FALSE for failures until BL-NI-04: the manual path
+        // returned `Err` on a failed fetch, which short-circuited its own
+        // `check-completed` emit, so the scheduled path was the only one that said
+        // anything at all when a check went wrong. It is true now.
         crate::events::emit_state_changed(&self.app, repo.id.0, status_error_code(status));
         if let Some(kind) = note_kind_for(status) {
             // Resolve the repo name for a human toast body. Only the exceptional

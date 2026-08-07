@@ -80,6 +80,14 @@ pub async fn repo_check_now(
 /// `check-completed`); a per-repo failure is surfaced via `error:raised` (the tray
 /// action is fire-and-forget, so there is no synchronous caller to receive it) and
 /// does not abort the run.
+///
+/// Since BL-NI-04 the returned count means "attempted", not "succeeded". A check
+/// whose fetch failed now returns `Ok` with `failed: true`, so it emits its
+/// completion event and counts here. That widening is deliberate and it is the
+/// honest reading of a tray item labelled "Check All Now": the user asked for N
+/// repos to be checked, N were checked, and some of them came back with bad news
+/// that the per-repo event now carries. The `error:raised` arm is left for the
+/// checks that could not RUN at all.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_check_all(
@@ -109,22 +117,92 @@ pub(crate) async fn check_all_enabled(
     let targets = reposync_core::store::select_check_all_targets(&flags);
 
     let mut checked = 0u32;
+    // Failures that COMPLETED (a non-zero fetch), collected rather than announced
+    // one at a time. See the coalescing note below.
+    let mut soft_failures: Vec<Option<String>> = Vec::new();
+
     for id in targets {
         // Serialize per repo against the scheduler via the SAME per-repo lock.
         let _lock = locks.lock_handle(RepoId(id)).lock_owned().await;
         emit_check_started(app, id);
         match reposync_core::repo::check_now(pool, &git, RepoId(id)).await {
             Ok(result) => {
+                // The completion event fires for EVERY outcome, including a failed
+                // one (BL-NI-04). That is the whole point: an open window learns
+                // that this repo's check finished and how.
                 emit_check_completed(app, &result);
                 checked += 1;
+                if result.failed {
+                    soft_failures.push(result.reason.clone());
+                }
             }
-            // A single repo's failure must not abort the whole check-all; surface it
-            // on the global error event (no synchronous caller to receive it) and move
-            // on to the next repo.
+            // A check that could not RUN at all (git vanished mid-burst, the path
+            // is gone). Still surfaced immediately and individually: it is rare,
+            // and it usually means the next repo will fail the same way.
             Err(e) => emit_error_raised(app, &e),
         }
     }
+
+    // ONE signal for the whole burst, not one per repo.
+    //
+    // Before BL-NI-04 a failed check returned `Err`, so it landed in the arm above
+    // and produced its own `error:raised`, which the shell turns into a toast. That
+    // was the only failure feedback the tray path had, and moving failures onto the
+    // Ok branch would have removed it silently: "Check All Now" would have reported
+    // nothing at all while every repository failed.
+    //
+    // Restoring it verbatim would restore a worse problem, though. One toast per
+    // failed repo means a forty-repo library on a dropped network produces forty
+    // toasts, all saying the same thing, burying anything else on screen. So the
+    // burst reports once, choosing the most ACTIONABLE representative rather than
+    // the first or the most common: an auth failure outranks a network failure
+    // because it will not fix itself and the policy engine pauses the repo for it,
+    // while a network failure is usually one condition affecting everything and
+    // resolves on its own.
+    //
+    // The per-repo detail is not lost; it is in the activity receipt for each
+    // repository, which is where the raw git output now actually renders.
+    if let Some(representative) = check_all_failure_signal(&soft_failures, checked) {
+        emit_error_raised(app, &representative);
+    }
+
     Ok(checked)
+}
+
+/// Choose the ONE error to report for a check-all burst, or `None` when nothing
+/// failed. Pure, so the priority rule is asserted by a test rather than by reading
+/// an async function that needs a Tauri handle to call.
+///
+/// The ordering is by ACTIONABILITY, not by frequency or by which came first:
+///
+/// 1. **Auth** wins outright. It will not fix itself, it is the failure the policy
+///    engine pauses a repository for, and one credential problem hiding behind
+///    nineteen network timeouts is the case where a summary most needs to pick the
+///    right thing to say.
+/// 2. **Network** next. Usually one condition affecting everything, and usually
+///    transient, so it is worth naming but not worth outranking auth.
+/// 3. Otherwise a **count**, which is the honest fallback: the burst hit something
+///    that is neither, and the receipts have the detail.
+fn check_all_failure_signal(reasons: &[Option<String>], checked: u32) -> Option<AppError> {
+    if reasons.is_empty() {
+        return None;
+    }
+    let any = |code: &str| reasons.iter().any(|r| r.as_deref() == Some(code));
+    Some(if any("git.auth_failed") {
+        AppError::AuthFailed
+    } else if any("net.offline") {
+        AppError::Offline
+    } else {
+        AppError::FetchFailed {
+            exit_code: None,
+            stderr: format!(
+                "{} of {} repositories could not be checked. \
+                 Select each one's newest entry in Activity for the exact command and output.",
+                reasons.len(),
+                checked
+            ),
+        }
+    })
 }
 
 // =============================================================================
@@ -968,6 +1046,78 @@ pub async fn repo_group_memberships(
 mod tests {
     use super::*;
     use reposync_core::git::GitAvailability;
+    // --- check-all failure signalling (BL-NI-04 fallout) ---------------------
+
+    fn r(code: &str) -> Option<String> {
+        Some(code.to_string())
+    }
+
+    /// A clean burst says nothing. The signal only means something if silence
+    /// means success.
+    #[test]
+    fn a_clean_check_all_raises_no_error() {
+        assert!(check_all_failure_signal(&[], 12).is_none());
+    }
+
+    /// Auth outranks network, regardless of how outnumbered it is.
+    ///
+    /// This is the case the priority rule exists for: nineteen repositories timing
+    /// out on a dropped connection and ONE with expired credentials. Reporting
+    /// "offline" there would send the user to look at their network and leave the
+    /// credential problem to be rediscovered later, after the policy engine has
+    /// already paused that repository for it.
+    #[test]
+    fn one_auth_failure_outranks_many_network_failures() {
+        let reasons = vec![
+            r("net.offline"),
+            r("net.offline"),
+            r("git.auth_failed"),
+            r("net.offline"),
+        ];
+        assert!(matches!(
+            check_all_failure_signal(&reasons, 20),
+            Some(AppError::AuthFailed)
+        ));
+    }
+
+    /// A homogeneous network burst reports the network, not a bare count.
+    #[test]
+    fn an_all_network_burst_reports_offline() {
+        let reasons = vec![r("net.offline"), r("net.offline")];
+        assert!(matches!(
+            check_all_failure_signal(&reasons, 2),
+            Some(AppError::Offline)
+        ));
+    }
+
+    /// Anything else falls back to a count that names where the detail lives.
+    ///
+    /// The message has to survive being read in a toast with no other context, so
+    /// it carries both numbers and points at Activity. "git fetch failed" alone is
+    /// not a next step.
+    #[test]
+    fn an_unclassified_burst_reports_a_count_and_points_at_activity() {
+        let reasons = vec![r("git.fetch_failed"), None];
+        match check_all_failure_signal(&reasons, 7) {
+            Some(AppError::FetchFailed { stderr, .. }) => {
+                assert!(stderr.contains("2 of 7"), "got {stderr:?}");
+                assert!(stderr.contains("Activity"), "got {stderr:?}");
+            }
+            other => panic!("expected a counted FetchFailed, got {other:?}"),
+        }
+    }
+
+    /// A reason the edge has never seen must not be silently dropped.
+    ///
+    /// If a future reason code fell through every arm and produced `None`, a real
+    /// burst of failures would report nothing at all, which is exactly the
+    /// regression this whole signal exists to prevent.
+    #[test]
+    fn an_unknown_reason_code_still_produces_a_signal() {
+        let reasons = vec![r("git.something_invented_later")];
+        assert!(check_all_failure_signal(&reasons, 1).is_some());
+    }
+
     use reposync_core::github::{RateLimit, RefreshOutcome, RefreshReport};
     use reposync_core::paths::AppPaths;
 
