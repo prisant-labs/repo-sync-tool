@@ -1480,6 +1480,43 @@ mod tests {
         }
     }
 
+    /// A [`JobRunner`] whose job PANICS for the named repos and behaves like
+    /// [`FakeJobRunner`] for the rest.
+    ///
+    /// This exists to exercise the one branch of the tick loop whose only evidence
+    /// was a log line: a spawned job that does not return a value. `SCHEDULER_JOB_ABORTED`
+    /// is emitted there, and a log line is evidence for a human reading a file
+    /// afterwards, never for a test.
+    ///
+    /// Worth being precise about what this can and cannot claim, because the
+    /// release profile sets `panic = "abort"`: in a SHIPPED build a panicking task
+    /// does not produce a `JoinError`, it takes the process with it, so the branch
+    /// under test is reachable only in a debug or dev run. That does not make it
+    /// worthless. It is real there, `cargo test` runs there, and the property being
+    /// pinned is about the tick loop's structure, that one job's disappearance is
+    /// contained rather than fatal to the cycle, which is the same property that
+    /// makes the surrounding design defensible.
+    struct PanickingJobRunner {
+        inner: FakeJobRunner,
+        panic_for: Vec<i64>,
+    }
+    impl PanickingJobRunner {
+        fn new(inst: Instrument, panic_for: Vec<i64>) -> PanickingJobRunner {
+            PanickingJobRunner {
+                inner: FakeJobRunner::new(inst),
+                panic_for,
+            }
+        }
+    }
+    impl JobRunner for PanickingJobRunner {
+        async fn run(&self, id: RepoId, git: SystemGitEngine) -> RunOutcome {
+            if self.panic_for.contains(&id.0) {
+                panic!("deliberate test panic in the job for repo {}", id.0);
+            }
+            self.inner.run(id, git).await
+        }
+    }
+
     /// A [`GitEngineSource`] that always reports git PRESENT via a fabricated
     /// engine (no `git --version` subprocess, no host-git dependency), so the tick
     /// gate passes for the orchestration tests whose fake job runner never touches
@@ -2861,6 +2898,116 @@ mod tests {
             recorded,
             vec![1, 3],
             "the two healthy repos still recorded their outcomes"
+        );
+    }
+
+    /// A job that VANISHES must not take the cycle with it.
+    ///
+    /// The sibling test above covers a job that fails to persist. This covers the
+    /// other containment case, a spawned task that returns no value at all, which
+    /// until now was asserted by nothing: the tick loop emits
+    /// `SCHEDULER_JOB_ABORTED` and moves on, and a log line is evidence for a
+    /// human reading a file afterwards, never for a test.
+    ///
+    /// The distinction the assertions pin is that this is a DIFFERENT failure
+    /// class from a persist failure. A vanished job never reached the writer, so
+    /// it must not appear in `persist_failures`: collapsing the two would tell an
+    /// operator the database is unhappy when the truth is that a task died.
+    ///
+    /// Note what is deliberately NOT asserted. `TickReport` has no `aborted`
+    /// field, and the tick loop says why in a comment at the join site: under
+    /// `panic = "abort"` no shipped build can populate one, and a structured field
+    /// production can never fill reads as coverage it does not have. So the log
+    /// line IS the contract here, and this test asserts the log line rather than
+    /// lobbying for a field. That is also why `ran` is 3 and not 2 - it counts
+    /// repos SELECTED AND RUN, and the vanished job was both.
+    #[tokio::test]
+    async fn a_panicking_job_does_not_abort_the_cycle() {
+        let inst = Instrument::default();
+        let writer = FakeOutcomeWriter::new();
+        let writer_handle = writer.clone();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(1), due(2), due(3)]),
+            },
+            PanickingJobRunner::new(inst.clone(), vec![2]),
+            writer,
+            4,
+        );
+
+        let (captured, _guard) = crate::logging::capture::install();
+        let report = sched
+            .tick_once()
+            .await
+            .expect("a panicking job must not make the TICK fail");
+
+        assert_eq!(
+            report.ran, 3,
+            "`ran` counts repos selected and run, and the vanished job was both; \
+             a 0 here would mean the cycle died with it"
+        );
+        assert!(
+            report.persist_failures.is_empty(),
+            "a vanished job is not a persist failure; it never reached the writer, \
+             and merging the two would point an operator at the database instead of \
+             at the task that died, got {:?}",
+            report.persist_failures
+        );
+        assert!(
+            captured.saw_at(
+                crate::logging::event::SCHEDULER_JOB_ABORTED,
+                tracing::Level::ERROR
+            ),
+            "the vanished job's ONLY trace is this log line, since it is deliberately \
+             absent from the report; captured events were {:?}",
+            captured.names()
+        );
+
+        let mut recorded: Vec<i64> = writer_handle
+            .recorded()
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect();
+        recorded.sort_unstable();
+        assert_eq!(
+            recorded,
+            vec![1, 3],
+            "the healthy repos still recorded their outcomes"
+        );
+    }
+
+    /// The inverse: a healthy cycle must emit no abort event.
+    ///
+    /// Without this, an implementation that logged `scheduler.job_aborted` on
+    /// every join would satisfy the test above and make the event useless, which
+    /// matters more here than usual because that log line is the ONLY evidence
+    /// this failure class produces.
+    #[tokio::test]
+    async fn a_healthy_cycle_emits_no_abort_event() {
+        let inst = Instrument::default();
+        let sched = Scheduler::new(
+            FakeClock::new(1000, 600),
+            FakeJitter::new(0),
+            FakeEngineSource::present(),
+            FakeDueQuery {
+                selection: selection(vec![due(1), due(2)]),
+            },
+            FakeJobRunner::new(inst.clone()),
+            FakeOutcomeWriter::new(),
+            4,
+        );
+
+        let (captured, _guard) = crate::logging::capture::install();
+        let report = sched.tick_once().await.expect("tick");
+
+        assert_eq!(report.ran, 2);
+        assert!(
+            !captured.saw(crate::logging::event::SCHEDULER_JOB_ABORTED),
+            "a healthy cycle must be quiet; captured events were {:?}",
+            captured.names()
         );
     }
 
