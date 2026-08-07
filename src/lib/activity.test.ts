@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ActivityRecord } from "@/lib/bindings";
-import { ACTIVITY_PAGE_LIMIT, formatReceipt, toActivityFilter } from "@/lib/activity";
+import {
+  ACTIVITY_FETCH_LIMIT,
+  ACTIVITY_PAGE_LIMIT,
+  formatReceipt,
+  paginate,
+  toActivityFilter,
+} from "@/lib/activity";
 
 /**
  * The receipt string is what a user pastes into a bug report, so a field
@@ -131,7 +137,7 @@ describe("toActivityFilter", () => {
       repoId: null,
       actionType: null,
       status: null,
-      limit: ACTIVITY_PAGE_LIMIT,
+      limit: ACTIVITY_FETCH_LIMIT,
     });
   });
 
@@ -140,7 +146,7 @@ describe("toActivityFilter", () => {
       repoId: null,
       actionType: "update",
       status: null,
-      limit: ACTIVITY_PAGE_LIMIT,
+      limit: ACTIVITY_FETCH_LIMIT,
     });
   });
 
@@ -149,7 +155,7 @@ describe("toActivityFilter", () => {
       repoId: null,
       actionType: null,
       status: "failed",
-      limit: ACTIVITY_PAGE_LIMIT,
+      limit: ACTIVITY_FETCH_LIMIT,
     });
   });
 
@@ -158,15 +164,18 @@ describe("toActivityFilter", () => {
       repoId: null,
       actionType: "check",
       status: "success",
-      limit: ACTIVITY_PAGE_LIMIT,
+      limit: ACTIVITY_FETCH_LIMIT,
     });
   });
 
-  it("always sends an explicit limit, so the backend default is never silently in play", () => {
-    // The core's own default is 200 and its ceiling is 1000. The screen's cap is
-    // a frontend choice, and the truncation notice in the UI is written against
-    // THIS number, so the two must not be able to drift apart.
-    expect(toActivityFilter("all", "all").limit).toBe(ACTIVITY_PAGE_LIMIT);
+  it("requests one MORE row than it displays, so truncation is knowable", () => {
+    // The core's own default is 200 and its ceiling is 1000, so an explicit limit
+    // is always sent rather than letting the backend default apply silently. The
+    // +1 is the sentinel: a response capped at N cannot distinguish "exactly N
+    // matches" from "far more than N", so the screen asks for N+1 and treats the
+    // extra row's arrival as the evidence that older entries exist.
+    expect(toActivityFilter("all", "all").limit).toBe(ACTIVITY_FETCH_LIMIT);
+    expect(ACTIVITY_FETCH_LIMIT).toBe(ACTIVITY_PAGE_LIMIT + 1);
     expect(ACTIVITY_PAGE_LIMIT).toBeGreaterThan(0);
   });
 
@@ -179,5 +188,52 @@ describe("toActivityFilter", () => {
         expect(toActivityFilter(a, s).repoId).toBeNull();
       }
     }
+  });
+});
+
+/**
+ * `paginate` decides two things a rendered list makes awkward to check: which
+ * rows to show, and whether to claim older entries exist.
+ *
+ * The boundary is the whole point. An earlier version of the screen asked for 60
+ * rows and showed the truncation notice when it got 60 back. That test can never
+ * be right: the request is capped, so a response cannot exceed the limit, and
+ * "we received exactly 60" is equally consistent with "there are exactly 60" and
+ * "there are ten thousand". At exactly 60 the notice asserted the existence of
+ * older entries on no evidence, which is the same unfounded-confidence problem it
+ * was added to fix. Asking for 61 and testing for the extra row makes the claim
+ * something the code actually knows.
+ */
+describe("paginate", () => {
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  it("shows everything and claims no more when under the display limit", () => {
+    const { visible, hasMore } = paginate(rows(ACTIVITY_PAGE_LIMIT - 1));
+    expect(visible).toHaveLength(ACTIVITY_PAGE_LIMIT - 1);
+    expect(hasMore).toBe(false);
+  });
+
+  it("shows everything and claims no more at EXACTLY the display limit", () => {
+    // The case the old length-based check got wrong.
+    const { visible, hasMore } = paginate(rows(ACTIVITY_PAGE_LIMIT));
+    expect(visible).toHaveLength(ACTIVITY_PAGE_LIMIT);
+    expect(hasMore).toBe(false);
+  });
+
+  it("drops the sentinel row and claims more when it arrives", () => {
+    const { visible, hasMore } = paginate(rows(ACTIVITY_FETCH_LIMIT));
+    expect(visible).toHaveLength(ACTIVITY_PAGE_LIMIT);
+    expect(hasMore).toBe(true);
+  });
+
+  it("never renders the sentinel row itself", () => {
+    // The extra row was requested to answer a question, not to be read. Showing
+    // it would make the list one longer than the notice says it is.
+    const { visible } = paginate(rows(ACTIVITY_FETCH_LIMIT));
+    expect(visible.at(-1)).toBe(ACTIVITY_PAGE_LIMIT - 1);
+  });
+
+  it("handles an empty page without claiming more", () => {
+    expect(paginate([])).toEqual({ visible: [], hasMore: false });
   });
 });

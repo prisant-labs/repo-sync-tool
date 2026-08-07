@@ -7,7 +7,7 @@ import { EmptyState } from "@/components/empty-state";
 import { FilterChip } from "@/components/filter-chip";
 import { ActivityReceipt } from "@/components/activity-receipt";
 import { useActivity, useRepoList } from "@/hooks/queries";
-import { ACTIVITY_PAGE_LIMIT, toActivityFilter } from "@/lib/activity";
+import { ACTIVITY_PAGE_LIMIT, paginate, toActivityFilter } from "@/lib/activity";
 import type { ActionTypeFilter, StatusFilter } from "@/lib/activity";
 import { relativeTime } from "@/lib/status";
 import { cn } from "@/lib/utils";
@@ -113,7 +113,7 @@ export function ActivityScreen() {
       >
         {(rows) => (
           <Card className="divide-y divide-border">
-            {rows.map((row) => (
+            {paginate(rows).visible.map((row) => (
               <button
                 key={row.id}
                 type="button"
@@ -143,15 +143,23 @@ export function ActivityScreen() {
       </AsyncPanel>
 
       {/*
-        Say so when the page is full. A list capped at 60 with nothing marking
-        the cut looks like the whole history, which matters most in exactly the
-        case the filters were added for: narrowing to "Failed", seeing a screen
-        of rows, and concluding those are all of them.
+        Say so when the page was cut, and ONLY then. A list capped at 60 with
+        nothing marking the cut looks like the whole history, which matters most
+        in exactly the case the filters were added for: narrowing to "Failed",
+        seeing a screen of rows, and concluding those are all of them.
+
+        The condition is `hasMore` from the sentinel row, not a length comparison
+        against the display limit. Those are not the same test: the request is
+        capped, so a response can never exceed the limit, and "we got exactly 60"
+        is equally consistent with "there are exactly 60" and "there are
+        thousands". Keying on length would have this notice assert the existence
+        of older entries in the one case it cannot distinguish, which is the same
+        confident-but-unfounded claim it exists to prevent.
       */}
-      {(activity.data?.length ?? 0) >= ACTIVITY_PAGE_LIMIT && (
+      {paginate(activity.data ?? []).hasMore && (
         <p className="text-xs text-muted-foreground">
-          Showing the {ACTIVITY_PAGE_LIMIT} most recent matching entries. Older ones are kept and
-          are in the log, but are not listed here yet.
+          Showing the {ACTIVITY_PAGE_LIMIT} most recent matching entries. There are older ones;
+          they are kept and are in the log, but are not listed here yet.
         </p>
       )}
 

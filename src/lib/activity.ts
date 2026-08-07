@@ -49,12 +49,12 @@ export function formatReceipt(record: ActivityRecord, repoName: string | null): 
 }
 
 /**
- * The rows the Activity screen requests per page.
+ * The rows the Activity screen DISPLAYS per page.
  *
  * Deliberately named rather than inlined, because it is the reason the filter
  * chips carry no counts and the reason filtering has to happen in SQL. The
- * backend applies this LIMIT *after* its WHERE clause, so what comes back is one
- * capped page of an already-filtered query. Narrowing the same rows again in the
+ * backend applies its LIMIT *after* the WHERE, so what comes back is one capped
+ * page of an already-filtered query. Narrowing the same rows again in the
  * browser would search only whatever the last unfiltered page happened to hold,
  * which for an audit trail is a lie by omission: "no failed updates for this
  * repo" would really mean "none in the most recent 60 rows".
@@ -65,6 +65,19 @@ export function formatReceipt(record: ActivityRecord, repoName: string | null): 
  * change's to make.
  */
 export const ACTIVITY_PAGE_LIMIT = 60;
+
+/**
+ * What the screen actually ASKS the backend for: one more row than it shows.
+ *
+ * That extra row is a sentinel, and it exists because a page of exactly N rows
+ * cannot tell you whether there were more. Requesting N and getting N back is
+ * consistent with "there are exactly N matches" and with "there are thousands",
+ * so a truncation notice keyed on it would assert the existence of older entries
+ * it has no evidence for - which is precisely the kind of confident-and-unfounded
+ * claim the notice was added to prevent. Ask for N+1: if it arrives, more exist,
+ * and if it does not, the page is the whole result.
+ */
+export const ACTIVITY_FETCH_LIMIT = ACTIVITY_PAGE_LIMIT + 1;
 
 /** The action-type chip selection. `all` means "do not constrain". */
 export type ActionTypeFilter = "all" | "check" | "update";
@@ -94,6 +107,21 @@ export function toActivityFilter(
     repoId: null,
     actionType: actionType === "all" ? null : actionType,
     status: status === "all" ? null : status,
-    limit: ACTIVITY_PAGE_LIMIT,
+    limit: ACTIVITY_FETCH_LIMIT,
+  };
+}
+
+/**
+ * Split a fetched page into what to render and whether anything was cut off.
+ *
+ * Pure, so the boundary cases that a rendered list makes awkward to check
+ * (exactly at the limit, one over, one under) are pinned by test instead. The
+ * sentinel row is dropped rather than shown: it was requested to answer a
+ * question, not to be read.
+ */
+export function paginate<T>(rows: T[]): { visible: T[]; hasMore: boolean } {
+  return {
+    visible: rows.slice(0, ACTIVITY_PAGE_LIMIT),
+    hasMore: rows.length > ACTIVITY_PAGE_LIMIT,
   };
 }
