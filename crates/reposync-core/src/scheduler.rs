@@ -869,7 +869,7 @@ where
         Ok(current) => current,
         Err(e) => {
             tracing::warn!(
-                event = crate::logging::event::SCHEDULER_OUTCOME_PERSIST_FAILED,
+                event = crate::logging::event::SCHEDULER_FAILURE_COUNT_READ_FAILED,
                 repo_id = repo.id.0,
                 error = %e,
                 "could not re-read the failure count; classifying against the \
@@ -3115,7 +3115,18 @@ mod tests {
             4,
         );
 
+        let (captured, _guard) = crate::logging::capture::install();
         sched.tick_once().await.expect("the tick must not fail");
+
+        assert!(
+            captured.saw(crate::logging::event::SCHEDULER_FAILURE_COUNT_READ_FAILED),
+            "the fallback must SAY it happened; classifying against a possibly-stale              count silently is the condition BL-NI-72 removed everywhere else.              Captured events were {:?}",
+            captured.names()
+        );
+        assert!(
+            !captured.saw(crate::logging::event::SCHEDULER_OUTCOME_PERSIST_FAILED),
+            "and it must NOT reuse the persist-failure name: nothing failed to              persist, and one name covering both makes a log search for write              problems return read problems"
+        );
 
         let recorded = handle.recorded();
         assert_eq!(recorded.len(), 1, "the outcome is still recorded");

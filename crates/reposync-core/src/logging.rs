@@ -43,6 +43,19 @@ pub mod event {
     /// debug or dev run. It is a real event there: that repo's job vanished
     /// without recording anything.
     pub const SCHEDULER_JOB_ABORTED: &str = "scheduler.job_aborted";
+    /// A job could not re-read the repo's CURRENT failure count and fell back to
+    /// the count the due query snapshotted (BL-NI-72).
+    ///
+    /// Distinct from `scheduler.outcome_persist_failed`, and deliberately so:
+    /// nothing failed to PERSIST here. The job read stale input, classified
+    /// against it, and wrote the result successfully. Filing both under one name
+    /// would make a log search for write problems return read problems, which
+    /// defeats the point of the name being a grep target.
+    ///
+    /// The consequence when it fires is narrow but real: the three-strikes
+    /// classification for that one job used a count that may predate a manual
+    /// check, which is exactly the staleness BL-NI-72 removed everywhere else.
+    pub const SCHEDULER_FAILURE_COUNT_READ_FAILED: &str = "scheduler.failure_count_read_failed";
     /// The activity retention sweep failed.
     pub const RETENTION_SWEEP_FAILED: &str = "retention.sweep_failed";
 
