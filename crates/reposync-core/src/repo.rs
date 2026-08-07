@@ -48,6 +48,56 @@ where
     Ok(())
 }
 
+/// Record a HARD failure's stable code into `repo_local_state.last_error_code`,
+/// best-effort, for a manual command that is about to return `Err`.
+///
+/// The soft path (a fetch that ran and came back non-zero) writes the column
+/// inside the outcome the command persists anyway. This covers the other class:
+/// `git.inspect(path)?`, `git.fetch(path).await?`, and the equivalent early exits
+/// in the update path all leave via `?` BEFORE any state write happens, so a
+/// deleted working tree, a directory that stopped being a repository, or a git
+/// executable that went missing would leave the column holding whatever it held
+/// before, or nothing.
+///
+/// That gap is specific to the MANUAL commands. A scheduled run is covered
+/// because the scheduler's `DbOutcomeWriter` records an outcome for the job
+/// regardless of how the inner call returned; a manual command has no such outer
+/// writer, so without this the Repos list and the daily summary would silently
+/// disagree with the failure the user just watched happen.
+///
+/// Deliberately best-effort and deliberately narrow:
+///
+/// - It updates ONLY `last_error_code` and `last_attempted_at`. The other state
+///   columns describe an observation that did not happen, so overwriting them
+///   with defaults would replace real, if stale, facts with fabricated ones.
+/// - It never converts a failed write into a different error. The caller is
+///   already returning the real failure, and burying it under a bookkeeping error
+///   would lose the thing the user needs to read. A double failure logs instead,
+///   under a stable event name, because that is the only trace it leaves.
+/// - [`AppError::NotFound`] is skipped: there is no state row to write to, and
+///   recording "this repo failed" for a repo that does not exist is noise.
+async fn record_hard_failure_code(pool: &SqlitePool, repo_id: i64, err: &AppError) {
+    if matches!(err, AppError::NotFound { .. }) {
+        return;
+    }
+    let write = sqlx::query(
+        "UPDATE repo_local_state SET last_error_code = ?, last_attempted_at = ? WHERE repo_id = ?",
+    )
+    .bind(err.code())
+    .bind(now_secs())
+    .bind(repo_id)
+    .execute(pool)
+    .await;
+    if let Err(e) = write {
+        tracing::error!(
+            event = crate::logging::event::STATE_ERROR_CODE_PERSIST_FAILED,
+            repo_id,
+            code = err.code(),
+            "could not persist the failure code for a manual operation: {e}"
+        );
+    }
+}
+
 /// Add a repository to the registry.
 ///
 /// Validates the path, inspects it via git2, derives registry fields, and writes
@@ -173,7 +223,27 @@ pub async fn add(
 /// decision policy, updates `repo_local_state`, and appends an
 /// `activity_records` row. A non-zero fetch records the activity row, then
 /// returns [`AppError::FetchFailed`].
+///
+/// This wrapper exists so the two failure classes both leave a record. A SOFT
+/// failure (git ran, came back non-zero) is persisted inside the outcome the
+/// inner function writes anyway. A HARD failure exits through `?` before any
+/// state write happens, so it is caught here and recorded best-effort by
+/// [`record_hard_failure_code`]. Without that, a repo whose directory was deleted
+/// would fail loudly in the UI and then still read as healthy in the Repos list
+/// and be absent from the daily summary's attention set.
 pub async fn check_now(
+    pool: &SqlitePool,
+    git: &SystemGitEngine,
+    id: RepoId,
+) -> Result<CheckResult, AppError> {
+    let out = check_now_inner(pool, git, id).await;
+    if let Err(e) = &out {
+        record_hard_failure_code(pool, id.0, e).await;
+    }
+    out
+}
+
+async fn check_now_inner(
     pool: &SqlitePool,
     git: &SystemGitEngine,
     id: RepoId,
@@ -269,11 +339,22 @@ pub async fn check_now(
     //     fresh inspect so a branch switch since `add` is reflected; omitting it
     //     leaves stale state. upstream_branch is also refreshed here since it was
     //     already inspected.
+    //
+    //     `last_error_code` carries the reason ONLY for an operational failure
+    //     (auth, network, an unclassified non-zero fetch), and is cleared to NULL
+    //     otherwise. A policy skip is deliberately NOT an error: "dirty" and
+    //     "detached" are the designed outcome of a rule the user chose, they are
+    //     already represented by `is_dirty` / `is_detached`, and writing them here
+    //     would make `summary`'s needs-attention query double-count a dirty repo
+    //     under both halves of its `last_error_code IS NOT NULL OR is_dirty = 1`
+    //     condition. This mirrors the `status` line just below, which draws the
+    //     same boundary for the activity receipt.
+    let last_error_code = if fetch_failed { reason.clone() } else { None };
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
          head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
-         last_attempted_at = ? \
+         last_attempted_at = ?, last_error_code = ? \
          WHERE repo_id = ?",
     )
     .bind(&inspect.active_branch)
@@ -286,6 +367,7 @@ pub async fn check_now(
     .bind(inspect.last_commit_at)
     .bind(now)
     .bind(now)
+    .bind(&last_error_code)
     .bind(repo_id)
     .execute(&mut *tx)
     .await?;
@@ -460,11 +542,40 @@ async fn run_update_inner(
     } else {
         None
     };
+    // Same boundary as `check_now`: the reason is persisted as an error code only
+    // when the run actually FAILED. `execute_action` reports `status == "failed"`
+    // for operational failures and leaves policy skips on the success path, so
+    // reusing that flag keeps the two entry points writing the column identically.
+    let last_error_code = if status == "failed" {
+        reason_code.clone()
+    } else {
+        None
+    };
+    // The recovery reset is folded into THIS statement rather than run after it
+    // (it used to be a separate `clear_failure_state` call).
+    //
+    // These three facts are one fact: "this repo is healthy again". Split across
+    // two statements, a failure between them leaves the repo with
+    // `last_error_code = NULL` and `auto_paused = 1` still set, which is the worst
+    // reachable state - the scheduler's due-query excludes auto-paused repos, and
+    // the summary's needs-attention query keys on `last_error_code IS NOT NULL`,
+    // so the repo is simultaneously frozen out of automatic checking AND invisible
+    // in the one view that exists to tell the user something needs looking at.
+    // Nothing would ever surface it.
+    //
+    // One statement against one row of one table cannot half-apply, so this is
+    // stronger than a transaction and cheaper. `success_reset` is bound once and
+    // read twice by the CASE arms; on a failed run both columns keep their values
+    // for the E-08 failure state machine to advance.
+    let success_reset = if status == "success" { 1_i64 } else { 0_i64 };
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
          head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
-         last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at) \
+         last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at), \
+         last_error_code = ?, \
+         consecutive_failures = CASE WHEN ? = 1 THEN 0 ELSE consecutive_failures END, \
+         auto_paused = CASE WHEN ? = 1 THEN 0 ELSE auto_paused END \
          WHERE repo_id = ?",
     )
     .bind(&post.active_branch)
@@ -478,12 +589,23 @@ async fn run_update_inner(
     .bind(now)
     .bind(now)
     .bind(updated_at_col)
+    .bind(&last_error_code)
+    .bind(success_reset)
+    .bind(success_reset)
     .bind(repo_id)
     .execute(pool)
     .await?;
 
-    // 8. Record the activity row through the single E-09 sink (best-effort: a
-    //    logging failure must not abort the update that already happened).
+    // 8. Record the activity row through the single E-09 sink.
+    //
+    //    Best-effort, and deliberately OUTSIDE the state write above, which is the
+    //    opposite of what `check_now` does. The asymmetry is the point: `check_now`
+    //    never touches the working tree, so rolling its state write back when the
+    //    receipt fails costs one redundant re-check. An update may have just
+    //    fast-forwarded the tree. Rolling back here would leave the database
+    //    claiming nothing happened while HEAD had actually moved, which is a worse
+    //    lie than a missing receipt. A failed write logs under
+    //    `activity.write_failed`.
     let summary = format!("update: mode={mode_label}, outcome={outcome}");
     activity::record(
         pool,
@@ -504,13 +626,10 @@ async fn run_update_inner(
     )
     .await;
 
-    // E-08 review fix (HIGH): a successful manual update clears the failure streak
-    // and auto-pause, re-admitting a user-recovered repo to the scheduler's
-    // due-query. A failed update leaves the counters for the scheduler's failure
-    // state machine to manage.
-    if status == "success" {
-        clear_failure_state(pool, repo_id).await?;
-    }
+    // The E-08 recovery reset (a successful manual update clears the failure
+    // streak and auto-pause, re-admitting a user-recovered repo to the scheduler's
+    // due-query) now happens in the single state UPDATE in step 7 rather than as a
+    // second statement here. See the comment there for why they cannot be split.
 
     let run_outcome = classify_run_outcome(status, reason_code.as_deref());
     Ok((
@@ -535,13 +654,22 @@ async fn run_update_inner(
 /// scheduled one execute identically. The Tauri handler wraps this with the
 /// `update-started` / `update-completed` event emission; this core function does
 /// no event I/O.
+/// A HARD failure here (git missing, path gone, the directory no longer a working
+/// tree) exits `run_update_inner` through `?` before any state write, so it is
+/// recorded best-effort on the way out, exactly as [`check_now`] does. The
+/// scheduled entry point does not need this: the scheduler's `DbOutcomeWriter`
+/// records an outcome for the job however the inner call returned.
 pub async fn update_now(
     pool: &SqlitePool,
     git: &SystemGitEngine,
     id: RepoId,
     mode: UpdateMode,
 ) -> Result<UpdateResult, AppError> {
-    run_update_inner(pool, git, id, mode).await.map(|(r, _)| r)
+    let out = run_update_inner(pool, git, id, mode).await;
+    if let Err(e) = &out {
+        record_hard_failure_code(pool, id.0, e).await;
+    }
+    out.map(|(r, _)| r)
 }
 
 /// The classified result of a scheduled update: the IPC [`UpdateResult`] plus the
@@ -1488,6 +1616,130 @@ mod tests {
             .expect("set update_mode");
     }
 
+    /// A HARD failure on a manual command must still leave an error code behind.
+    ///
+    /// The soft path (git ran and returned non-zero) is covered by
+    /// `check_now_persists_and_clears_last_error_code`. This covers the other
+    /// class, which the first version of this change missed: `git.inspect(path)?`
+    /// exits through `?` before ANY state write, so a repo whose directory was
+    /// deleted out from under RepoSync would fail loudly in the UI and then still
+    /// read as healthy in the Repos list and be absent from the daily summary's
+    /// attention set. The scheduled path is not affected, because the scheduler's
+    /// `DbOutcomeWriter` records an outcome however the inner call returned; a
+    /// manual command has no such outer writer.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn a_hard_failure_on_a_manual_command_still_records_an_error_code() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping a_hard_failure_on_a_manual_command_still_records_an_error_code: git missing"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Clean);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+
+        // Point the registry row at a path that does not exist, which is what a
+        // deleted or moved working tree looks like from here.
+        sqlx::query("UPDATE repos SET local_path = ? WHERE id = ?")
+            .bind(
+                dbtmp
+                    .path()
+                    .join("gone")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            )
+            .bind(id.0)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let err = check_now(&pool, &git, id)
+            .await
+            .expect_err("a missing working tree must fail");
+
+        let code: Option<String> =
+            sqlx::query("SELECT last_error_code FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("last_error_code")
+                .unwrap();
+        assert_eq!(
+            code.as_deref(),
+            Some(err.code()),
+            "the persisted code must be the SAME stable code the command returned, \
+             so the Repos list and the error the user saw cannot disagree"
+        );
+    }
+
+    /// Recovery must clear the error code, the failure streak, and the auto-pause
+    /// TOGETHER or not at all.
+    ///
+    /// These used to be two statements. A failure between them left the worst
+    /// reachable state: `last_error_code = NULL` with `auto_paused = 1` still set,
+    /// so the scheduler's due-query excluded the repo while the summary's
+    /// needs-attention query (which keys on `last_error_code IS NOT NULL`) could
+    /// not see it either. The repo would be frozen out of automatic checking and
+    /// invisible in the one view that exists to say something needs attention, and
+    /// nothing would ever surface it. They are now one UPDATE against one row,
+    /// which cannot half-apply.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn a_successful_update_clears_error_streak_and_pause_together() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping a_successful_update_clears_error_streak_and_pause_together: git missing"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+        set_mode(&pool, id, "pull_ff_only").await;
+
+        // Put the repo in the state a three-strike auth failure leaves behind.
+        sqlx::query(
+            "UPDATE repo_local_state \
+             SET last_error_code = 'git.auth_failed', consecutive_failures = 3, auto_paused = 1 \
+             WHERE repo_id = ?",
+        )
+        .bind(id.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        update_now(&pool, &git, id, UpdateMode::PullFfOnly)
+            .await
+            .expect("the fast-forward should succeed");
+
+        let row = sqlx::query(
+            "SELECT last_error_code, consecutive_failures, auto_paused \
+             FROM repo_local_state WHERE repo_id = ?",
+        )
+        .bind(id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let code: Option<String> = row.try_get("last_error_code").unwrap();
+        let failures: i64 = row.try_get("consecutive_failures").unwrap();
+        let paused: i64 = row.try_get("auto_paused").unwrap();
+
+        assert_eq!(code, None, "recovery must clear the error code");
+        assert_eq!(failures, 0, "recovery must reset the failure streak");
+        assert_eq!(
+            paused, 0,
+            "recovery must lift the auto-pause, or the repo stays frozen out of the \
+             scheduler while looking healthy everywhere else"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
     async fn update_now_fast_forwards_a_behind_repo() {
@@ -1586,6 +1838,107 @@ mod tests {
         // The working tree was NOT mutated: it is still dirty.
         let still = git.inspect(fx.working_path()).expect("inspect");
         assert!(still.is_dirty, "the skip must not have touched the tree");
+    }
+
+    /// A failed fetch must PERSIST its reason into `repo_local_state.last_error_code`,
+    /// and a later successful check must clear it.
+    ///
+    /// The column was declared in migration 0001 and read by `store::repo_list`,
+    /// `store::repo_get`, and `summary`'s needs-attention query, but written by
+    /// nothing in production, so every one of those readers saw `NULL` forever.
+    /// This covers the `check_now` write; the scheduler's write has its own test in
+    /// `scheduler.rs`, and the two are asserted to agree through `summary`.
+    ///
+    /// The remote is broken by pointing `origin` at a path that does not exist,
+    /// deliberately rather than at an unroutable host: it fails the same way on a
+    /// machine with no network and on CI, and it needs no DNS, so this test cannot
+    /// become flaky for a reason that has nothing to do with what it is checking.
+    #[tokio::test]
+    #[ignore = "slow git-fixture tier: run with --ignored (see ci-plan.md)"]
+    async fn check_now_persists_and_clears_last_error_code() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping check_now_persists_and_clears_last_error_code: git missing");
+            return;
+        };
+        let dbtmp = TempDir::new().expect("db tempdir");
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let fx = build_fixture(FixtureState::Behind);
+        let id = add(&pool, &git, fx.working_path()).await.expect("add ok");
+        set_mode(&pool, id, "fetch_only").await;
+
+        async fn read_code(pool: &SqlitePool, id: RepoId) -> Option<String> {
+            sqlx::query("SELECT last_error_code FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .try_get("last_error_code")
+                .unwrap()
+        }
+
+        // Capture the real origin so it can be restored for the recovery half.
+        let good_origin = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["remote", "get-url", "origin"])
+                .current_dir(fx.working_path())
+                .output()
+                .expect("git remote get-url")
+                .stdout,
+        )
+        .expect("utf8")
+        .trim()
+        .to_string();
+
+        let set_origin = |url: &str| {
+            let ok = std::process::Command::new("git")
+                .args(["remote", "set-url", "origin", url])
+                .current_dir(fx.working_path())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            assert!(ok, "git remote set-url should succeed");
+        };
+
+        // Break the remote, then check. The fetch fails and the reason lands in the
+        // column that every state reader consults.
+        set_origin(
+            &dbtmp
+                .path()
+                .join("definitely-not-a-repo")
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+        let _ = check_now(&pool, &git, id).await;
+        let code = read_code(&pool, id).await;
+        assert!(
+            code.is_some(),
+            "a failed fetch must persist an error code; before this fix the column \
+             was written by nothing in production and stayed NULL forever"
+        );
+        // The exact code depends on git's stderr wording, which varies by version.
+        // What must hold is that it is one of the frozen fetch-failure codes and
+        // NOT a policy-skip label, because the summary renders it to the user.
+        let code = code.unwrap();
+        assert!(
+            matches!(
+                code.as_str(),
+                "git.fetch_failed" | "net.offline" | "git.auth_failed"
+            ),
+            "persisted code must come from the frozen fetch-failure vocabulary, got {code:?}"
+        );
+
+        // Repair the remote. A successful check must CLEAR the code, or a recovered
+        // repo stays in the summary's needs-attention list permanently.
+        set_origin(&good_origin);
+        check_now(&pool, &git, id)
+            .await
+            .expect("check_now succeeds once the remote is reachable again");
+        assert_eq!(
+            read_code(&pool, id).await,
+            None,
+            "a successful check must clear the error code"
+        );
     }
 
     #[tokio::test]

@@ -52,6 +52,16 @@ pub mod event {
     pub const ACTIVITY_WRITE_FAILED: &str = "activity.write_failed";
 
     // --- persistence ---
+    /// A manual check or update failed HARD (git missing, path gone, repo no
+    /// longer a working tree) and the best-effort write of that failure into
+    /// `repo_local_state.last_error_code` ALSO failed.
+    ///
+    /// Both halves have to fail for this to fire, which is why it is worth a name:
+    /// the user asked for something, it broke, and the record that it broke also
+    /// broke. Without this line the repo simply keeps whatever error state it had
+    /// before, and the Repos list and the daily summary quietly disagree with what
+    /// the user just watched happen.
+    pub const STATE_ERROR_CODE_PERSIST_FAILED: &str = "state.error_code_persist_failed";
     /// The database was opened, migrated, or recovered in a notable way.
     pub const DB_RECOVERED: &str = "db.recovered";
     /// The resolved data directory is OneDrive-rooted, where a sync agent can

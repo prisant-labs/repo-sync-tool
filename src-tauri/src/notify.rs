@@ -260,17 +260,17 @@ fn note_kind_for(status: RepoStatus) -> Option<NoteKind> {
 }
 
 /// The stable error code carried on a scheduled `repo:state-changed` payload for a
-/// finished job, derived from its persisted [`RepoStatus`]: `None` for a healthy run,
-/// and the matching [`AppError`](reposync_core::error::AppError) code for a failing
-/// one (an auth pause vs a transient/auto-paused failure). The frontend re-reads
-/// authoritative state on the refetch, so this is an informational hint on the event,
-/// kept consistent with the frozen error-code vocabulary rather than an invented one.
+/// finished job, derived from its persisted [`RepoStatus`].
+///
+/// This DELEGATES to `reposync_core::policy::status_error_code` rather than
+/// deciding anything itself, and that is the whole point. The same classifier now
+/// writes `repo_local_state.last_error_code`, so the hint on the event and the
+/// value the frontend reads back on its refetch are the same fact by construction.
+/// This function previously owned a private copy of the mapping while nothing
+/// wrote the column at all, which meant the event was right and every subsequent
+/// read of the same thing returned `NULL`.
 fn status_error_code(status: RepoStatus) -> Option<String> {
-    match status {
-        RepoStatus::Active => None,
-        RepoStatus::PausedOnAuth => Some("git.auth_failed".to_string()),
-        RepoStatus::Retry { .. } | RepoStatus::AutoPaused => Some("git.fetch_failed".to_string()),
-    }
+    reposync_core::policy::status_error_code(status).map(str::to_string)
 }
 
 /// The repo's display name for a toast body, or a `repo {id}` fallback if the read
