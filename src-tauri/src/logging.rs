@@ -12,6 +12,8 @@
 //! anything at all.
 
 use std::str::FromStr;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::Arc;
 
 use reposync_core::logging as core_logging;
 use reposync_core::paths::AppPaths;
@@ -97,6 +99,112 @@ pub struct LogConfig {
     pub level: LevelFilter,
     /// The age + size budget in force.
     pub retention: Retention,
+    /// Live counters from the writer itself (BL-NI-63).
+    pub health: Arc<LogHealth>,
+}
+
+/// What the log writer has actually DONE since startup.
+///
+/// This exists because `logging_active` cannot answer the question people
+/// assume it answers. It reports that the subscriber INSTALLED, which is a fact
+/// about one moment during startup. `tracing_appender::non_blocking` then moves
+/// writing onto a worker thread that exposes no error channel, so a disk that
+/// fills, an ACL that changes, or a file handle that goes away afterwards leaves
+/// `logging_active` reading `true` while nothing reaches disk. That is the exact
+/// shape of failure the logging effort exists to prevent, reproduced inside the
+/// logging effort.
+///
+/// `bytes_written` matters at least as much as `write_failures`, and is the less
+/// obvious of the two. Zero failures is equally consistent with "everything is
+/// working" and "nothing was ever written", and only the second is a problem. A
+/// non-zero byte count is the positive evidence that the whole pipe, subscriber
+/// to worker thread to file, carried something.
+///
+/// Atomics rather than a mutex because the writer runs on the appender's worker
+/// thread and the reader is an IPC command on another: this is counted on a hot
+/// path and read rarely, so the cheapest correct thing wins. `Relaxed` ordering
+/// is sufficient because these are independent counters, not a protocol; nothing
+/// reads one to decide something about another.
+#[derive(Debug, Default)]
+pub struct LogHealth {
+    /// Write or flush errors seen by the appender since startup.
+    write_failures: AtomicU64,
+    /// Unix seconds of the most recent failure, or 0 for "never".
+    last_failure_unix: AtomicI64,
+    /// Bytes the appender reported writing. The positive-evidence counter.
+    bytes_written: AtomicU64,
+}
+
+impl LogHealth {
+    pub fn write_failures(&self) -> u64 {
+        self.write_failures.load(AtomicOrdering::Relaxed)
+    }
+
+    /// The most recent failure, or `None` if there has not been one.
+    pub fn last_failure_unix(&self) -> Option<i64> {
+        match self.last_failure_unix.load(AtomicOrdering::Relaxed) {
+            0 => None,
+            t => Some(t),
+        }
+    }
+
+    pub fn bytes_written(&self) -> u64 {
+        self.bytes_written.load(AtomicOrdering::Relaxed)
+    }
+
+    fn record_success(&self, bytes: usize) {
+        self.bytes_written
+            .fetch_add(bytes as u64, AtomicOrdering::Relaxed);
+    }
+
+    fn record_failure(&self) {
+        self.write_failures.fetch_add(1, AtomicOrdering::Relaxed);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.last_failure_unix.store(now, AtomicOrdering::Relaxed);
+    }
+}
+
+/// An `io::Write` decorator that counts what the writer underneath it did.
+///
+/// It sits BETWEEN the rolling appender and `non_blocking`, which is the only
+/// place it can go: `non_blocking` consumes the writer and hands back an opaque
+/// handle, and the subscriber above that never sees an io error at all. Wrapping
+/// at either other layer would count nothing.
+///
+/// It NEVER swallows an error. It records and passes through, so the appender's
+/// own behavior is unchanged and this can only add information. A decorator that
+/// changed the error path would be a worse bug than the blindness it is fixing.
+struct CountingWriter<W> {
+    inner: W,
+    health: Arc<LogHealth>,
+}
+
+impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.inner.write(buf) {
+            Ok(n) => {
+                self.health.record_success(n);
+                Ok(n)
+            }
+            Err(e) => {
+                self.health.record_failure();
+                Err(e)
+            }
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.inner.flush() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.health.record_failure();
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Keeps the background log writer alive.
@@ -199,7 +307,15 @@ pub fn init(paths: &AppPaths) -> Result<(LogGuard, LogConfig), String> {
             )
         })?;
 
-    let (writer, worker) = tracing_appender::non_blocking(appender);
+    // Wrap the appender BEFORE `non_blocking` takes it. This is the only layer
+    // that can see an io error: `non_blocking` consumes the writer and returns an
+    // opaque handle, and the subscriber above it never sees one at all (BL-NI-63).
+    let health = Arc::new(LogHealth::default());
+    let counting = CountingWriter {
+        inner: appender,
+        health: Arc::clone(&health),
+    };
+    let (writer, worker) = tracing_appender::non_blocking(counting);
 
     let level = level_from_env(std::env::var(LOG_LEVEL_ENV).ok().as_deref());
 
@@ -246,6 +362,7 @@ pub fn init(paths: &AppPaths) -> Result<(LogGuard, LogConfig), String> {
             dir,
             level,
             retention,
+            health,
         },
     ))
 }
@@ -353,5 +470,119 @@ mod tests {
         let only_size = retention_from_env(None, Some("5"));
         assert_eq!(only_size.max_files, d.max_files);
         assert_eq!(only_size.max_bytes, 5 * 1024 * 1024);
+    }
+
+    // --- LogHealth / CountingWriter (BL-NI-63) -------------------------------
+
+    use std::io::Write;
+
+    /// A writer that succeeds for the first `ok_writes` calls and then fails,
+    /// standing in for a disk that fills or an ACL that changes AFTER startup.
+    /// That timing is the whole point: the failure this counter exists for is one
+    /// that happens when the subscriber has long since installed successfully.
+    struct FlakyWriter {
+        ok_writes: usize,
+        written: usize,
+    }
+
+    impl Write for FlakyWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.written < self.ok_writes {
+                self.written += 1;
+                Ok(buf.len())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "disk went away",
+                ))
+            }
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_healthy_writer_reports_bytes_and_no_failures() {
+        let health = Arc::new(LogHealth::default());
+        let mut w = CountingWriter {
+            inner: FlakyWriter {
+                ok_writes: 10,
+                written: 0,
+            },
+            health: Arc::clone(&health),
+        };
+        w.write_all(b"hello").expect("write");
+        w.write_all(b"world!").expect("write");
+
+        assert_eq!(health.write_failures(), 0);
+        assert_eq!(health.last_failure_unix(), None);
+        assert_eq!(
+            health.bytes_written(),
+            11,
+            "the byte count is the POSITIVE evidence: zero failures alone cannot              distinguish a working writer from one that never wrote anything"
+        );
+    }
+
+    #[test]
+    fn a_failing_writer_is_counted_and_timestamped() {
+        let health = Arc::new(LogHealth::default());
+        let mut w = CountingWriter {
+            inner: FlakyWriter {
+                ok_writes: 1,
+                written: 0,
+            },
+            health: Arc::clone(&health),
+        };
+        w.write_all(b"ok").expect("the first write succeeds");
+        assert_eq!(health.write_failures(), 0);
+
+        assert!(w.write_all(b"nope").is_err(), "the second must fail");
+        assert!(w.write_all(b"nope").is_err());
+
+        assert_eq!(health.write_failures(), 2);
+        assert!(
+            health.last_failure_unix().is_some_and(|t| t > 0),
+            "a timestamp distinguishes broken-since-launch from broke-just-now"
+        );
+        assert_eq!(
+            health.bytes_written(),
+            2,
+            "only the successful write counts toward bytes"
+        );
+    }
+
+    /// The decorator must not change what the writer underneath it does.
+    ///
+    /// It exists to add information, and a decorator that swallowed or altered an
+    /// error would be a worse bug than the blindness it is fixing: the appender's
+    /// own retry and rotation behavior depends on seeing its errors.
+    #[test]
+    fn the_counter_never_swallows_the_error_it_records() {
+        let health = Arc::new(LogHealth::default());
+        let mut w = CountingWriter {
+            inner: FlakyWriter {
+                ok_writes: 0,
+                written: 0,
+            },
+            health: Arc::clone(&health),
+        };
+        let err = w.write(b"x").expect_err("must propagate");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(health.write_failures(), 1);
+    }
+
+    /// A never-used writer reports the state that means "nothing has happened
+    /// yet", not a state that reads as healthy.
+    #[test]
+    fn a_fresh_health_reports_nothing_rather_than_health() {
+        let health = LogHealth::default();
+        assert_eq!(health.write_failures(), 0);
+        assert_eq!(health.bytes_written(), 0);
+        assert_eq!(
+            health.last_failure_unix(),
+            None,
+            "zero must read as never, not as an epoch timestamp"
+        );
     }
 }

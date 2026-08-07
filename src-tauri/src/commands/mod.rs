@@ -878,6 +878,17 @@ fn build_diagnostics(
         log_dir_readable: stats.readable,
         log_file_count: stats.file_count as i64,
         log_bytes: stats.total_bytes as i64,
+        // Read from the writer's own counters, not inferred from the directory.
+        // With logging off there is no writer, so these report zero / none rather
+        // than a fabricated healthy-looking value; `logging_active: false` is
+        // already the honest answer in that case.
+        log_write_failures: log_config
+            .map(|c| c.health.write_failures() as i64)
+            .unwrap_or(0),
+        log_last_write_failure_at: log_config.and_then(|c| c.health.last_failure_unix()),
+        log_bytes_written: log_config
+            .map(|c| c.health.bytes_written() as i64)
+            .unwrap_or(0),
         onedrive_rooted: paths.is_onedrive_rooted(),
         git_path: git_exe.map(|p| p.display().to_string()),
         git_version,
@@ -1184,6 +1195,7 @@ mod tests {
             dir: paths.log_dir(),
             level: tracing::level_filters::LevelFilter::INFO,
             retention: crate::logging::Retention::default(),
+            health: std::sync::Arc::new(crate::logging::LogHealth::default()),
         };
         std::fs::create_dir_all(paths.log_dir()).expect("create log dir");
 
@@ -1216,6 +1228,7 @@ mod tests {
                 max_files: 7,
                 max_bytes: 8 * 1024 * 1024,
             },
+            health: std::sync::Arc::new(crate::logging::LogHealth::default()),
         };
 
         let d = build_diagnostics(

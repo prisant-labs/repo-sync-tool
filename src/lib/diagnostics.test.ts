@@ -15,6 +15,9 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
     logDirReadable: true,
     logFileCount: 3,
     logBytes: 1024,
+    logWriteFailures: 0,
+    logLastWriteFailureAt: null,
+    logBytesWritten: 4096,
     onedriveRooted: false,
     gitPath: "C:\\Program Files\\Git\\cmd\\git.exe",
     gitVersion: "2.40.1",
@@ -128,5 +131,49 @@ describe("formatDiagnosticsReport", () => {
   it("carries the scheduler outcome-persist failure count", () => {
     const text = formatDiagnosticsReport(diagnostics({ schedulerOutcomePersistFailures: 4 }));
     expect(text).toContain("4 outcome writes failed");
+  });
+});
+
+/**
+ * The write counters are the answer to a question `loggingActive` looks like it
+ * answers and does not (BL-NI-63). That flag reports the subscriber INSTALLED,
+ * which is a fact about one moment during startup; a disk that fills afterwards
+ * leaves it reading true while nothing reaches the file.
+ */
+describe("formatDiagnosticsReport, log write health", () => {
+  it("reports bytes written even when everything is healthy", () => {
+    // Reported unconditionally, not only on failure. The absence of failures is
+    // not evidence of anything on its own: a writer that has written nothing
+    // also has no failures, so the byte count is what separates the two.
+    const report = formatDiagnosticsReport(diagnostics());
+    expect(report).toContain("log writes:");
+    expect(report).not.toContain("WRITE FAILURES");
+    expect(report).not.toContain("NOTHING HAS REACHED THE WRITER");
+  });
+
+  it("marks write failures in upper case, with when the last one was", () => {
+    const report = formatDiagnosticsReport(
+      diagnostics({ logWriteFailures: 4, logLastWriteFailureAt: 1_700_000_000 }),
+    );
+    expect(report).toContain("4 WRITE FAILURES");
+    // The timestamp distinguishes "broken since launch" from "broke just now",
+    // which is the difference between a misconfiguration and a disk filling up.
+    expect(report).toMatch(/last .+\)/);
+  });
+
+  it("marks a logger that started but has written nothing", () => {
+    // The condition `loggingActive` cannot express: installed, no errors, and no
+    // bytes. Silence that looks exactly like health.
+    const report = formatDiagnosticsReport(diagnostics({ logBytesWritten: 0 }));
+    expect(report).toContain("NOTHING HAS REACHED THE WRITER");
+  });
+
+  it("omits the line entirely when logging never started", () => {
+    // With no writer there are no counters, and printing "0 bytes written" would
+    // read as a failure of the writer rather than its absence. `logging: DID NOT
+    // START` is already the honest answer on the line above.
+    const report = formatDiagnosticsReport(diagnostics({ loggingActive: false }));
+    expect(report).not.toContain("log writes:");
+    expect(report).toContain("DID NOT START");
   });
 });
