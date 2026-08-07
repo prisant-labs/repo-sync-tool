@@ -143,14 +143,35 @@ pub(crate) async fn check_all_enabled(
     // independent caps do not compose: a check-all landing during a tick would put
     // twice the configured number of git processes on the disk, which is the exact
     // number this cap exists to control.
+    // ADMISSION IS BOUNDED, and that is not the same thing as the permit cap.
+    //
+    // Spawning every target at once looks equivalent, since only `concurrency` of
+    // them can hold a permit, but it is not: each task takes its repo's mutex
+    // BEFORE queuing for a permit, so a 500-repo burst would hold 500 repo locks
+    // while four did work. A scheduled job for any of those repos could not even
+    // ask for a permit until the burst released that repo's mutex, and would then
+    // queue behind every remaining burst task on tokio's fair FIFO semaphore. Not
+    // a deadlock, since both sides take mutex-then-permit in the same order, but a
+    // convoy that stalls the scheduler for the length of the whole burst.
+    //
+    // Keeping at most `concurrency` tasks in flight bounds the number of repo
+    // mutexes the burst holds at once to the number it can actually work on.
+    let max_in_flight = reposync_core::scheduler::DEFAULT_CONCURRENCY.max(1);
+    let mut pending = targets.into_iter();
     let mut tasks = tokio::task::JoinSet::new();
-    for id in targets {
+
+    let mut spawn_next = |tasks: &mut tokio::task::JoinSet<_>| {
+        let Some(id) = pending.next() else {
+            return false;
+        };
         let app = app.clone();
         let pool = pool.clone();
         let git = git.clone();
         let locks = locks.clone();
         let semaphore = std::sync::Arc::clone(semaphore);
         tasks.spawn(async move {
+            // Per-repo mutex FIRST, global permit SECOND, permit dropped before
+            // the guard: the same fixed order `scheduler::run_job` uses.
             let lock = locks.lock_handle(RepoId(id));
             let _guard = lock.lock_owned().await;
             let permit = semaphore
@@ -163,7 +184,10 @@ pub(crate) async fn check_all_enabled(
             drop(permit);
             outcome
         });
-    }
+        true
+    };
+
+    while tasks.len() < max_in_flight && spawn_next(&mut tasks) {}
 
     let mut checked = 0u32;
     // Failures that COMPLETED (a non-zero fetch), collected rather than announced
@@ -171,6 +195,9 @@ pub(crate) async fn check_all_enabled(
     let mut soft_failures: Vec<Option<String>> = Vec::new();
 
     while let Some(joined) = tasks.join_next().await {
+        // Refill as each finishes, so the burst keeps `max_in_flight` moving
+        // without ever having claimed more repo locks than that.
+        spawn_next(&mut tasks);
         match joined {
             Ok(Ok(result)) => {
                 // The completion event fires for EVERY outcome, including a failed
