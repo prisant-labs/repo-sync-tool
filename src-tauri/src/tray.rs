@@ -40,41 +40,61 @@ pub const RECENT_LIMIT: usize = 6;
 /// most-recently-active repos, newest first (see
 /// [`reposync_core::store::recent_repos`]); each becomes a submenu item whose id is
 /// `recent:<repo id>`, opening that repo's folder via the hardened opener.
-/// The menu items that never change, held so every rebuilt menu reuses the SAME
-/// handles rather than fresh ones.
-///
-/// That reuse is load-bearing, not an optimization. The menu-event handler
-/// captures a clone of the pause item so a toggle can flip its label; rebuilding
-/// that item would leave the handler holding a stale handle and the label would
-/// silently stop updating. Only the "Open recent" submenu is ever reconstructed.
-struct FixedItems {
-    show: MenuItem<Wry>,
-    check_all: MenuItem<Wry>,
-    pause: MenuItem<Wry>,
-    settings: MenuItem<Wry>,
-    quit: MenuItem<Wry>,
-}
-
 /// The live tray, kept in managed state so its menu can be replaced after launch
 /// (BL-NI-40).
 pub struct TrayHandles {
     tray: TrayIcon<Wry>,
-    items: FixedItems,
-    /// The recent set the CURRENT menu was built from, so an unchanged list costs
-    /// nothing. A scheduler tick fires every minute and usually changes nothing
-    /// about which six repos are most recent; rebuilding a native menu on each
-    /// one would be churn a user could plausibly see.
+    /// The pause item belonging to the CURRENT menu, replaced on every rebuild.
+    ///
+    /// Every item is rebuilt per menu rather than shared, which is the opposite
+    /// of the obvious design and is forced by the platform. In muda's Windows
+    /// implementation, adding an item to a menu pushes that menu's two HMENUs
+    /// onto the item's `parents_hemnu`, and `Menu::drop` destroys those handles
+    /// WITHOUT removing the registrations. A shared item would therefore grow
+    /// that vector by two entries per rebuild forever, and `set_text` (which the
+    /// pause toggle calls) walks the whole vector issuing `SetMenuItemInfoW`
+    /// against handles that no longer exist. In a tray app that runs for weeks
+    /// that is unbounded growth plus writes to destroyed handles.
+    ///
+    /// So the menu-event handler cannot capture a clone; it reads the current
+    /// item from here instead. This mutex is the price of rebuilding, and it is
+    /// the cheaper price.
+    pause: StdMutex<MenuItem<Wry>>,
+    /// The recent set the INSTALLED menu was built from.
+    ///
+    /// Advanced only after `set_menu` SUCCEEDS. Recording it earlier means a
+    /// failed compose or install leaves the gate claiming the menu is current
+    /// while the tray still shows the old one, and no later refresh for that same
+    /// key would ever retry.
     last_recent: StdMutex<Vec<(i64, String)>>,
+    /// Serializes a whole refresh: read, compose, install, advance the gate.
+    ///
+    /// Without it two concurrent refreshes can interleave so the LAST menu
+    /// installed is not the one the gate records, leaving a stale menu that no
+    /// future refresh will correct because the key already matches.
+    refresh: tokio::sync::Mutex<()>,
 }
 
-/// Compose the full menu from the fixed items plus a freshly built "Open recent"
-/// submenu. Used by BOTH the launch path and the refresh path, so the two cannot
-/// drift into different menus.
-fn compose_menu(
-    app: &AppHandle,
-    items: &FixedItems,
-    recent: &[RepoRef],
-) -> tauri::Result<Menu<Wry>> {
+/// One freshly built menu, plus the pause item inside it that the toggle needs.
+struct BuiltMenu {
+    menu: Menu<Wry>,
+    pause: MenuItem<Wry>,
+}
+
+/// Build every menu item and compose them into a menu.
+///
+/// Used by BOTH the launch path and the refresh path, so the two cannot drift
+/// into different menus. Every item is new each time; see [`TrayHandles`] for why
+/// sharing them is not an option on Windows.
+fn build_menu(app: &AppHandle, recent: &[RepoRef]) -> tauri::Result<BuiltMenu> {
+    let show = MenuItemBuilder::with_id("show", "Show RepoSync").build(app)?;
+    let check_all = MenuItemBuilder::with_id("check_all", "Check All Now").build(app)?;
+    // Read the LIVE pause state rather than defaulting: a rebuilt menu must keep
+    // the label the user last set, not silently reset to "Pause all".
+    let pause = MenuItemBuilder::with_id("pause", pause_label(is_paused(app))).build(app)?;
+    let settings = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+
     // Keep the built items alive in a Vec until the submenu is built (they are
     // ref-counted handles the builder clones, but holding them is the clearest,
     // safest pattern). An empty registry shows a single disabled placeholder.
@@ -98,16 +118,36 @@ fn compose_menu(
     }
     let recent_menu = recent_builder.build()?;
 
-    MenuBuilder::new(app)
-        .item(&items.show)
-        .item(&items.check_all)
-        .item(&items.pause)
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .item(&check_all)
+        .item(&pause)
         .separator()
         .item(&recent_menu)
-        .item(&items.settings)
+        .item(&settings)
         .separator()
-        .item(&items.quit)
-        .build()
+        .item(&quit)
+        .build()?;
+
+    Ok(BuiltMenu { menu, pause })
+}
+
+/// The pause item's label for a given paused state. Pure, so the one place a
+/// swapped boolean would silently mislabel the tray is asserted by a test.
+fn pause_label(paused: bool) -> &'static str {
+    if paused {
+        "Resume all"
+    } else {
+        "Pause all"
+    }
+}
+
+/// The current global-pause state, read so a REBUILT menu keeps the label the
+/// user last set instead of resetting on the next refresh.
+fn is_paused(app: &AppHandle) -> bool {
+    app.try_state::<AppState>()
+        .map(|s| s.pause.is_paused())
+        .unwrap_or(false)
 }
 
 /// The recent set as a comparable key: id AND name, because a rename changes the
@@ -119,25 +159,27 @@ fn recent_key(recent: &[RepoRef]) -> Vec<(i64, String)> {
         .collect()
 }
 
-/// Rebuild the "Open recent" submenu from the CURRENT registry (BL-NI-40).
+/// Rebuild the tray menu from the CURRENT registry (BL-NI-40).
 ///
-/// The submenu used to be a startup snapshot: a repo added after launch never
-/// appeared in it, a removed one lingered, and a renamed one kept its old label
-/// until the app restarted. For a tray-first tool that made the always-available
-/// surface the one most likely to be out of date.
+/// The "Open recent" submenu used to be a startup snapshot: a repo added after
+/// launch never appeared in it, a removed one lingered, and a renamed one kept
+/// its old label until the app restarted. For a tray-first tool that made the
+/// always-available surface the one most likely to be out of date.
 ///
 /// A no-op when the list is unchanged, which is the common case: this is called
-/// after events that COULD reorder it rather than only ones that did, so most
-/// calls cost one query and stop.
+/// after events that COULD reorder it rather than only ones that did.
 ///
 /// Best-effort throughout. A tray that cannot refresh keeps the menu it has, and
 /// that must never propagate into the check or scheduler paths that trigger it.
 pub async fn refresh_recent_menu(app: &AppHandle) {
     let Some(handles) = app.try_state::<TrayHandles>() else {
         // The tray failed to build at startup. That is already logged and it
-        // gates the window lifecycle; there is simply nothing here to refresh.
+        // gates the window lifecycle; there is nothing here to refresh.
         return;
     };
+    // Held for the WHOLE operation: read, compose, install, advance the gate.
+    let _serialized = handles.refresh.lock().await;
+
     let pool = { app.state::<AppState>().pool.clone() };
     let recent = match reposync_core::store::recent_repos(&pool, RECENT_LIMIT).await {
         Ok(r) => r,
@@ -147,60 +189,57 @@ pub async fn refresh_recent_menu(app: &AppHandle) {
         }
     };
 
-    {
-        let mut last = handles
+    let key = recent_key(&recent);
+    let unchanged = {
+        let last = handles
             .last_recent
             .lock()
             .expect("tray recent-menu lock poisoned");
-        if *last == recent_key(&recent) {
-            return;
-        }
-        *last = recent_key(&recent);
+        *last == key
+    };
+    if unchanged {
+        return;
     }
 
-    match compose_menu(app, &handles.items, &recent) {
-        Ok(menu) => {
-            if let Err(e) = handles.tray.set_menu(Some(menu)) {
-                tracing::warn!("tray: could not install the refreshed menu: {e}");
-            }
+    let built = match build_menu(app, &recent) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("tray: could not compose the refreshed menu: {e}");
+            return;
         }
-        Err(e) => tracing::warn!("tray: could not compose the refreshed menu: {e}"),
+    };
+    if let Err(e) = handles.tray.set_menu(Some(built.menu)) {
+        // The gate is deliberately NOT advanced here: the tray still shows the
+        // old menu, so the next trigger must be free to try again.
+        tracing::warn!("tray: could not install the refreshed menu: {e}");
+        return;
     }
+
+    // Installed. Only now does the recorded state match what the user can see.
+    *handles.pause.lock().expect("tray pause-item lock poisoned") = built.pause;
+    *handles
+        .last_recent
+        .lock()
+        .expect("tray recent-menu lock poisoned") = key;
 }
 
 pub fn init(app: &AppHandle, recent: &[RepoRef]) -> tauri::Result<()> {
-    let show = MenuItemBuilder::with_id("show", "Show RepoSync").build(app)?;
-    let check_all = MenuItemBuilder::with_id("check_all", "Check All Now").build(app)?;
-    // The Pause item starts as "Pause all" (pause is in-memory and defaults to
-    // running at every launch); the on-menu handler flips its label on toggle.
-    let pause = MenuItemBuilder::with_id("pause", "Pause all").build(app)?;
-    let settings = MenuItemBuilder::with_id("settings", "Settings").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-
-    // Compose through the SAME helper the refresh path uses, so the launch menu
-    // and every rebuilt one cannot drift apart.
-    let items = FixedItems {
-        show,
-        check_all,
-        pause,
-        settings,
-        quit,
-    };
-    let menu = compose_menu(app, &items, recent)?;
-
-    // The Pause item is cloned into the handler so a toggle can update its label.
-    // It is the SAME handle `FixedItems` holds, so it stays valid across every
-    // menu rebuild; that is why the fixed items are reused rather than rebuilt.
-    let pause_item = items.pause.clone();
+    // Built through the SAME helper the refresh path uses, so the launch menu and
+    // every rebuilt one cannot drift apart.
+    let built = build_menu(app, recent)?;
 
     let mut builder = TrayIconBuilder::with_id("main")
-        .menu(&menu)
+        .menu(&built.menu)
         .tooltip("RepoSync")
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
             "check_all" => spawn_check_all(app),
-            "pause" => toggle_pause(app, &pause_item),
+            // The handler looks the CURRENT pause item up rather than capturing
+            // a clone: items are rebuilt with every menu, so a captured handle
+            // would go stale on the first refresh and the label would stop
+            // updating. See `TrayHandles::pause`.
+            "pause" => toggle_pause(app),
             "settings" => {
                 // Open + focus the window, then ask the frontend to route to Settings
                 // (E-13 AC2). The typed `nav:requested` event is handled by the app
@@ -234,14 +273,15 @@ pub fn init(app: &AppHandle, recent: &[RepoRef]) -> tauri::Result<()> {
     }
     let tray = builder.build(app)?;
 
-    // Hold the tray and its fixed items so the recent submenu can be replaced
-    // later (BL-NI-40). Managed as its own state rather than folded into
-    // `AppState`, which is already constructed and managed by the time the tray
-    // is built (deliberately: a menu click must never race an unmanaged state).
+    // Hold the tray and the current pause item so the menu can be replaced later
+    // (BL-NI-40). Managed as its own state rather than folded into `AppState`,
+    // which is already constructed and managed by the time the tray is built
+    // (deliberately: a menu click must never race an unmanaged state).
     app.manage(TrayHandles {
         tray,
-        items,
+        pause: StdMutex::new(built.pause),
         last_recent: StdMutex::new(recent_key(recent)),
+        refresh: tokio::sync::Mutex::new(()),
     });
 
     Ok(())
@@ -263,14 +303,20 @@ fn show_main_window(app: &AppHandle) {
 /// ("Pause all" while running, "Resume all" while paused). The scheduler reads the
 /// same shared flag at the start of every cycle, so a toggle takes effect on the next
 /// tick without a restart.
-fn toggle_pause(app: &AppHandle, pause_item: &MenuItem<Wry>) {
+fn toggle_pause(app: &AppHandle) {
     let now_paused = app.state::<AppState>().pause.toggle();
-    let label = if now_paused {
-        "Resume all"
-    } else {
-        "Pause all"
+    // The item is read from managed state rather than captured, because every
+    // menu rebuild replaces it. A captured clone would still be a valid Rust
+    // handle after a refresh and would write to a destroyed native menu.
+    let Some(handles) = app.try_state::<TrayHandles>() else {
+        return;
     };
-    if let Err(e) = pause_item.set_text(label) {
+    let item = handles
+        .pause
+        .lock()
+        .expect("tray pause-item lock poisoned")
+        .clone();
+    if let Err(e) = item.set_text(pause_label(now_paused)) {
         tracing::warn!("tray: could not update the Pause/Resume label: {e}");
     }
 }
@@ -375,5 +421,14 @@ mod tests {
     fn an_identical_list_produces_an_identical_key() {
         let list = [repo(1, "alpha"), repo(2, "beta"), repo(3, "gamma")];
         assert_eq!(recent_key(&list), recent_key(&list));
+    }
+    /// The pause label is one boolean away from mislabelling the tray, and a
+    /// swap would produce a menu that says "Pause all" while paused with nothing
+    /// failing anywhere. It is also read on every REBUILD now, so a rebuilt menu
+    /// keeps the state the user set instead of resetting.
+    #[test]
+    fn the_pause_label_matches_the_state() {
+        assert_eq!(pause_label(true), "Resume all");
+        assert_eq!(pause_label(false), "Pause all");
     }
 }

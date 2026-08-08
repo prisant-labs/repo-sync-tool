@@ -875,10 +875,17 @@ pub fn select_check_all_targets(repos: &[(i64, bool)]) -> Vec<i64> {
 /// `last_updated_at` / `last_checked_at` / `created_at`) and ranks + truncates via the
 /// pure [`select_recent`]. Reads all rows and ranks in Rust (repo counts are in the
 /// tens-to-low-hundreds), mirroring [`repo_list`]'s fetch-then-filter approach.
+/// NOTE ON THE ORDERING EXPRESSION. This is `MAX(...)` over three coalesced
+/// columns, not `COALESCE` over three columns, and the difference is a real bug
+/// that was here before the tray started refreshing (BL-NI-40's review found it).
+/// `COALESCE` returns the first NON-NULL value, so once `last_updated_at` was
+/// ever set, every later `last_checked_at` was ignored: a repo updated last week
+/// and checked a minute ago ranked BELOW one merely checked yesterday. SQLite's
+/// scalar `MAX` over the coalesced values is the actual "most recent activity".
 pub async fn recent_repos(pool: &SqlitePool, limit: usize) -> Result<Vec<RepoRef>, AppError> {
     let rows = sqlx::query(
         "SELECT r.id AS id, r.local_name AS local_name, r.local_path AS local_path, \
-                COALESCE(s.last_updated_at, s.last_checked_at, r.created_at, 0) AS last_active \
+                MAX(COALESCE(s.last_updated_at, 0), COALESCE(s.last_checked_at, 0),                     COALESCE(r.created_at, 0)) AS last_active \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id",
     )
@@ -990,6 +997,57 @@ mod tests {
         let pool = db::open_pool(&db_file).await.expect("open_pool");
         db::run_migrations(&pool).await.expect("migrations");
         pool
+    }
+
+    /// The recency ordering must use the GREATEST timestamp, not the first
+    /// non-null one.
+    ///
+    /// This is a database-level test on purpose: the bug lived in the SQL, and
+    /// `select_recent` (which the pure tests above cover) was always correct
+    /// given the right input. `COALESCE(last_updated_at, last_checked_at, ...)`
+    /// returns the first NON-NULL value, so once a repo had ever been updated,
+    /// every later check was invisible to the ordering. The concrete symptom: a
+    /// repo updated long ago and checked seconds ago ranked BELOW one merely
+    /// checked yesterday, in a menu whose entire purpose is "most recent first".
+    #[tokio::test]
+    async fn recent_repos_ranks_by_the_greatest_timestamp_not_the_first_non_null() {
+        let tmp = TempDir::new().expect("tempdir");
+        let pool = fresh_pool(tmp.path()).await;
+
+        async fn seed(pool: &SqlitePool, name: &str, updated: Option<i64>, checked: Option<i64>) {
+            let id = sqlx::query(
+                "INSERT INTO repos (local_name, local_path, created_at) VALUES (?, ?, 1)",
+            )
+            .bind(name)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+            sqlx::query(
+                "INSERT INTO repo_local_state (repo_id, last_updated_at, last_checked_at)                  VALUES (?, ?, ?)",
+            )
+            .bind(id)
+            .bind(updated)
+            .bind(checked)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        // "stale-update" was updated at t=100 and checked at t=900: its real
+        // last activity is 900. "checked-only" was merely checked at t=500.
+        // Under COALESCE the first ranked on 100 and lost; under MAX it wins.
+        seed(&pool, "stale-update", Some(100), Some(900)).await;
+        seed(&pool, "checked-only", None, Some(500)).await;
+
+        let recent = recent_repos(&pool, 5).await.expect("recent_repos");
+        let names: Vec<&str> = recent.iter().map(|r| r.local_name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["stale-update", "checked-only"],
+            "a repo checked seconds ago must outrank one checked yesterday, even              when the first also has an older last_updated_at"
+        );
     }
 
     /// Init a git repo with one commit at `dir` (test helper).

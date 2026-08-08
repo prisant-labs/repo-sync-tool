@@ -31,6 +31,7 @@ use crate::AppState;
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_add_path(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<RepoId, AppError> {
@@ -38,7 +39,13 @@ pub async fn repo_add_path(
     // long-running git operation never holds the lock against a `settings_set`
     // re-probe (BL-NI-19). The engine is cheap to clone (it wraps shared handles).
     let git = { state.git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
-    reposync_core::repo::add(&state.pool, &git, std::path::Path::new(&path)).await
+    let id = reposync_core::repo::add(&state.pool, &git, std::path::Path::new(&path)).await?;
+    // A newly added repo has a current `created_at`, so it belongs in Open recent
+    // immediately rather than after the first unrelated refresh (BL-NI-40).
+    // `AppHandle` is INJECTED by Tauri, not a frontend argument, so this does not
+    // change the IPC contract.
+    crate::tray::refresh_recent_menu(&app).await;
+    Ok(id)
 }
 
 /// Run a "check now" for a tracked repo, then broadcast the result.
@@ -451,6 +458,9 @@ pub async fn repo_update_now(
     emit_update_started(&app, id, update_mode_label(&mode));
     let result = reposync_core::repo::update_now(&state.pool, &git, RepoId(id), mode).await?;
     emit_update_completed(&app, id, &result.outcome);
+    // An update writes last_checked_at and often last_updated_at, so it is a
+    // recency writer exactly like a check (BL-NI-40).
+    crate::tray::refresh_recent_menu(&app).await;
     Ok(result)
 }
 

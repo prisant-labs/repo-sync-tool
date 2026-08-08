@@ -572,7 +572,16 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         // Startup pass is best-effort; a failure must not kill the loop.
                         match scheduler.start().await {
-                            Ok(report) => record_tick(&tick_health, &report),
+                            Ok(report) => {
+                                record_tick(&tick_health, &report);
+                                // The startup pass runs due jobs like any other
+                                // cycle, so it can reorder "most recently active"
+                                // too (BL-NI-40). Missing it meant the very first
+                                // menu a user opened could already be stale.
+                                if report.ran > 0 {
+                                    crate::tray::refresh_recent_menu(&tick_handle).await;
+                                }
+                            }
                             Err(e) => tracing::error!(
                                 event = reposync_core::logging::event::SCHEDULER_TICK_FAILED,
                                 phase = "startup",
