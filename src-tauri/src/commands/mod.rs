@@ -66,6 +66,9 @@ pub async fn repo_check_now(
     emit_check_started(&app, id);
     let result = reposync_core::repo::check_now(&state.pool, &git, RepoId(id)).await?;
     emit_check_completed(&app, &result);
+    // A check is what makes a repo "recently active", so this is the single-repo
+    // counterpart of the burst refresh (BL-NI-40). A no-op unless the order moved.
+    crate::tray::refresh_recent_menu(&app).await;
     Ok(result)
 }
 
@@ -251,6 +254,11 @@ pub(crate) async fn check_all_enabled(
         emit_error_raised(app, &representative);
     }
 
+    // A burst is the single event most likely to reorder "most recently active",
+    // so the tray's Open recent submenu is refreshed once after it rather than
+    // once per repo (BL-NI-40). A no-op when the order did not actually change.
+    crate::tray::refresh_recent_menu(app).await;
+
     Ok(checked)
 }
 
@@ -347,12 +355,21 @@ pub async fn repo_scan_parent(
 /// Remove a tracked repo (does not touch the working tree).
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+pub async fn repo_remove(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), AppError> {
     // Hold the per-repo lock across the delete so a scheduled job on this repo
     // cannot race the removal, then evict the now-dead lock entry.
     let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
     reposync_core::store::repo_remove(&state.pool, RepoId(id)).await?;
     state.locks.remove(RepoId(id));
+    // A removed repo must not linger in the tray's Open recent submenu, which is
+    // the one surface that used to keep showing it until the next restart
+    // (BL-NI-40). `AppHandle` is INJECTED by Tauri, not a frontend argument, so
+    // this does not change the IPC contract or the generated bindings.
+    crate::tray::refresh_recent_menu(&app).await;
     Ok(())
 }
 

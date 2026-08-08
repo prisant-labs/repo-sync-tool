@@ -620,6 +620,18 @@ pub fn run() {
                                         &cycle_notes,
                                     )
                                     .await;
+                                    // A cycle that ran repos may have reordered
+                                    // "most recently active", so refresh the tray's
+                                    // Open recent submenu (BL-NI-40). Gated on
+                                    // `ran > 0` because a tick with nothing due
+                                    // cannot have changed the order, and this loop
+                                    // fires every minute for the life of the process.
+                                    // The refresh is itself a no-op when the list is
+                                    // unchanged, so this is the cheap gate on top of
+                                    // a cheap check.
+                                    if ran > 0 {
+                                        crate::tray::refresh_recent_menu(&tick_handle).await;
+                                    }
                                 }
                                 Err(e) => tracing::error!(
                                     event = reposync_core::logging::event::SCHEDULER_TICK_FAILED,
