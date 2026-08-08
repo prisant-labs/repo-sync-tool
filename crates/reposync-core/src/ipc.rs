@@ -481,6 +481,15 @@ pub struct RepoGroupMembership {
 pub struct DbRecoveryNotice {
     pub recovered: bool,
     pub backup_path: Option<String>,
+    /// Set when this session is running on a FALLBACK database because the
+    /// unopenable original could not be moved aside (BL-NI-51).
+    ///
+    /// The two paths answer different questions and both matter here: `backup_path`
+    /// is where the old data WENT, `fallback_path` is where the app is writing NOW.
+    /// When the move fails there is no backup, and without this field the notice
+    /// could only say the previous database was "preserved alongside" a file it
+    /// could not name, while the session's data lived somewhere unfindable.
+    pub fallback_path: Option<String>,
 }
 
 // =============================================================================
@@ -803,10 +812,18 @@ mod tests {
         assert_round_trip(&DbRecoveryNotice {
             recovered: false,
             backup_path: None,
+            fallback_path: None,
         });
         assert_round_trip(&DbRecoveryNotice {
             recovered: true,
             backup_path: Some("C:/data/reposync.db.corrupt-1700000000".into()),
+            fallback_path: None,
+        });
+        // The move-aside-failed shape (BL-NI-51): no backup, running elsewhere.
+        assert_round_trip(&DbRecoveryNotice {
+            recovered: true,
+            backup_path: None,
+            fallback_path: Some("C:/data/reposync-fallback.db".into()),
         });
 
         // The app-update availability payload (E-18), in all three UI shapes: an

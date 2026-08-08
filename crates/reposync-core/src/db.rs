@@ -63,6 +63,15 @@ pub struct DbInit {
     pub recovered: bool,
     /// Where the corrupt database was moved, when `recovered` is true.
     pub backup_path: Option<PathBuf>,
+    /// Set when this session is running on a FALLBACK database rather than the
+    /// canonical one, because the corrupt original could not be moved aside
+    /// (BL-NI-51).
+    ///
+    /// Reported so the app can say which file it is actually using. Without it
+    /// the recovery notice claimed the previous database was "preserved
+    /// alongside" a file it could not name, while the session's real data lived
+    /// somewhere the user had no way to find.
+    pub fallback_path: Option<PathBuf>,
 }
 
 /// Open the pool and apply migrations, recovering from a genuinely CORRUPT
@@ -104,6 +113,7 @@ pub async fn init_pool_with_recovery(paths: &AppPaths) -> Result<DbInit, AppErro
                     pool,
                     recovered: false,
                     backup_path: None,
+                    fallback_path: None,
                 });
             }
             Err(failure) => failure,
@@ -255,13 +265,38 @@ async fn recover_with_fresh_db(
         ),
     }
 
-    // If the move failed, the original file is still in place, so a fresh pool at the
-    // SAME path would re-hit the bad file; open the fresh database at a unique sibling.
-    let fresh_path = if backup_path.is_some() {
-        db_path.to_path_buf()
-    } else {
-        unique_fresh_db_path(db_path)
+    // If the move failed, the original file is still in place, so a fresh pool at
+    // the SAME path would re-hit the bad file. Open a fallback sibling instead.
+    //
+    // The fallback name is DETERMINISTIC (`reposync-fallback.db`), not timestamped
+    // (BL-NI-51). A unique name per launch meant every start minted a brand new
+    // empty database while the previous session's work sat in the last one,
+    // unreachable, because `AppPaths::db_path()` always returns the canonical
+    // name and nothing pointed at the sibling. The user saw an empty library
+    // every single launch and their repos accumulated across a growing pile of
+    // orphan files.
+    //
+    // One stable name fixes that without needing a persisted pointer: the next
+    // launch tries the canonical path, finds it still unopenable, derives the same
+    // fallback, and reopens the session it left. If the fallback itself ever
+    // becomes unopenable, `open_pool` fails and the caller sees a loud error
+    // rather than a third generation of empty database.
+    let (fresh_path, fallback_path) = match &backup_path {
+        Some(_) => (db_path.to_path_buf(), None),
+        None => {
+            let fallback = fallback_db_path(db_path);
+            (fallback.clone(), Some(fallback))
+        }
     };
+    if let Some(fallback) = &fallback_path {
+        tracing::warn!(
+            event = crate::logging::event::DB_RECOVERED,
+            outcome = "running_on_fallback",
+            fallback_path = %fallback.display(),
+            original_path = %db_path.display(),
+            "running on a fallback database because the original could not be              moved aside; the original is untouched at its usual path"
+        );
+    }
 
     let fresh_pool = open_pool(&fresh_path).await?;
     run_migrations(&fresh_pool).await?;
@@ -270,6 +305,7 @@ async fn recover_with_fresh_db(
         pool: fresh_pool,
         recovered: true,
         backup_path,
+        fallback_path,
     })
 }
 
@@ -354,14 +390,13 @@ fn sidecar(db_path: &Path, suffix: &str) -> PathBuf {
 
 /// A unique fresh-db path next to `db_path`, used when the corrupt original could
 /// not be moved aside (so reusing its name would re-open the bad file).
-fn unique_fresh_db_path(db_path: &Path) -> PathBuf {
-    let stamp = timestamp();
+fn fallback_db_path(db_path: &Path) -> PathBuf {
     let stem = db_path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("reposync");
     let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
-    parent.join(format!("{stem}-fresh-{stamp}.db"))
+    parent.join(format!("{stem}-fallback.db"))
 }
 
 /// Current unix time in whole seconds, as a string suitable for a filename.
@@ -961,5 +996,47 @@ mod tests {
             !app_err.retryable(),
             "retrying a constraint violation can never succeed"
         );
+    }
+
+    /// The fallback database name must be STABLE across launches (BL-NI-51).
+    ///
+    /// It used to be timestamped. That meant a user whose corrupt database could
+    /// not be moved aside got a brand new empty database on EVERY launch, while
+    /// the previous session's work sat in the last one, unreachable, because
+    /// `AppPaths::db_path()` always returns the canonical name and nothing pointed
+    /// at the sibling. The visible symptom was an empty library every single time
+    /// the app started, with orphan files accumulating beside it.
+    ///
+    /// One stable name is the whole fix: the next launch derives the same path and
+    /// reopens the session it left, with no persisted pointer needed.
+    #[test]
+    fn the_fallback_database_path_is_stable_across_calls() {
+        let canonical = Path::new("C:/data/reposync.db");
+        let first = fallback_db_path(canonical);
+        let second = fallback_db_path(canonical);
+        assert_eq!(
+            first, second,
+            "a fallback name that changes per launch strands the previous session"
+        );
+        assert_eq!(first, Path::new("C:/data/reposync-fallback.db"));
+    }
+
+    /// It must be a SIBLING of the canonical database, not a name in the current
+    /// working directory: the app data directory is chosen deliberately
+    /// (`paths.rs` hand-rolls %LOCALAPPDATA% to stay out of a synced tree), and a
+    /// fallback that landed elsewhere would silently leave that protection.
+    #[test]
+    fn the_fallback_database_sits_beside_the_canonical_one() {
+        let fallback = fallback_db_path(Path::new("C:/data/nested/reposync.db"));
+        assert_eq!(fallback.parent(), Some(Path::new("C:/data/nested")));
+    }
+
+    /// A canonical path with no usable stem still yields a usable name rather
+    /// than panicking, since this runs on the failure path where the input is
+    /// already known to be strange.
+    #[test]
+    fn a_path_without_a_stem_still_yields_a_fallback() {
+        let fallback = fallback_db_path(Path::new("/"));
+        assert!(fallback.to_string_lossy().contains("reposync-fallback"));
     }
 }

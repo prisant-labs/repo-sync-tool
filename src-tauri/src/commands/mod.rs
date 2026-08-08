@@ -851,6 +851,7 @@ pub async fn db_recovery_notice(
     Ok(build_recovery_notice(
         state.db_recovered,
         state.db_backup_path.as_deref(),
+        state.db_fallback_path.as_deref(),
     ))
 }
 
@@ -1056,10 +1057,12 @@ fn build_diagnostics(
 fn build_recovery_notice(
     recovered: bool,
     backup_path: Option<&std::path::Path>,
+    fallback_path: Option<&std::path::Path>,
 ) -> DbRecoveryNotice {
     DbRecoveryNotice {
         recovered,
         backup_path: backup_path.map(|p| p.display().to_string()),
+        fallback_path: fallback_path.map(|p| p.display().to_string()),
     }
 }
 
@@ -1787,15 +1790,39 @@ mod tests {
     #[test]
     fn build_recovery_notice_maps_parked_recovery_fields() {
         // BL-NI-33 / E-02 AC7: a normal launch reports no recovery and no path.
-        let normal = build_recovery_notice(false, None);
+        let normal = build_recovery_notice(false, None, None);
         assert!(!normal.recovered);
         assert!(normal.backup_path.is_none());
+        assert!(normal.fallback_path.is_none());
 
         // A recovered launch reports the flag and the backup path as a display string,
         // so the frontend can name where the previous database was preserved.
         let path = std::path::Path::new("C:/data/reposync.db.corrupt-1700000000");
-        let notice = build_recovery_notice(true, Some(path));
+        let notice = build_recovery_notice(true, Some(path), None);
         assert!(notice.recovered);
         assert_eq!(notice.backup_path, Some(path.display().to_string()));
+        assert!(
+            notice.fallback_path.is_none(),
+            "a successful move-aside means the app is back on the canonical path"
+        );
+    }
+
+    /// The move-aside FAILED case (BL-NI-51): no backup, and the session is
+    /// running somewhere other than the canonical database.
+    ///
+    /// Both facts are needed to say anything useful. Before this, the notice knew
+    /// only that there was no backup path, so it told the user their previous
+    /// database was "preserved alongside" a file it could not name, while the
+    /// session's actual data lived somewhere they had no way to find.
+    #[test]
+    fn build_recovery_notice_reports_a_fallback_database() {
+        let fallback = std::path::Path::new("C:/data/reposync-fallback.db");
+        let notice = build_recovery_notice(true, None, Some(fallback));
+        assert!(notice.recovered);
+        assert!(
+            notice.backup_path.is_none(),
+            "nothing was moved aside, so there is no backup to name"
+        );
+        assert_eq!(notice.fallback_path, Some(fallback.display().to_string()));
     }
 }

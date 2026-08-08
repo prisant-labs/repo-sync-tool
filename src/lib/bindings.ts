@@ -366,6 +366,17 @@ export type DailySummary = {
 export type DbRecoveryNotice = {
 	recovered: boolean,
 	backupPath: string | null,
+	/**
+	 *  Set when this session is running on a FALLBACK database because the
+	 *  unopenable original could not be moved aside (BL-NI-51).
+	 * 
+	 *  The two paths answer different questions and both matter here: `backup_path`
+	 *  is where the old data WENT, `fallback_path` is where the app is writing NOW.
+	 *  When the move fails there is no backup, and without this field the notice
+	 *  could only say the previous database was "preserved alongside" a file it
+	 *  could not name, while the session's data lived somewhere unfindable.
+	 */
+	fallbackPath: string | null,
 };
 
 /**

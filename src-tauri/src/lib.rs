@@ -102,6 +102,11 @@ pub struct AppState {
     pub github_budget: reposync_core::github::SharedBudgeter,
     pub db_recovered: bool,
     pub db_backup_path: Option<std::path::PathBuf>,
+    /// The FALLBACK database this session is running on, when the unopenable
+    /// original could not be moved aside (BL-NI-51). Distinct from
+    /// `db_backup_path`: that is where the old data went, this is where the app
+    /// is writing now.
+    pub db_fallback_path: Option<std::path::PathBuf>,
     /// Live mirror of the `close_minimizes_to_tray` setting. The window
     /// `CloseRequested` handler is synchronous and cannot await a DB read, so it
     /// reads this flag instead (same Arc-flag pattern as `pause`). Seeded from
@@ -416,6 +421,7 @@ pub fn run() {
                 // and dropped, so the notice never reached the UI.
                 let db_recovered = init.recovered;
                 let db_backup_path = init.backup_path;
+                let db_fallback_path = init.fallback_path;
                 let pool = init.pool;
                 // E-09: prune the activity log once on startup (best-effort -
                 // logged, never gates launch). The daily cadence attaches to the
@@ -757,6 +763,7 @@ pub fn run() {
                     github_budget,
                     db_recovered,
                     db_backup_path,
+                    db_fallback_path,
                     close_minimizes_to_tray: close_minimizes_to_tray_flag.clone(),
                     scheduler_health,
                     log_config,

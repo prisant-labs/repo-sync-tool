@@ -156,18 +156,36 @@ export function AppShell() {
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-dirty" />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground">
-                Database was reset after a failed migration
+                {recovery.data.fallbackPath
+                  ? "Running on a fallback database"
+                  : "Database was reset after a failed migration"}
               </p>
+              {/*
+                Three genuinely different situations, and the old copy collapsed
+                two of them (BL-NI-51). "Preserved alongside it" was said whenever
+                there was no backup path, which is exactly the case where RepoSync
+                could NOT move the old file and is writing somewhere else entirely.
+                It named neither location, so a user had no way to find either
+                their old data or the database now in use.
+              */}
               <p className="mt-0.5 text-xs text-foreground/90">
-                RepoSync could not migrate your existing database, so it started a fresh one.
-                {recovery.data.backupPath ? (
+                {recovery.data.fallbackPath ? (
                   <>
-                    {" "}
+                    RepoSync could not open your database and could not move it aside, so it is
+                    using a separate file at{" "}
+                    <span className="break-all font-mono">{recovery.data.fallbackPath}</span>. Your
+                    original database has not been touched or deleted. Closing anything else that
+                    might be holding it open, then restarting RepoSync, will let it recover
+                    normally.
+                  </>
+                ) : recovery.data.backupPath ? (
+                  <>
+                    RepoSync could not migrate your existing database, so it started a fresh one.
                     Your previous database was preserved at{" "}
                     <span className="break-all font-mono">{recovery.data.backupPath}</span>.
                   </>
                 ) : (
-                  " Your previous database was preserved alongside it."
+                  "RepoSync could not migrate your existing database, so it started a fresh one. Your previous database was preserved alongside it."
                 )}
               </p>
             </div>
