@@ -745,11 +745,10 @@ pub async fn settings_set(
     // Runs before the git probe too, so a bad git path in the same save cannot
     // skip an autostart toggle (the property `plan_settings_reconcile` used to
     // carry, now structural rather than planned).
-    let autostart_actuated = previous_autostart != settings.autostart;
-    let autostart_result = if autostart_actuated {
+    let autostart_result = if previous_autostart != settings.autostart {
         crate::autostart::apply(&app, settings.autostart)
     } else {
-        Ok(())
+        Ok(crate::autostart::Actuated::Noop)
     };
     settings.autostart = autostart_to_persist(
         settings.autostart,
@@ -765,8 +764,14 @@ pub async fn settings_set(
         // adopts whatever the OS actually holds, which is still the truth about the
         // machine. Validation is pre-checked above, so reaching here means the
         // database itself is in trouble.
-        if autostart_actuated && autostart_result.is_ok() {
-            if let Err(rollback) = crate::autostart::apply(&app, previous_autostart) {
+        // Undo only a CONFIRMED change, and restore the state that was actually
+        // OBSERVED before it (Codex review round 3). Rolling back to the
+        // previously PERSISTED value would be wrong: the two can disagree - that
+        // is the entire premise of BL-NI-18 - so a save whose forward apply was a
+        // no-op because the OS had already moved would get "rolled back" into a
+        // state neither the user nor the OS ever asked for.
+        if let Some(previous_os) = rollback_target(&autostart_result) {
+            if let Err(rollback) = crate::autostart::apply(&app, previous_os) {
                 tracing::warn!(
                     "autostart: the settings write failed and the launch-on-login                      rollback failed too, so the OS registration no longer matches                      the stored setting: {rollback}"
                 );
@@ -919,6 +924,23 @@ fn plan_settings_reconcile(
 /// pre-read rather than degrading to a guess. An earlier version inferred it
 /// when unknown, which meant WRITING an assumption - the Codex review's round-2
 /// finding 2, and a fair one.
+/// What a failed settings write should restore the OS registration to, if
+/// anything (Codex review round 3).
+///
+/// `Some(previous_os)` ONLY for a confirmed change, and the value is the state
+/// that was observed before it - never the previously persisted setting. Those
+/// two can disagree, which is the premise of the whole BL-NI-18 policy, so
+/// undoing toward the persisted value would let a failed save invent a third
+/// state that neither the user nor the OS asked for.
+fn rollback_target(actuated: &Result<crate::autostart::Actuated, AppError>) -> Option<bool> {
+    match actuated {
+        Ok(crate::autostart::Actuated::Changed { previous_os }) => Some(*previous_os),
+        // A no-op changed nothing, and a FAILED apply left the OS where it was
+        // (or in a state the plugin never confirmed). Neither is ours to undo.
+        Ok(crate::autostart::Actuated::Noop) | Err(_) => None,
+    }
+}
+
 fn autostart_to_persist(requested: bool, previous: bool, apply_failed: bool) -> bool {
     if apply_failed {
         previous
@@ -1887,6 +1909,40 @@ mod tests {
         // this function can never be asked to invent a value.
         assert!(!autostart_to_persist(true, false, true));
         assert!(autostart_to_persist(true, true, true));
+    }
+
+    #[test]
+    fn rollback_only_undoes_a_confirmed_change_to_its_observed_prior_state() {
+        use crate::autostart::Actuated;
+
+        // Codex review round 3. A confirmed change is undone to the state that was
+        // OBSERVED before it, both directions.
+        assert_eq!(
+            rollback_target(&Ok(Actuated::Changed { previous_os: false })),
+            Some(false)
+        );
+        assert_eq!(
+            rollback_target(&Ok(Actuated::Changed { previous_os: true })),
+            Some(true)
+        );
+
+        // The regression this exists for: stored autostart on, the user removes the
+        // OS entry externally, then toggles the (stale) UI setting off. The forward
+        // apply is a NO-OP because the OS is already off. If the database write then
+        // fails, rolling back to the previously PERSISTED value would re-register
+        // autostart - undoing the external change AND the user's request, and
+        // creating a durable OS mutation out of a failed save. A no-op is not ours
+        // to undo.
+        assert_eq!(rollback_target(&Ok(Actuated::Noop)), None);
+
+        // A failed apply left the OS where it was, or somewhere the plugin never
+        // confirmed. Either way there is nothing we know well enough to restore.
+        assert_eq!(
+            rollback_target(&Err(AppError::InvalidSetting {
+                field: "autostart".into(),
+            })),
+            None
+        );
     }
 
     #[tokio::test]

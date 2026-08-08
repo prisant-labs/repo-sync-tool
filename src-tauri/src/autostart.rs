@@ -181,12 +181,54 @@ fn apply_action(current: Option<bool>, desired: bool) -> ApplyAction {
 /// variant because the [`AppError`] taxonomy is frozen at 30 variants; the value
 /// itself is valid (both true/false are legal), so `InvalidSetting` reads as "could
 /// not activate this setting", exactly as the git-path precedent uses it.
-pub fn apply(app: &AppHandle, enabled: bool) -> Result<(), AppError> {
+pub fn apply(app: &AppHandle, enabled: bool) -> Result<Actuated, AppError> {
     let manager = app.autolaunch();
-    match apply_action(manager.is_enabled().ok(), enabled) {
-        ApplyAction::Noop => Ok(()),
-        ApplyAction::Enable => manager.enable().map_err(|e| apply_error("register", e)),
-        ApplyAction::Disable => manager.disable().map_err(|e| apply_error("remove", e)),
+    let observed = manager.is_enabled().ok();
+    match apply_action(observed, enabled) {
+        ApplyAction::Noop => Ok(Actuated::Noop),
+        ApplyAction::Enable => manager
+            .enable()
+            .map(|()| Actuated::from_observation(observed))
+            .map_err(|e| apply_error("register", e)),
+        ApplyAction::Disable => manager
+            .disable()
+            .map(|()| Actuated::from_observation(observed))
+            .map_err(|e| apply_error("remove", e)),
+    }
+}
+
+/// What [`apply`] actually DID to the OS registration.
+///
+/// The caller needs this to decide whether an undo is even meaningful (Codex
+/// review round 3). "The requested value differs from the stored one" is not the
+/// same as "the OS changed": if something outside RepoSync already moved the
+/// registration to the requested state, `apply` is a no-op, and undoing a no-op
+/// would mutate state this save never touched - reversing both the external
+/// change and the user's request in one go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Actuated {
+    /// The OS already matched the request, or the change could not be confirmed
+    /// against a prior state. Nothing to undo.
+    Noop,
+    /// The registration was changed, from this CONFIRMED prior state. Undoing
+    /// means restoring exactly this, not the previously persisted setting - the
+    /// two can differ, which is the whole premise of BL-NI-18.
+    Changed { previous_os: bool },
+}
+
+impl Actuated {
+    /// Classify a SUCCESSFUL actuation against the pre-apply OS observation.
+    ///
+    /// An unreadable prior state (`None`) reports `Noop` even though the OS was
+    /// very likely changed. That is deliberate: the only honest undo target is an
+    /// observed state, and inventing one is the mistake this whole review chain
+    /// keeps circling back to. Better to leave the registration where the user
+    /// asked for it than to guess it somewhere else.
+    fn from_observation(observed: Option<bool>) -> Self {
+        match observed {
+            Some(previous_os) => Actuated::Changed { previous_os },
+            None => Actuated::Noop,
+        }
     }
 }
 
