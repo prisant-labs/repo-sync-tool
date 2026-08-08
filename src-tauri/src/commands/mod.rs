@@ -877,15 +877,40 @@ pub async fn diagnostics_get(state: tauri::State<'_, AppState>) -> Result<Diagno
     let paths = reposync_core::paths::AppPaths::from_env();
     // Clone the engine out of the read lock and drop the guard immediately, per
     // BL-NI-19, so reading diagnostics can never block a settings re-probe.
-    let git = { state.git.read().await.clone() };
-    // The CONFIGURED git path, read so it can be compared against the RESOLVED
-    // one (BL-NI-39). Best-effort: a settings read that fails must not take down
-    // the diagnostics view, which is the thing someone opens when other things
-    // are already failing.
-    let explicit_git = reposync_core::store::settings_get(&state.pool)
-        .await
-        .ok()
-        .and_then(|s| s.git_executable_path);
+    // The engine and the CONFIGURED path are read as ONE snapshot, under the
+    // settings single-flight guard (BL-NI-39 + BL-NI-35).
+    //
+    // Reading them independently is a race with a user-visible consequence, and
+    // it is the exact false warning this feature exists to avoid rather than
+    // create. `settings_set` PERSISTS the new path and only then probes and swaps
+    // the engine. A diagnostics refresh landing between those two steps would see
+    // the new path against the old engine, conclude the configured path had been
+    // ignored, and leave that alarm on screen until something refreshed it, on a
+    // save that then succeeded perfectly.
+    //
+    // Holding the guard can make a refresh wait for an in-flight save, which
+    // includes a `git --version` probe. That is the right trade: a diagnostics
+    // panel that waits a moment is better than one that lies.
+    let (git, settings_read) = {
+        let _snapshot = state.settings_write_lock.lock().await;
+        let git = { state.git.read().await.clone() };
+        let settings = reposync_core::store::settings_get(&state.pool).await;
+        (git, settings)
+    };
+    // A settings read that FAILED is not the same as no path configured, and is
+    // not silently turned into one. It is logged, and the comparison reports
+    // "cannot say" rather than "honored" (see `build_diagnostics`).
+    let explicit_git = match settings_read {
+        Ok(s) => s.git_executable_path,
+        Err(e) => {
+            tracing::warn!(
+                event = reposync_core::logging::event::DIAGNOSTICS_SETTINGS_READ_FAILED,
+                error = %e,
+                "could not read settings for the diagnostics view; the configured                  git path cannot be compared against the resolved one"
+            );
+            None
+        }
+    };
     Ok(build_diagnostics(
         env!("CARGO_PKG_VERSION"),
         &paths,
@@ -1003,10 +1028,17 @@ fn build_diagnostics(
         // GitAvailability::Unavailable, already reported on its own field, and
         // flagging it twice would send the user after the wrong problem.
         git_explicit_path_honored: match (explicit_git.as_deref(), git_exe_for_compare.as_deref()) {
-            (Some(explicit), Some(resolved)) if !explicit.trim().is_empty() => {
-                reposync_core::git::discover::explicit_path_honored(explicit, resolved)
-            }
-            _ => true,
+            (Some(explicit), Some(resolved)) if !explicit.trim().is_empty() => Some(
+                reposync_core::git::discover::explicit_path_honored(explicit, resolved),
+            ),
+            // NO comparison was made, and that is said rather than encoded as a
+            // healthy-looking `true`. Three distinct situations land here, and
+            // each is already reported by the field that owns it: nothing is
+            // configured (`git_explicit_path` is None), the settings read failed
+            // (logged as diagnostics.settings_read_failed), or no git resolved at
+            // all (`git_resolved` is false, which is the real problem and must
+            // not be duplicated as a path mismatch).
+            _ => None,
         },
         git_explicit_path: explicit_git,
         git_meets_floor,
@@ -1196,7 +1228,7 @@ mod tests {
             &health_with(0, 0, 0),
             false,
         );
-        assert!(d.git_explicit_path_honored);
+        assert_eq!(d.git_explicit_path_honored, Some(true));
         assert_eq!(
             d.git_explicit_path.as_deref(),
             Some("C:/Program Files/Git/cmd/git.exe")
@@ -1224,8 +1256,9 @@ mod tests {
             &health_with(0, 0, 0),
             false,
         );
-        assert!(
-            !d.git_explicit_path_honored,
+        assert_eq!(
+            d.git_explicit_path_honored,
+            Some(false),
             "a configured path RepoSync could not use, with a different git running,              is the whole condition BL-NI-39 exists to surface"
         );
     }
@@ -1252,7 +1285,10 @@ mod tests {
             &health_with(0, 0, 0),
             false,
         );
-        assert!(d.git_explicit_path_honored);
+        assert_eq!(
+            d.git_explicit_path_honored, None,
+            "nothing configured means NO comparison was made, which is different              from a comparison that came back honored"
+        );
         assert!(d.git_explicit_path.is_none());
     }
 
@@ -1274,9 +1310,9 @@ mod tests {
             false,
         );
         assert!(!d.git_resolved, "the real condition is reported here");
-        assert!(
-            d.git_explicit_path_honored,
-            "and NOT duplicated as a path mismatch"
+        assert_eq!(
+            d.git_explicit_path_honored, None,
+            "and NOT duplicated as a path mismatch, nor claimed as honored"
         );
     }
 

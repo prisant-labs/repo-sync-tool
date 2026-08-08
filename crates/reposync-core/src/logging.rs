@@ -81,6 +81,14 @@ pub mod event {
     /// corrupt the WAL sidecars mid-write (BL-NI-12).
     pub const DB_ONEDRIVE_ROOTED: &str = "db.onedrive_rooted";
 
+    /// The Diagnostics view could not read settings, so it cannot compare the
+    /// CONFIGURED git path against the resolved one (BL-NI-39).
+    ///
+    /// Worth a name because the degradation is otherwise invisible: the panel
+    /// still renders, it simply stops making one of its claims, and a reader has
+    /// no way to tell "nothing is configured" from "we could not look".
+    pub const DIAGNOSTICS_SETTINGS_READ_FAILED: &str = "diagnostics.settings_read_failed";
+
     // --- git ---
     /// The git binary is missing, unreadable, or below the supported floor.
     pub const GIT_UNAVAILABLE: &str = "git.unavailable";

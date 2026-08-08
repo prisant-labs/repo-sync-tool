@@ -235,7 +235,7 @@ function Warnings({ d }: { d: Diagnostics }) {
       "Logging started but the folder contains no log files. Events may not be reaching disk.",
     );
   }
-  if (d.gitExplicitPath && !d.gitExplicitPathHonored) {
+  if (d.gitExplicitPath && d.gitExplicitPathHonored === false) {
     // Silent until now: Settings showed the configured path, Diagnostics showed
     // the resolved one, and nothing compared them, so a typo produced a working
     // app running a git the user did not choose.

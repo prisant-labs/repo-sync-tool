@@ -45,7 +45,7 @@ export function formatDiagnosticsReport(d: Diagnostics): string {
     // the other act-on-it conditions, and it names the configured value, because
     // the resolved one is already on this line and the whole point is the gap
     // between them.
-    d.gitExplicitPath && !d.gitExplicitPathHonored
+    d.gitExplicitPath && d.gitExplicitPathHonored === false
       ? ` [CONFIGURED PATH IGNORED: ${d.gitExplicitPath}]`
       : ""
   }`;

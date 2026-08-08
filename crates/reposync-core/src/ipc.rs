@@ -186,15 +186,21 @@ pub struct Diagnostics {
     /// Diagnostics showed the resolved one, and a wrong configured path fell back
     /// silently to a working git that was not the one named on screen.
     pub git_explicit_path: Option<String>,
-    /// Whether the configured path is the one actually running.
+    /// Whether the configured path is the one actually running, or `None` when
+    /// the question does not apply or cannot be answered.
     ///
-    /// MEANINGLESS when `git_explicit_path` is `None`, in the same way
-    /// `log_file_count` is meaningless when `log_dir_readable` is false: there is
-    /// nothing to honor, so `true` there is an absence rather than a claim.
-    /// `false` is the condition worth surfacing, and it means exactly one thing:
-    /// the user configured a git, RepoSync could not use it, and it is running a
-    /// different one.
-    pub git_explicit_path_honored: bool,
+    /// `Option` rather than `bool` deliberately. A bare `bool` had `true` meaning
+    /// four different things - honored, nothing configured, settings unreadable,
+    /// and configured-but-no-git-at-all - which is the same overclaiming this
+    /// field was added to fix, one level up. `None` says "no comparison was made"
+    /// and leaves the reason to the fields that already carry it
+    /// (`git_explicit_path` for whether anything is set, `git_resolved` for
+    /// whether a git was found at all).
+    ///
+    /// `Some(false)` is the condition worth surfacing and means exactly one
+    /// thing: the user configured a git, RepoSync could not use it, and it is
+    /// running a different one.
+    pub git_explicit_path_honored: Option<bool>,
     /// Whether the resolved git is at or above the supported >= 2.30 floor.
     ///
     /// Split from `git_resolved` rather than folded into one "available" flag,

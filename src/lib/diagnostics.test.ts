@@ -23,7 +23,7 @@ function diagnostics(overrides: Partial<Diagnostics> = {}): Diagnostics {
     gitPath: "C:\\Program Files\\Git\\cmd\\git.exe",
     gitVersion: "2.40.1",
     gitExplicitPath: null,
-    gitExplicitPathHonored: true,
+    gitExplicitPathHonored: null,
     gitResolved: true,
     gitMeetsFloor: true,
     schedulerCycles: 12,
@@ -225,5 +225,18 @@ describe("formatDiagnosticsReport, an ignored git path", () => {
     // The default setup. A warning here would fire for everyone and teach people
     // to skip the section.
     expect(formatDiagnosticsReport(diagnostics())).not.toContain("CONFIGURED PATH IGNORED");
+  });
+});
+
+describe("formatDiagnosticsReport, an un-compared git path", () => {
+  it("says nothing when the comparison could not be made", () => {
+    // `null` means no comparison happened: nothing configured, a failed settings
+    // read, or no git at all. None of those is a path mismatch, and the field
+    // that owns each of them reports it. Treating null as falsy would have made
+    // the warning fire on all three.
+    const report = formatDiagnosticsReport(
+      diagnostics({ gitExplicitPath: "C:/tools/git/bin/git.exe", gitExplicitPathHonored: null }),
+    );
+    expect(report).not.toContain("CONFIGURED PATH IGNORED");
   });
 });
