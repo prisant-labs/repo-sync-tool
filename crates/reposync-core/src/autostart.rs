@@ -50,6 +50,15 @@ pub enum OsAutostartState {
 /// happened while RepoSync was not running", which is the only thing startup
 /// reconciliation can actually observe.
 ///
+/// That reading depends on an invariant the EDGE must uphold, and the edge now
+/// does (Codex review finding 1): the persisted setting never claims an
+/// actuation that did not happen. `settings_set` actuates the OS BEFORE writing
+/// the row and persists the old value if the plugin call fails, so a
+/// disagreement at startup cannot be RepoSync's own unfinished work. Reverse
+/// that ordering and this function silently becomes a way to undo an explicit
+/// user choice: a stored "on" the OS never received would be adopted away as
+/// though a stranger had removed it.
+///
 /// KNOWN RISK, accepted deliberately when this policy was chosen: a security
 /// tool or policy that strips autostart entries looks identical to a user who
 /// removed one, so RepoSync will agree with it and the feature turns itself off.

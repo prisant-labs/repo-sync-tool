@@ -362,6 +362,31 @@ pub async fn settings_get(pool: &SqlitePool) -> Result<Settings, AppError> {
 /// Write the settings singleton (validating the inputs first). Upserts the
 /// id = 1 row. `github_token_present` is NOT written here: it is a derived flag
 /// owned by the keychain integration (E-10), never set from the wire payload.
+/// Write ONLY the `autostart` column of the settings singleton.
+///
+/// Exists so startup autostart reconciliation (BL-NI-18) can adopt an
+/// OS-originated change without going through the full-row [`settings_set`]
+/// upsert. Rewriting the whole row from a snapshot taken at launch would restore
+/// every OTHER field to its value at that moment, and a second RepoSync process
+/// sharing the database (BL-NI-73, still open) can save newer cadence,
+/// notification, or command settings in between. A one-column UPDATE cannot lose
+/// them.
+///
+/// No `validate_settings` call: this writes a boolean into an existing row and
+/// touches nothing validation covers. A missing row (id != 1) updates zero rows
+/// and is not an error - there are no settings to reconcile against, which the
+/// caller already treats as "skip".
+pub async fn settings_set_autostart(pool: &SqlitePool, autostart: bool) -> Result<(), AppError> {
+    sqlx::query("UPDATE settings SET autostart = ? WHERE id = 1")
+        .bind(bool_to_int(autostart))
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::Db {
+            cause: e.to_string(),
+        })?;
+    Ok(())
+}
+
 pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), AppError> {
     validate_settings(settings)?;
 
@@ -1319,6 +1344,78 @@ mod tests {
             matches!(missing, Err(AppError::NotFound { .. })),
             "set_cadence on a missing repo must be NotFound, got {missing:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn settings_set_autostart_touches_only_that_column() {
+        // BL-NI-18 / Codex finding 2. Startup adoption used to rewrite the WHOLE
+        // settings row from the snapshot it read at launch. Another RepoSync
+        // process sharing this database (BL-NI-73, open) can save real settings in
+        // between, and the full-row write would silently restore all of them to
+        // their launch-time values while adopting one boolean.
+        //
+        // Simulated here by writing settings AFTER taking the snapshot, then
+        // adopting: every field must survive.
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        // The snapshot a launching process would hold.
+        let snapshot = settings_get(&pool).await.expect("seed + get");
+        assert!(!snapshot.autostart);
+
+        // Meanwhile, someone saves real settings.
+        let newer = Settings {
+            global_check_minutes: 15,
+            quiet_hours_start: Some(60),
+            quiet_hours_end: Some(120),
+            notify_on_release: false,
+            notify_on_failure: false,
+            git_executable_path: Some("C:/other/git.exe".into()),
+            editor_command: Some("nvim".into()),
+            terminal_command: Some("pwsh".into()),
+            autostart: false,
+            activity_retention_d: 7,
+            github_token_present: false,
+            auto_update_check: false,
+            close_minimizes_to_tray: false,
+        };
+        settings_set(&pool, &newer).await.expect("concurrent save");
+
+        // Now adopt the OS state, as `reconcile_on_launch` would.
+        settings_set_autostart(&pool, true).await.expect("adopt");
+
+        let back = settings_get(&pool).await.expect("get");
+        assert!(back.autostart, "the adopted value must be written");
+        assert_eq!(
+            back.global_check_minutes, 15,
+            "a newer cadence must survive an autostart adoption"
+        );
+        assert_eq!(back.activity_retention_d, 7);
+        assert_eq!(back.quiet_hours_start, Some(60));
+        assert_eq!(back.editor_command.as_deref(), Some("nvim"));
+        assert_eq!(back.terminal_command.as_deref(), Some("pwsh"));
+        assert_eq!(
+            back.git_executable_path.as_deref(),
+            Some("C:/other/git.exe")
+        );
+        assert!(!back.notify_on_release);
+        assert!(!back.auto_update_check);
+        assert!(!back.close_minimizes_to_tray);
+
+        // Adoption is an UPDATE, never an insert: still a singleton.
+        let count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM settings")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("c")
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // And it round-trips the other way.
+        settings_set_autostart(&pool, false)
+            .await
+            .expect("adopt off");
+        assert!(!settings_get(&pool).await.expect("get").autostart);
     }
 
     #[tokio::test]

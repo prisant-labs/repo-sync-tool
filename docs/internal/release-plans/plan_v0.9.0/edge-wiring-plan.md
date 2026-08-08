@@ -49,7 +49,7 @@ Every core effort to date was verified test-first: a failing unit test, then min
 ### Backlog couplings this effort resolves or carries:
 - **BL-NI-15b** - release ETag / separate cadence / durable release-staleness (carried into the scheduler refresh cadence).
 - **BL-NI-16** - summary release-event fidelity (carried into `repo_refresh_metadata` + the cadence).
-- **BL-NI-18** - autostart "setting wins vs adopt the OS change" policy (resolved when reconcile is wired).
+- **BL-NI-18** - autostart "setting wins vs adopt the OS change" policy. **Resolved 2026-08-07: the OS wins.** A confirmed disagreement at startup updates the setting, not the registration.
 - **BL-NI-17** - notification auth-toggle policy (resolved when the emit-site is wired).
 
 ## The foundational decision: local time at the edge

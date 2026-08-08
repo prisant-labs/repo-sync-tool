@@ -116,9 +116,11 @@ pub async fn reconcile_on_launch(
         return;
     };
 
-    let mut adopted = settings.clone();
-    adopted.autostart = os_on;
-    match reposync_core::store::settings_set(pool, &adopted).await {
+    // A one-column UPDATE, not a full-row write of the startup snapshot: another
+    // process sharing this database (BL-NI-73) could have saved newer settings
+    // since the snapshot was taken, and rewriting the row would silently restore
+    // the stale values along with the adopted one.
+    match reposync_core::store::settings_set_autostart(pool, os_on).await {
         Ok(()) => tracing::info!(
             event = reposync_core::logging::event::AUTOSTART_ADOPTED_OS_STATE,
             autostart = os_on,
