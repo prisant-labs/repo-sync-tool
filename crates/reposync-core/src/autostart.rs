@@ -11,11 +11,12 @@
 /// persisted `autostart` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutostartAction {
-    /// The setting is on but the OS has no registration: register launch-on-login.
-    Register,
-    /// The setting is off but the OS still has a registration: remove it.
-    Unregister,
-    /// The OS state already matches the setting: do nothing.
+    /// The confirmed OS state disagrees with the setting: adopt the OS state by
+    /// writing this value into `settings.autostart`. The OS registration is NOT
+    /// touched.
+    AdoptOsState(bool),
+    /// The OS state already matches the setting, or could not be determined: do
+    /// nothing.
     NoChange,
 }
 
@@ -34,26 +35,49 @@ pub enum OsAutostartState {
     Unknown,
 }
 
-/// Decide how to reconcile the OS autostart registration with the persisted setting on
-/// startup (AC2).
+/// Decide how to reconcile the OS autostart registration with the persisted
+/// setting on startup (AC2, amended by BL-NI-18).
 ///
-/// V1 policy: the persisted `autostart` setting is authoritative. When a CONFIRMED OS
-/// state disagrees with it, move the OS to match (Register / Unregister); when they agree,
-/// do nothing. A failed/unknown OS query (`OsAutostartState::Unknown`) is non-actuating -
-/// the core never mutates OS state from an untrusted read (finding 2); the edge can
-/// log/retry it.
+/// **The OS wins.** When a CONFIRMED OS state disagrees with the setting,
+/// RepoSync updates its OWN setting to match rather than re-registering. A user
+/// who turns launch-on-login off in Task Manager expects it to stay off, and the
+/// previous policy quietly turned it back on at the next launch, which is the
+/// app arguing with a deliberate choice it cannot see the reason for.
 ///
-/// The reviewer flagged (finding 1) that "setting wins" also re-forces a user's direct
-/// OS-level change on every launch. Treating an OS-originated change as an intent to ADOPT
-/// (update the setting) or surfacing a conflict needs a persisted last-observed-OS state
-/// and a settings write - both edge-owned - so it is deferred to the edge-wiring effort
-/// and tracked as BL-NI-18. V1 keeps the simple authoritative-setting policy.
+/// This is a startup-only policy and does not touch the user's explicit toggle:
+/// changing `autostart` in Settings still actuates the OS immediately, through
+/// the separate live-apply path. So "the OS wins" means "the OS wins about what
+/// happened while RepoSync was not running", which is the only thing startup
+/// reconciliation can actually observe.
+///
+/// That reading depends on an invariant the EDGE must uphold, and the edge now
+/// does (Codex review finding 1): the persisted setting never claims an
+/// actuation that did not happen. `settings_set` actuates the OS BEFORE writing
+/// the row and persists the old value if the plugin call fails, so a
+/// disagreement at startup cannot be RepoSync's own unfinished work. Reverse
+/// that ordering and this function silently becomes a way to undo an explicit
+/// user choice: a stored "on" the OS never received would be adopted away as
+/// though a stranger had removed it.
+///
+/// KNOWN RISK, accepted deliberately when this policy was chosen: a security
+/// tool or policy that strips autostart entries looks identical to a user who
+/// removed one, so RepoSync will agree with it and the feature turns itself off.
+/// The mitigation is that it is not silent. The setting visibly changes, so the
+/// Settings screen shows it off rather than showing on while nothing happens,
+/// which is the state the old policy could produce when registration kept
+/// failing. The edge also logs the adoption under a stable event name.
+///
+/// An `Unknown` OS read remains non-actuating (Codex review finding 2, unchanged
+/// and now doubly important): adopting from an untrusted observation would let a
+/// transient query failure silently disable the feature.
 pub fn reconcile(os: OsAutostartState, setting_on: bool) -> AutostartAction {
     match (os, setting_on) {
-        (OsAutostartState::Unregistered, true) => AutostartAction::Register,
-        (OsAutostartState::Registered, false) => AutostartAction::Unregister,
-        // Aligned (Registered+on, Unregistered+off), or an Unknown read that must never
-        // actuate from an untrusted observation (finding 2): do nothing.
+        // Confirmed disagreement: the OS is the source of truth, so the SETTING
+        // moves, not the registration.
+        (OsAutostartState::Unregistered, true) => AutostartAction::AdoptOsState(false),
+        (OsAutostartState::Registered, false) => AutostartAction::AdoptOsState(true),
+        // Aligned (Registered+on, Unregistered+off), or an Unknown read that must
+        // never actuate from an untrusted observation (finding 2): do nothing.
         _ => AutostartAction::NoChange,
     }
 }
@@ -73,22 +97,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reconcile_registers_when_setting_on_but_os_unregistered() {
-        // AC2: the setting is the source of truth. Setting on + OS confirmed not
-        // registered (first run, or a registration that failed / was removed) -> register.
+    fn reconcile_adopts_os_off_when_setting_on_but_os_unregistered() {
+        // BL-NI-18: the registration is gone but the setting says on. Something
+        // outside RepoSync removed it while RepoSync was not running, and the OS
+        // is authoritative about that, so the SETTING moves to off. The old
+        // policy re-registered here, which is how a deliberate removal came back
+        // by itself at the next launch.
         assert_eq!(
             reconcile(OsAutostartState::Unregistered, true),
-            AutostartAction::Register
+            AutostartAction::AdoptOsState(false)
         );
     }
 
     #[test]
-    fn reconcile_unregisters_when_setting_off_but_os_registered() {
-        // AC2: setting off + OS confirmed registered (the user disabled it in-app while a
-        // stale registration lingered, or enabled it via the OS) -> remove it.
+    fn reconcile_adopts_os_on_when_setting_off_but_os_registered() {
+        // BL-NI-18, the mirror case: the user (or an installer) added the entry
+        // outside the app. Adopt it rather than deleting a registration the user
+        // may have just created on purpose.
         assert_eq!(
             reconcile(OsAutostartState::Registered, false),
-            AutostartAction::Unregister
+            AutostartAction::AdoptOsState(true)
+        );
+    }
+
+    #[test]
+    fn reconcile_never_actuates_the_os_registration() {
+        // The load-bearing half of BL-NI-18, asserted as its own property: NO
+        // input to startup reconciliation can produce a change to the OS
+        // registration. Adopting is a settings write; the registration is only
+        // ever touched by the user's explicit toggle, through `ApplyAction`.
+        // Written as an exhaustive sweep so a future variant that DOES actuate
+        // cannot be added without this test being confronted.
+        for os in [
+            OsAutostartState::Registered,
+            OsAutostartState::Unregistered,
+            OsAutostartState::Unknown,
+        ] {
+            for setting_on in [true, false] {
+                match reconcile(os, setting_on) {
+                    AutostartAction::AdoptOsState(_) | AutostartAction::NoChange => {}
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reconcile_adopted_value_always_matches_the_observed_os_state() {
+        // The direction is the whole point and a swapped boolean would be
+        // invisible: adopting must write what the OS actually reported, never its
+        // negation. Both confirmed states, asserted against the observation.
+        assert_eq!(
+            reconcile(OsAutostartState::Registered, false),
+            AutostartAction::AdoptOsState(true),
+            "a registered OS entry must adopt to autostart = on"
+        );
+        assert_eq!(
+            reconcile(OsAutostartState::Unregistered, true),
+            AutostartAction::AdoptOsState(false),
+            "a missing OS entry must adopt to autostart = off"
         );
     }
 
@@ -107,9 +173,12 @@ mod tests {
 
     #[test]
     fn reconcile_does_not_actuate_on_unknown_os_state() {
-        // Codex review finding 2: a failed/unknown OS query must NOT drive a register or
-        // unregister - the core never mutates OS state from an untrusted observation. The
-        // edge logs/retries the failed query instead.
+        // Codex review finding 2, and now doubly load-bearing under BL-NI-18: a
+        // failed/unknown OS query must NOT be adopted. Under the old policy an
+        // untrusted read could have mutated OS state; under this one it could
+        // silently switch the user's setting off on the strength of a query that
+        // simply errored. Neither is acceptable, so Unknown stays inert and the
+        // next launch reads again.
         assert_eq!(
             reconcile(OsAutostartState::Unknown, true),
             AutostartAction::NoChange

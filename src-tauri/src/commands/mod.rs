@@ -692,7 +692,7 @@ pub async fn settings_get(state: tauri::State<'_, AppState>) -> Result<Settings,
 pub async fn settings_set(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<(), AppError> {
     // Serialize the whole persist/reschedule/probe/swap sequence (BL-NI-35).
     let _write = state.settings_write_lock.lock().await;
@@ -702,14 +702,86 @@ pub async fn settings_set(
     // (below, re-cadence repos) and the `autostart` setting (E-15, actuate the
     // plugin). `app` is Tauri-injected, so it does NOT appear in the generated
     // TypeScript binding (`settingsSet(settings)` is unchanged).
-    let previous = reposync_core::store::settings_get(&state.pool).await.ok();
-    let previous_global = previous.as_ref().map(|s| s.global_check_minutes);
-    let previous_autostart = previous.as_ref().map(|s| s.autostart);
-    let previous_git_path = previous
-        .as_ref()
-        .and_then(|s| s.git_executable_path.clone());
+    //
+    // The read failure is PROPAGATED rather than tolerated (Codex review round 2,
+    // finding 2). It used to degrade to `None`, which meant the code had to guess
+    // at the previous autostart value if the plugin call then failed - and that
+    // guess got WRITTEN, so an unrelated save could durably flip a setting nobody
+    // read or requested. There is nothing to degrade to here: `settings_get`
+    // seeds the singleton on first call, so it only fails when the database
+    // genuinely cannot be read, and the write below would fail too.
+    let previous = reposync_core::store::settings_get(&state.pool).await?;
+    let previous_global = previous.global_check_minutes;
+    let previous_autostart = previous.autostart;
+    let previous_git_path = previous.git_executable_path.clone();
 
-    reposync_core::store::settings_set(&state.pool, &settings).await?;
+    // Reject an invalid payload BEFORE actuating anything (Codex review round 2,
+    // finding 1). The autostart plugin call below happens before the durable
+    // write, so without this a save that toggles autostart AND carries an
+    // out-of-range unrelated field - a cleared numeric input arriving as 0, say -
+    // would change the OS registration, then be rejected, and leave the setting
+    // and the OS disagreeing for the next launch to adopt. That would make the
+    // rejected save durable by the back door.
+    reposync_core::store::validate_settings(&settings)?;
+
+    // E-15 AC1: actuate launch-on-login when the `autostart` setting changed.
+    //
+    // APPLY-THEN-PERSIST, and deliberately the opposite of the git-path swap next
+    // to it (BL-NI-18, Codex review finding 1). It used to be persist-then-apply,
+    // on the reasoning that a failed plugin call would be self-healed by the next
+    // launch re-registering. Startup reconciliation no longer does that - the OS
+    // is now authoritative there - so a persisted value the OS never received
+    // would be silently REVERTED at the next launch instead of retried, losing an
+    // explicit user choice.
+    //
+    // Actuating first, and persisting the previous value when actuation fails,
+    // establishes the invariant startup reconciliation depends on: THE PERSISTED
+    // SETTING NEVER CLAIMS AN ACTUATION THAT DID NOT HAPPEN. Given that, any
+    // disagreement seen at startup really was made outside RepoSync, which is
+    // exactly what `reposync_core::autostart::reconcile` assumes. It also removes
+    // the crash window - dying between the persist and the plugin call can no
+    // longer leave a claim the OS never received.
+    //
+    // Runs before the git probe too, so a bad git path in the same save cannot
+    // skip an autostart toggle (the property `plan_settings_reconcile` used to
+    // carry, now structural rather than planned).
+    let autostart_result = if previous_autostart != settings.autostart {
+        crate::autostart::apply(&app, settings.autostart)
+    } else {
+        Ok(crate::autostart::Actuated::Noop)
+    };
+    // On failure, ASK the OS rather than assuming the actuation left it alone
+    // (Codex review round 4): the plugin can fail partway through, with the
+    // registration already moved.
+    let after_failed_apply = autostart_result
+        .is_err()
+        .then(|| crate::autostart::observed_state(&app));
+    settings.autostart =
+        autostart_to_persist(settings.autostart, previous_autostart, after_failed_apply);
+
+    if let Err(e) = reposync_core::store::settings_set(&state.pool, &settings).await {
+        // The write failed after the OS may already have taken the change. Put the
+        // registration back, so a save the user was told had FAILED does not become
+        // durable at the next launch by way of adoption. Best-effort by necessity:
+        // if the rollback also fails, the OS and the setting disagree and startup
+        // adopts whatever the OS actually holds, which is still the truth about the
+        // machine. Validation is pre-checked above, so reaching here means the
+        // database itself is in trouble.
+        // Undo only a CONFIRMED change, and restore the state that was actually
+        // OBSERVED before it (Codex review round 3). Rolling back to the
+        // previously PERSISTED value would be wrong: the two can disagree - that
+        // is the entire premise of BL-NI-18 - so a save whose forward apply was a
+        // no-op because the OS had already moved would get "rolled back" into a
+        // state neither the user nor the OS ever asked for.
+        if let Some(previous_os) = rollback_target(&autostart_result) {
+            if let Err(rollback) = crate::autostart::apply(&app, previous_os) {
+                tracing::warn!(
+                    "autostart: the settings write failed and the launch-on-login                      rollback failed too, so the OS registration no longer matches                      the stored setting: {rollback}"
+                );
+            }
+        }
+        return Err(e);
+    }
 
     // Mirror the close-button behavior into the shared flag the window
     // CloseRequested handler reads (it is synchronous and cannot query the DB).
@@ -756,11 +828,7 @@ pub async fn settings_set(
     // Derive the rest of the reconciliation PURELY (so finding 1's ordering rule is
     // unit-testable without a Tauri harness, see `plan_settings_reconcile`): which
     // independent subsystems to actuate and whether the save ends in a git rejection.
-    let plan = plan_settings_reconcile(
-        git,
-        previous_autostart != Some(settings.autostart),
-        previous_global != Some(settings.global_check_minutes),
-    );
+    let plan = plan_settings_reconcile(git, previous_global != settings.global_check_minutes);
 
     // BL-NI-25 / finding 4: a changed global cadence takes effect on already-
     // scheduled INHERIT repos immediately, without waiting out their stale
@@ -774,19 +842,6 @@ pub async fn settings_set(
         )
         .await?;
     }
-
-    // E-15 AC1: actuate launch-on-login when the `autostart` setting changed. ORDERING
-    // (finding 1): this runs REGARDLESS of the git outcome and BEFORE any git-path
-    // rejection is returned, so a bad git path in the same save never SKIPS an
-    // autostart toggle (the pre-fix early return did exactly that). Persist-then-apply
-    // (commit 71a0f7b): the value is already stored, so a plugin failure returns a
-    // structured `InvalidSetting { field: "autostart" }` without rollback, and
-    // `reconcile_on_launch` self-heals it on the next launch.
-    let autostart_result = if plan.apply_autostart {
-        crate::autostart::apply(&app, settings.autostart)
-    } else {
-        Ok(())
-    };
 
     // A changed git path that probed unusable is reported LAST, after the independent
     // subsystems above have been actuated - preserving the git error's precedence
@@ -844,8 +899,6 @@ enum GitReconcile {
 struct SettingsReconcilePlan {
     /// Reschedule already-scheduled inherit repos (the global cadence changed).
     reschedule_inherit: bool,
-    /// Actuate launch-on-login (the autostart setting changed).
-    apply_autostart: bool,
     /// Reject the save with `InvalidSetting(git_executable_path)` after the
     /// independent subsystems above were actuated (a changed git path probed unusable).
     reject_git_path: bool,
@@ -853,13 +906,71 @@ struct SettingsReconcilePlan {
 
 fn plan_settings_reconcile(
     git: GitReconcile,
-    autostart_changed: bool,
     global_cadence_changed: bool,
 ) -> SettingsReconcilePlan {
     SettingsReconcilePlan {
         reschedule_inherit: global_cadence_changed,
-        apply_autostart: autostart_changed,
         reject_git_path: matches!(git, GitReconcile::RejectUnavailable),
+    }
+}
+
+/// What a failed settings write should restore the OS registration to, if
+/// anything (Codex review round 3).
+///
+/// `Some(previous_os)` ONLY for a confirmed change, and the value is the state
+/// that was observed before it - never the previously persisted setting. Those
+/// two can disagree, which is the premise of the whole BL-NI-18 policy, so
+/// undoing toward the persisted value would let a failed save invent a third
+/// state that neither the user nor the OS asked for.
+fn rollback_target(actuated: &Result<crate::autostart::Actuated, AppError>) -> Option<bool> {
+    match actuated {
+        Ok(crate::autostart::Actuated::Changed { previous_os }) => Some(*previous_os),
+        // A no-op changed nothing, and a FAILED apply left the OS where it was
+        // (or in a state the plugin never confirmed). Neither is ours to undo.
+        Ok(crate::autostart::Actuated::Noop) | Err(_) => None,
+    }
+}
+
+/// The `autostart` value to WRITE, given what the user asked for and what the OS
+/// actually ended up holding (BL-NI-18; Codex review rounds 1, 2 and 4).
+///
+/// The persisted row must never claim a state the machine contradicts, because
+/// startup reconciliation adopts the OS state on a disagreement: a stored "on"
+/// the OS never received would be quietly turned back off at the next launch
+/// rather than retried, silently undoing an explicit choice (round 1).
+///
+/// `after_failed_apply` is `None` when the apply SUCCEEDED, and `Some(observed)`
+/// when it failed - where `observed` is the OS state RE-READ after the failure,
+/// itself `None` if even that read failed.
+///
+/// The re-read exists because a plugin error does not imply an unchanged OS
+/// (round 4): `auto-launch` 0.5.0 can write the Windows Run entry and then fail
+/// updating StartupApproved, or create the macOS LaunchAgent file and then fail
+/// writing its contents. Treating "it returned an error" as "nothing happened"
+/// would store exactly the kind of unverified claim this whole policy exists to
+/// prevent.
+///
+/// Falling back to the previous persisted value happens only when the actuation
+/// failed AND the query failed. It is the one branch that records something
+/// unverified, so it is the last resort rather than the first move.
+///
+/// The previous value is always known: `settings_set` propagates a failed
+/// pre-read rather than degrading to a guess. An earlier version inferred it
+/// when unknown, which meant WRITING an assumption (round 2).
+fn autostart_to_persist(
+    requested: bool,
+    previous: bool,
+    after_failed_apply: Option<Option<bool>>,
+) -> bool {
+    match after_failed_apply {
+        // The OS took the change.
+        None => requested,
+        // The apply failed but the OS answered: record what IS, whether or not
+        // it matches the request. A partial mutation lands here.
+        Some(Some(observed)) => observed,
+        // The apply failed and the OS will not say. Keep the last value known to
+        // have been true.
+        Some(None) => previous,
     }
 }
 
@@ -1765,50 +1876,155 @@ mod tests {
 
     #[test]
     fn plan_settings_reconcile_keeps_subsystems_independent() {
-        // Finding 1 regression: the git re-probe, the autostart actuation, and the
-        // inherit-cadence reschedule are INDEPENDENT. On a git-less machine (or any
-        // save that does not touch the git path) the git portion is Unchanged, so the
-        // save NEVER rejects on git and STILL actuates an autostart toggle and a
-        // global-cadence change - the exact regression this fix closes.
-        let p = plan_settings_reconcile(GitReconcile::Unchanged, true, true);
+        // Finding 1 regression: the git re-probe and the inherit-cadence reschedule
+        // are INDEPENDENT. On a git-less machine (or any save that does not touch
+        // the git path) the git portion is Unchanged, so the save NEVER rejects on
+        // git and STILL applies a global-cadence change.
+        //
+        // Autostart used to be planned here too, carrying the property "a git-path
+        // typo never skips an autostart toggle". Under BL-NI-18 the actuation moved
+        // ahead of the persist and the git probe entirely, so that property is now
+        // structural - there is no longer an ordering in which git could skip it.
+        let p = plan_settings_reconcile(GitReconcile::Unchanged, true);
         assert!(
             !p.reject_git_path,
             "an unchanged git path must not reject the save (git-less machine)"
-        );
-        assert!(
-            p.apply_autostart,
-            "an autostart toggle applies when the git path is untouched"
         );
         assert!(
             p.reschedule_inherit,
             "a global-cadence change reschedules when the git path is untouched"
         );
 
-        // A changed-but-unusable git path rejects (BL-NI-26) but STILL actuates the
-        // independent autostart toggle first: a git-path typo never skips autostart.
-        let p = plan_settings_reconcile(GitReconcile::RejectUnavailable, true, false);
+        // A changed-but-unusable git path rejects (BL-NI-26).
+        let p = plan_settings_reconcile(GitReconcile::RejectUnavailable, false);
         assert!(p.reject_git_path, "a changed unusable git path rejects");
-        assert!(
-            p.apply_autostart,
-            "autostart still applies even though the git path is rejected"
-        );
         assert!(
             !p.reschedule_inherit,
             "an unchanged cadence does not reschedule"
         );
 
-        // A rejection with no autostart / cadence change still rejects and actuates
-        // nothing extra.
-        let p = plan_settings_reconcile(GitReconcile::RejectUnavailable, false, false);
-        assert!(p.reject_git_path);
-        assert!(!p.apply_autostart);
-        assert!(!p.reschedule_inherit);
-
         // A changed usable git path swaps in and does not reject.
-        let p = plan_settings_reconcile(GitReconcile::Swapped, false, false);
+        let p = plan_settings_reconcile(GitReconcile::Swapped, false);
         assert!(!p.reject_git_path, "a usable git swap does not reject");
-        assert!(!p.apply_autostart);
         assert!(!p.reschedule_inherit);
+    }
+
+    #[test]
+    fn autostart_to_persist_records_what_is_true_not_what_was_asked() {
+        // A successful apply persists what the user asked for (`None` = no
+        // failure to reconcile).
+        assert!(autostart_to_persist(true, false, None));
+        assert!(!autostart_to_persist(false, true, None));
+
+        // Round 1: a failed apply must not record a registration the OS never
+        // received. Here the OS confirms it is still at the old value.
+        assert!(
+            !autostart_to_persist(true, false, Some(Some(false))),
+            "a failed enable, OS still off: persist off"
+        );
+        assert!(
+            autostart_to_persist(false, true, Some(Some(true))),
+            "a failed disable, OS still on: persist on"
+        );
+
+        // Round 4, the case that motivated the re-read: the plugin MUTATED the OS
+        // and then failed - `auto-launch` writes the Windows Run entry before
+        // updating StartupApproved, so `enable()` can return an error with the
+        // registration already in place. The OS now reports ON even though the
+        // save failed. Persist ON, because that is what is true; persisting the
+        // old OFF would leave startup to discover the disagreement later and
+        // attribute it to someone else.
+        assert!(
+            autostart_to_persist(true, false, Some(Some(true))),
+            "enable mutated then errored: record the mutation, do not deny it"
+        );
+        assert!(
+            !autostart_to_persist(false, true, Some(Some(false))),
+            "disable mutated then errored: record the removal"
+        );
+
+        // The apply failed AND the OS cannot be read. Only here do we fall back
+        // to the previous persisted value - the one branch that records something
+        // unverified, reached only when both the actuation and the query failed.
+        assert!(!autostart_to_persist(true, false, Some(None)));
+        assert!(autostart_to_persist(false, true, Some(None)));
+
+        // No unknown-PREVIOUS case exists by construction (round 2): `settings_set`
+        // propagates a failed pre-read rather than guessing, so this function can
+        // never be asked to invent the prior value.
+    }
+
+    #[test]
+    fn rollback_only_undoes_a_confirmed_change_to_its_observed_prior_state() {
+        use crate::autostart::Actuated;
+
+        // Codex review round 3. A confirmed change is undone to the state that was
+        // OBSERVED before it, both directions.
+        assert_eq!(
+            rollback_target(&Ok(Actuated::Changed { previous_os: false })),
+            Some(false)
+        );
+        assert_eq!(
+            rollback_target(&Ok(Actuated::Changed { previous_os: true })),
+            Some(true)
+        );
+
+        // The regression this exists for: stored autostart on, the user removes the
+        // OS entry externally, then toggles the (stale) UI setting off. The forward
+        // apply is a NO-OP because the OS is already off. If the database write then
+        // fails, rolling back to the previously PERSISTED value would re-register
+        // autostart - undoing the external change AND the user's request, and
+        // creating a durable OS mutation out of a failed save. A no-op is not ours
+        // to undo.
+        assert_eq!(rollback_target(&Ok(Actuated::Noop)), None);
+
+        // A failed apply left the OS where it was, or somewhere the plugin never
+        // confirmed. Either way there is nothing we know well enough to restore.
+        assert_eq!(
+            rollback_target(&Err(AppError::InvalidSetting {
+                field: "autostart".into(),
+            })),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_validation_rejects_before_anything_is_actuated() {
+        // Codex round-2 finding 1. `settings_set` actuates launch-on-login BEFORE
+        // the durable write, so an invalid payload must be rejected before that
+        // point or a rejected save changes OS state anyway - and startup adoption
+        // then makes it durable.
+        //
+        // Asserted against the same `validate_settings` the command pre-checks
+        // with, over the realistic trigger: a cleared numeric input arriving as 0
+        // alongside an autostart toggle.
+        let bad = Settings {
+            global_check_minutes: 0,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            notify_on_release: true,
+            notify_on_failure: true,
+            git_executable_path: None,
+            editor_command: None,
+            terminal_command: None,
+            autostart: true,
+            activity_retention_d: 90,
+            github_token_present: false,
+            auto_update_check: true,
+            close_minimizes_to_tray: true,
+        };
+        assert!(
+            reposync_core::store::validate_settings(&bad).is_err(),
+            "a zero cadence must be rejected by the pre-check, before the plugin              call that would change the OS registration"
+        );
+
+        // The same payload with a valid cadence passes, so the pre-check is not
+        // rejecting the autostart toggle itself.
+        let good = Settings {
+            global_check_minutes: 360,
+            ..bad
+        };
+        assert!(reposync_core::store::validate_settings(&good).is_ok());
     }
 
     #[test]
