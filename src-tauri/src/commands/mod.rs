@@ -750,11 +750,14 @@ pub async fn settings_set(
     } else {
         Ok(crate::autostart::Actuated::Noop)
     };
-    settings.autostart = autostart_to_persist(
-        settings.autostart,
-        previous_autostart,
-        autostart_result.is_err(),
-    );
+    // On failure, ASK the OS rather than assuming the actuation left it alone
+    // (Codex review round 4): the plugin can fail partway through, with the
+    // registration already moved.
+    let after_failed_apply = autostart_result
+        .is_err()
+        .then(|| crate::autostart::observed_state(&app));
+    settings.autostart =
+        autostart_to_persist(settings.autostart, previous_autostart, after_failed_apply);
 
     if let Err(e) = reposync_core::store::settings_set(&state.pool, &settings).await {
         // The write failed after the OS may already have taken the change. Put the
@@ -911,19 +914,6 @@ fn plan_settings_reconcile(
     }
 }
 
-/// The `autostart` value to WRITE, given what the user asked for and whether the
-/// OS actuation actually succeeded (BL-NI-18, Codex review finding 1).
-///
-/// The persisted row must never claim an actuation that did not happen, because
-/// startup reconciliation now adopts the OS state on a disagreement: a stored
-/// "on" the OS never received would be quietly turned back off at the next
-/// launch rather than retried. So a failed apply persists the value that is
-/// still true.
-///
-/// The previous value is always known: `settings_set` propagates a failed
-/// pre-read rather than degrading to a guess. An earlier version inferred it
-/// when unknown, which meant WRITING an assumption - the Codex review's round-2
-/// finding 2, and a fair one.
 /// What a failed settings write should restore the OS registration to, if
 /// anything (Codex review round 3).
 ///
@@ -941,11 +931,46 @@ fn rollback_target(actuated: &Result<crate::autostart::Actuated, AppError>) -> O
     }
 }
 
-fn autostart_to_persist(requested: bool, previous: bool, apply_failed: bool) -> bool {
-    if apply_failed {
-        previous
-    } else {
-        requested
+/// The `autostart` value to WRITE, given what the user asked for and what the OS
+/// actually ended up holding (BL-NI-18; Codex review rounds 1, 2 and 4).
+///
+/// The persisted row must never claim a state the machine contradicts, because
+/// startup reconciliation adopts the OS state on a disagreement: a stored "on"
+/// the OS never received would be quietly turned back off at the next launch
+/// rather than retried, silently undoing an explicit choice (round 1).
+///
+/// `after_failed_apply` is `None` when the apply SUCCEEDED, and `Some(observed)`
+/// when it failed - where `observed` is the OS state RE-READ after the failure,
+/// itself `None` if even that read failed.
+///
+/// The re-read exists because a plugin error does not imply an unchanged OS
+/// (round 4): `auto-launch` 0.5.0 can write the Windows Run entry and then fail
+/// updating StartupApproved, or create the macOS LaunchAgent file and then fail
+/// writing its contents. Treating "it returned an error" as "nothing happened"
+/// would store exactly the kind of unverified claim this whole policy exists to
+/// prevent.
+///
+/// Falling back to the previous persisted value happens only when the actuation
+/// failed AND the query failed. It is the one branch that records something
+/// unverified, so it is the last resort rather than the first move.
+///
+/// The previous value is always known: `settings_set` propagates a failed
+/// pre-read rather than degrading to a guess. An earlier version inferred it
+/// when unknown, which meant WRITING an assumption (round 2).
+fn autostart_to_persist(
+    requested: bool,
+    previous: bool,
+    after_failed_apply: Option<Option<bool>>,
+) -> bool {
+    match after_failed_apply {
+        // The OS took the change.
+        None => requested,
+        // The apply failed but the OS answered: record what IS, whether or not
+        // it matches the request. A partial mutation lands here.
+        Some(Some(observed)) => observed,
+        // The apply failed and the OS will not say. Keep the last value known to
+        // have been true.
+        Some(None) => previous,
     }
 }
 
@@ -1885,30 +1910,48 @@ mod tests {
     }
 
     #[test]
-    fn autostart_to_persist_never_claims_an_actuation_that_failed() {
-        // BL-NI-18 / Codex round-1 finding 1, the invariant startup reconciliation
-        // rests on. A successful apply persists what the user asked for.
-        assert!(autostart_to_persist(true, false, false));
-        assert!(!autostart_to_persist(false, true, false));
+    fn autostart_to_persist_records_what_is_true_not_what_was_asked() {
+        // A successful apply persists what the user asked for (`None` = no
+        // failure to reconcile).
+        assert!(autostart_to_persist(true, false, None));
+        assert!(!autostart_to_persist(false, true, None));
 
-        // A FAILED apply persists the value that is still true, so the row does not
-        // claim a registration the OS never received. Without this, startup would
-        // later see the disagreement, believe it was external, and adopt the OS
-        // state - silently undoing an explicit user choice.
+        // Round 1: a failed apply must not record a registration the OS never
+        // received. Here the OS confirms it is still at the old value.
         assert!(
-            !autostart_to_persist(true, false, true),
-            "a failed enable must stay off, not record a registration that failed"
+            !autostart_to_persist(true, false, Some(Some(false))),
+            "a failed enable, OS still off: persist off"
         );
         assert!(
-            autostart_to_persist(false, true, true),
-            "a failed disable must stay on, not record a removal that failed"
+            autostart_to_persist(false, true, Some(Some(true))),
+            "a failed disable, OS still on: persist on"
         );
 
-        // No unknown-previous case exists by construction (Codex round-2 finding
-        // 2): `settings_set` propagates a failed pre-read instead of guessing, so
-        // this function can never be asked to invent a value.
-        assert!(!autostart_to_persist(true, false, true));
-        assert!(autostart_to_persist(true, true, true));
+        // Round 4, the case that motivated the re-read: the plugin MUTATED the OS
+        // and then failed - `auto-launch` writes the Windows Run entry before
+        // updating StartupApproved, so `enable()` can return an error with the
+        // registration already in place. The OS now reports ON even though the
+        // save failed. Persist ON, because that is what is true; persisting the
+        // old OFF would leave startup to discover the disagreement later and
+        // attribute it to someone else.
+        assert!(
+            autostart_to_persist(true, false, Some(Some(true))),
+            "enable mutated then errored: record the mutation, do not deny it"
+        );
+        assert!(
+            !autostart_to_persist(false, true, Some(Some(false))),
+            "disable mutated then errored: record the removal"
+        );
+
+        // The apply failed AND the OS cannot be read. Only here do we fall back
+        // to the previous persisted value - the one branch that records something
+        // unverified, reached only when both the actuation and the query failed.
+        assert!(!autostart_to_persist(true, false, Some(None)));
+        assert!(autostart_to_persist(false, true, Some(None)));
+
+        // No unknown-PREVIOUS case exists by construction (round 2): `settings_set`
+        // propagates a failed pre-read rather than guessing, so this function can
+        // never be asked to invent the prior value.
     }
 
     #[test]

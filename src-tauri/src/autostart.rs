@@ -197,6 +197,19 @@ pub fn apply(app: &AppHandle, enabled: bool) -> Result<Actuated, AppError> {
     }
 }
 
+/// Re-read the OS launch-on-login registration, `None` if it cannot be read.
+///
+/// Used after a FAILED actuation (Codex review round 4). A plugin error does not
+/// mean the OS is unchanged: `auto-launch` 0.5.0 writes the Windows Run entry
+/// before updating StartupApproved, and creates the macOS LaunchAgent file
+/// before writing its contents, so either can fail with the registration already
+/// half-moved. Assuming "error means nothing happened" and persisting the old
+/// value would store a claim the machine contradicts - exactly the class of bug
+/// BL-NI-18 exists to stop - so the caller asks the OS instead of assuming.
+pub fn observed_state(app: &AppHandle) -> Option<bool> {
+    app.autolaunch().is_enabled().ok()
+}
+
 /// What [`apply`] actually DID to the OS registration.
 ///
 /// The caller needs this to decide whether an undo is even meaningful (Codex
