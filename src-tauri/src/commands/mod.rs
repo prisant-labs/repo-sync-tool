@@ -702,12 +702,27 @@ pub async fn settings_set(
     // (below, re-cadence repos) and the `autostart` setting (E-15, actuate the
     // plugin). `app` is Tauri-injected, so it does NOT appear in the generated
     // TypeScript binding (`settingsSet(settings)` is unchanged).
-    let previous = reposync_core::store::settings_get(&state.pool).await.ok();
-    let previous_global = previous.as_ref().map(|s| s.global_check_minutes);
-    let previous_autostart = previous.as_ref().map(|s| s.autostart);
-    let previous_git_path = previous
-        .as_ref()
-        .and_then(|s| s.git_executable_path.clone());
+    //
+    // The read failure is PROPAGATED rather than tolerated (Codex review round 2,
+    // finding 2). It used to degrade to `None`, which meant the code had to guess
+    // at the previous autostart value if the plugin call then failed - and that
+    // guess got WRITTEN, so an unrelated save could durably flip a setting nobody
+    // read or requested. There is nothing to degrade to here: `settings_get`
+    // seeds the singleton on first call, so it only fails when the database
+    // genuinely cannot be read, and the write below would fail too.
+    let previous = reposync_core::store::settings_get(&state.pool).await?;
+    let previous_global = previous.global_check_minutes;
+    let previous_autostart = previous.autostart;
+    let previous_git_path = previous.git_executable_path.clone();
+
+    // Reject an invalid payload BEFORE actuating anything (Codex review round 2,
+    // finding 1). The autostart plugin call below happens before the durable
+    // write, so without this a save that toggles autostart AND carries an
+    // out-of-range unrelated field - a cleared numeric input arriving as 0, say -
+    // would change the OS registration, then be rejected, and leave the setting
+    // and the OS disagreeing for the next launch to adopt. That would make the
+    // rejected save durable by the back door.
+    reposync_core::store::validate_settings(&settings)?;
 
     // E-15 AC1: actuate launch-on-login when the `autostart` setting changed.
     //
@@ -730,7 +745,8 @@ pub async fn settings_set(
     // Runs before the git probe too, so a bad git path in the same save cannot
     // skip an autostart toggle (the property `plan_settings_reconcile` used to
     // carry, now structural rather than planned).
-    let autostart_result = if previous_autostart != Some(settings.autostart) {
+    let autostart_actuated = previous_autostart != settings.autostart;
+    let autostart_result = if autostart_actuated {
         crate::autostart::apply(&app, settings.autostart)
     } else {
         Ok(())
@@ -741,7 +757,23 @@ pub async fn settings_set(
         autostart_result.is_err(),
     );
 
-    reposync_core::store::settings_set(&state.pool, &settings).await?;
+    if let Err(e) = reposync_core::store::settings_set(&state.pool, &settings).await {
+        // The write failed after the OS may already have taken the change. Put the
+        // registration back, so a save the user was told had FAILED does not become
+        // durable at the next launch by way of adoption. Best-effort by necessity:
+        // if the rollback also fails, the OS and the setting disagree and startup
+        // adopts whatever the OS actually holds, which is still the truth about the
+        // machine. Validation is pre-checked above, so reaching here means the
+        // database itself is in trouble.
+        if autostart_actuated && autostart_result.is_ok() {
+            if let Err(rollback) = crate::autostart::apply(&app, previous_autostart) {
+                tracing::warn!(
+                    "autostart: the settings write failed and the launch-on-login                      rollback failed too, so the OS registration no longer matches                      the stored setting: {rollback}"
+                );
+            }
+        }
+        return Err(e);
+    }
 
     // Mirror the close-button behavior into the shared flag the window
     // CloseRequested handler reads (it is synchronous and cannot query the DB).
@@ -788,7 +820,7 @@ pub async fn settings_set(
     // Derive the rest of the reconciliation PURELY (so finding 1's ordering rule is
     // unit-testable without a Tauri harness, see `plan_settings_reconcile`): which
     // independent subsystems to actuate and whether the save ends in a git rejection.
-    let plan = plan_settings_reconcile(git, previous_global != Some(settings.global_check_minutes));
+    let plan = plan_settings_reconcile(git, previous_global != settings.global_check_minutes);
 
     // BL-NI-25 / finding 4: a changed global cadence takes effect on already-
     // scheduled INHERIT repos immediately, without waiting out their stale
@@ -883,13 +915,13 @@ fn plan_settings_reconcile(
 /// launch rather than retried. So a failed apply persists the value that is
 /// still true.
 ///
-/// When the previous value is unknown (the pre-read failed), fall back to the
-/// OPPOSITE of what was requested. The user was changing the value, so the OS
-/// was almost certainly at the other one and still is. It is an inference, but
-/// it errs the safe way: toward not claiming a success.
-fn autostart_to_persist(requested: bool, previous: Option<bool>, apply_failed: bool) -> bool {
+/// The previous value is always known: `settings_set` propagates a failed
+/// pre-read rather than degrading to a guess. An earlier version inferred it
+/// when unknown, which meant WRITING an assumption - the Codex review's round-2
+/// finding 2, and a fair one.
+fn autostart_to_persist(requested: bool, previous: bool, apply_failed: bool) -> bool {
     if apply_failed {
-        previous.unwrap_or(!requested)
+        previous
     } else {
         requested
     }
@@ -1832,35 +1864,68 @@ mod tests {
 
     #[test]
     fn autostart_to_persist_never_claims_an_actuation_that_failed() {
-        // BL-NI-18 / Codex finding 1, the invariant startup reconciliation rests
-        // on. A successful apply persists what the user asked for, either way.
-        assert!(autostart_to_persist(true, Some(false), false));
-        assert!(!autostart_to_persist(false, Some(true), false));
+        // BL-NI-18 / Codex round-1 finding 1, the invariant startup reconciliation
+        // rests on. A successful apply persists what the user asked for.
+        assert!(autostart_to_persist(true, false, false));
+        assert!(!autostart_to_persist(false, true, false));
 
         // A FAILED apply persists the value that is still true, so the row does not
         // claim a registration the OS never received. Without this, startup would
         // later see the disagreement, believe it was external, and adopt the OS
         // state - silently undoing an explicit user choice.
         assert!(
-            !autostart_to_persist(true, Some(false), true),
+            !autostart_to_persist(true, false, true),
             "a failed enable must stay off, not record a registration that failed"
         );
         assert!(
-            autostart_to_persist(false, Some(true), true),
+            autostart_to_persist(false, true, true),
             "a failed disable must stay on, not record a removal that failed"
         );
 
-        // Previous value unknown (the pre-read failed) plus a failed apply: fall
-        // back to the opposite of the request. The user was CHANGING the value, so
-        // the OS was almost certainly at the other one and the failure left it
-        // there. An inference, but it errs toward not claiming success.
-        assert!(!autostart_to_persist(true, None, true));
-        assert!(autostart_to_persist(false, None, true));
+        // No unknown-previous case exists by construction (Codex round-2 finding
+        // 2): `settings_set` propagates a failed pre-read instead of guessing, so
+        // this function can never be asked to invent a value.
+        assert!(!autostart_to_persist(true, false, true));
+        assert!(autostart_to_persist(true, true, true));
+    }
 
-        // Unknown previous with a SUCCESSFUL apply is not a guess: the OS took the
-        // requested value, so record it.
-        assert!(autostart_to_persist(true, None, false));
-        assert!(!autostart_to_persist(false, None, false));
+    #[tokio::test]
+    async fn settings_validation_rejects_before_anything_is_actuated() {
+        // Codex round-2 finding 1. `settings_set` actuates launch-on-login BEFORE
+        // the durable write, so an invalid payload must be rejected before that
+        // point or a rejected save changes OS state anyway - and startup adoption
+        // then makes it durable.
+        //
+        // Asserted against the same `validate_settings` the command pre-checks
+        // with, over the realistic trigger: a cleared numeric input arriving as 0
+        // alongside an autostart toggle.
+        let bad = Settings {
+            global_check_minutes: 0,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            notify_on_release: true,
+            notify_on_failure: true,
+            git_executable_path: None,
+            editor_command: None,
+            terminal_command: None,
+            autostart: true,
+            activity_retention_d: 90,
+            github_token_present: false,
+            auto_update_check: true,
+            close_minimizes_to_tray: true,
+        };
+        assert!(
+            reposync_core::store::validate_settings(&bad).is_err(),
+            "a zero cadence must be rejected by the pre-check, before the plugin              call that would change the OS registration"
+        );
+
+        // The same payload with a valid cadence passes, so the pre-check is not
+        // rejecting the autostart toggle itself.
+        let good = Settings {
+            global_check_minutes: 360,
+            ..bad
+        };
+        assert!(reposync_core::store::validate_settings(&good).is_ok());
     }
 
     #[test]

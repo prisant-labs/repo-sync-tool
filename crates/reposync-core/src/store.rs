@@ -430,7 +430,18 @@ pub async fn settings_set(pool: &SqlitePool, settings: &Settings) -> Result<(), 
 }
 
 /// Validate a [`Settings`] payload before persisting it.
-fn validate_settings(s: &Settings) -> Result<(), AppError> {
+/// Validate a settings payload without writing it.
+///
+/// `pub` so a caller that must ACT on a save before persisting it can reject an
+/// invalid payload first. `settings_set` actuates launch-on-login before the
+/// durable write (BL-NI-18 requires that ordering), and without a pre-check a
+/// save carrying both an autostart toggle and an out-of-range unrelated field
+/// would change the OS registration and then be rejected, leaving the two
+/// disagreeing for startup reconciliation to adopt (Codex review, round 2).
+///
+/// [`settings_set`] still validates internally, so this is a pre-check, never a
+/// substitute.
+pub fn validate_settings(s: &Settings) -> Result<(), AppError> {
     if s.global_check_minutes < 1 {
         return Err(AppError::InvalidSetting {
             field: "global_check_minutes".into(),
