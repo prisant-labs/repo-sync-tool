@@ -17,9 +17,11 @@
 //!
 //! Two actuation sites:
 //!   * startup reconciliation ([`reconcile_on_launch`]), best-effort and never
-//!     fatal - a plugin hiccup logs and is swallowed; the persisted setting is the
-//!     source of truth (V1 authoritative-setting policy, BL-NI-18), so the next
-//!     launch reconciles again if this one could not; and
+//!     fatal - a plugin hiccup logs and is swallowed. The OS registration is the
+//!     source of truth here (BL-NI-18): a confirmed disagreement updates the
+//!     SETTING rather than re-registering, so a launch-on-login entry removed
+//!     outside RepoSync stays removed. A failed persist leaves the disagreement
+//!     intact, so the next launch tries again; and
 //!   * the live `settings_set` toggle ([`apply`]), which surfaces a real failure as
 //!     a structured [`AppError`] so the UI can toast honestly instead of falsely
 //!     reporting success (the same persist-then-apply contract the git-path swap
@@ -72,36 +74,61 @@ fn os_state_from_is_enabled(is_enabled: Option<bool>) -> OsAutostartState {
     }
 }
 
-/// Reconcile the OS launch-on-login registration with the persisted `autostart`
-/// setting on startup (AC2). Best-effort and NEVER fatal: a failed OS query reads as
-/// `Unknown` and the core declines to actuate (so a transient query failure never
-/// mutates OS state), and a failed enable/disable is logged and swallowed so a
-/// plugin hiccup never blocks launch. What was reconciled is logged either way. The
-/// persisted setting is authoritative (V1 policy; the adopt-the-OS-change
-/// alternative is deferred as BL-NI-18), so the next launch converges again if this
-/// one could not.
-pub fn reconcile_on_launch(app: &AppHandle, setting_on: bool) {
+/// Reconcile the persisted `autostart` setting with the OS launch-on-login
+/// registration on startup (AC2, policy amended by BL-NI-18).
+///
+/// **The OS wins.** A confirmed registration state that disagrees with the setting
+/// updates the SETTING; the registration is not touched. RepoSync used to do the
+/// opposite and silently re-register at every launch, which meant a user who
+/// removed the entry in Task Manager found it back the next morning with nothing
+/// said. See [`reconcile`] for the full rationale and the accepted risk.
+///
+/// Best-effort and NEVER fatal, in three separate ways:
+///   * a failed OS query reads as `Unknown`, and the core declines to adopt from an
+///     observation it does not trust;
+///   * settings that could not be read at startup skip reconciliation entirely,
+///     because there is no trustworthy value to compare against and writing the
+///     row back would persist defaults over the user's real configuration; and
+///   * a failed persist is logged and swallowed. The setting still disagrees, so
+///     the next launch reaches the same conclusion and tries again.
+///
+/// Takes the settings snapshot the caller already read at startup rather than
+/// re-reading, so the value compared is the same one the rest of startup used.
+/// No lock is taken: this runs inside the Tauri setup closure, before the webview
+/// exists, so no IPC settings write can be in flight.
+pub async fn reconcile_on_launch(
+    app: &AppHandle,
+    pool: &sqlx::SqlitePool,
+    startup_settings: Option<&reposync_core::ipc::Settings>,
+) {
+    let Some(settings) = startup_settings else {
+        tracing::warn!(
+            "autostart: skipping launch reconciliation - settings could not be read,              so there is no trustworthy value to reconcile against"
+        );
+        return;
+    };
+
     let manager = app.autolaunch();
     let os = os_state_from_is_enabled(manager.is_enabled().ok());
-    match reconcile(os, setting_on) {
-        AutostartAction::Register => match manager.enable() {
-            Ok(()) => tracing::info!(
-                "autostart: reconciled - registered launch-on-login \
-                 (setting on, OS was not registered)"
-            ),
-            Err(e) => {
-                tracing::warn!("autostart: reconcile could not register launch-on-login: {e}")
-            }
-        },
-        AutostartAction::Unregister => match manager.disable() {
-            Ok(()) => tracing::info!(
-                "autostart: reconciled - removed launch-on-login \
-                 (setting off, OS was registered)"
-            ),
-            Err(e) => tracing::warn!("autostart: reconcile could not remove launch-on-login: {e}"),
-        },
-        // Already aligned, or an Unknown (untrusted) read the core refused to act on.
-        AutostartAction::NoChange => {}
+    let AutostartAction::AdoptOsState(os_on) = reconcile(os, settings.autostart) else {
+        // Already aligned, or an Unknown (untrusted) read the core refused to
+        // act on.
+        return;
+    };
+
+    let mut adopted = settings.clone();
+    adopted.autostart = os_on;
+    match reposync_core::store::settings_set(pool, &adopted).await {
+        Ok(()) => tracing::info!(
+            event = reposync_core::logging::event::AUTOSTART_ADOPTED_OS_STATE,
+            autostart = os_on,
+            "autostart: the OS launch-on-login registration disagreed with the              setting, so the setting was updated to match the OS (the OS is              authoritative on startup). Something outside RepoSync changed the              registration while it was not running."
+        ),
+        Err(e) => tracing::warn!(
+            event = reposync_core::logging::event::AUTOSTART_ADOPT_PERSIST_FAILED,
+            autostart = os_on,
+            "autostart: could not persist the adopted OS state, so the setting              still disagrees with the OS and the next launch will retry: {e}"
+        ),
     }
 }
 

@@ -428,17 +428,15 @@ pub fn run() {
                 // Store None when git is unavailable so git-dependent commands
                 // report GitNotFound; the pool/migrations above stay fatal because
                 // the DB is essential.
-                // Read the persisted settings once for the two startup-config reads
-                // it feeds: the git path (below) and the `autostart` setting (the
-                // E-15 reconcile, further down).
+                // Read the persisted settings once for the startup-config reads it
+                // feeds: the git path (below), the on-launch update check, and the
+                // whole snapshot handed to the E-15 autostart reconcile further
+                // down (which needs every field, since adopting the OS state writes
+                // the row back).
                 let startup_settings = reposync_core::store::settings_get(&pool).await.ok();
                 let configured_git_path = startup_settings
                     .as_ref()
                     .and_then(|s| s.git_executable_path.clone());
-                let autostart_on = startup_settings
-                    .as_ref()
-                    .map(|s| s.autostart)
-                    .unwrap_or(false);
                 // E-18: the on-launch update-check toggle (default ON). Gates the
                 // background launch check spawned after the tray/windows are up.
                 let auto_update_on = startup_settings
@@ -468,15 +466,25 @@ pub fn run() {
                     Some(engine)
                 };
 
-                // E-15 AC2: reconcile the OS launch-on-login registration against the
-                // persisted `autostart` setting now that settings are loaded. The
-                // core decides (over a tri-state OS read; a failed query is
-                // non-actuating); this call actuates via the plugin. Best-effort -
-                // any plugin query/actuation failure is logged, never fatal (see
-                // `autostart::reconcile_on_launch`). The plugin manages its
-                // AutoLaunchManager during its own setup, which runs before this
-                // app-level setup closure, so `autolaunch()` resolves here.
-                crate::autostart::reconcile_on_launch(&handle, autostart_on);
+                // E-15 AC2 as amended by BL-NI-18: reconcile the persisted
+                // `autostart` setting against the OS launch-on-login registration
+                // now that settings are loaded. The OS wins - a confirmed
+                // disagreement updates the SETTING, so an entry removed outside
+                // RepoSync stays removed instead of being silently re-registered
+                // every launch. The core decides over a tri-state OS read (a failed
+                // query is non-actuating); this call queries the plugin and persists
+                // the adopted value. Best-effort - an unreadable settings row, a
+                // plugin query failure, or a failed persist all log and are
+                // swallowed, never fatal (see `autostart::reconcile_on_launch`). The
+                // plugin manages its AutoLaunchManager during its own setup, which
+                // runs before this app-level setup closure, so `autolaunch()`
+                // resolves here.
+                crate::autostart::reconcile_on_launch(
+                    &handle,
+                    &pool,
+                    startup_settings.as_ref(),
+                )
+                .await;
 
                 // The SHARED, swappable git handle. `settings_set` re-probes and
                 // swaps the inner engine when the user fixes a broken/missing git

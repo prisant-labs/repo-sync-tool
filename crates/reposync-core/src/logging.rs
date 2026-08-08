@@ -89,6 +89,22 @@ pub mod event {
     /// no way to tell "nothing is configured" from "we could not look".
     pub const DIAGNOSTICS_SETTINGS_READ_FAILED: &str = "diagnostics.settings_read_failed";
 
+    // --- autostart ---
+    /// Startup found the OS launch-on-login registration disagreeing with the
+    /// persisted setting, and adopted the OS state into the setting (BL-NI-18).
+    ///
+    /// Worth a stable name because this is the app changing a user-facing setting
+    /// on its own. When the feature turns itself off, this is the record of why:
+    /// something outside RepoSync removed the registration while it was not
+    /// running. A security tool that strips autostart entries is indistinguishable
+    /// from a user who removed one, so this line is how a reader tells them apart
+    /// after the fact.
+    pub const AUTOSTART_ADOPTED_OS_STATE: &str = "autostart.adopted_os_state";
+
+    /// The adopted OS state could not be persisted, so the setting still disagrees
+    /// with the OS and the next launch will try again.
+    pub const AUTOSTART_ADOPT_PERSIST_FAILED: &str = "autostart.adopt_persist_failed";
+
     // --- git ---
     /// The git binary is missing, unreadable, or below the supported floor.
     pub const GIT_UNAVAILABLE: &str = "git.unavailable";

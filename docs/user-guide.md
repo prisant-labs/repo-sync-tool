@@ -405,12 +405,29 @@ rather than something you have to remember to open every morning. It is
 **off by default**, opt-in, and per-user (no elevation, no admin install
 required, it only affects your own login).
 
-Toggle it on or off from Settings; RepoSync also double-checks on every launch
-that the OS's actual autostart registration still matches your saved setting,
-and quietly corrects it if it's drifted (for instance if a prior registration
-attempt didn't fully take). As noted in section 8, an autostart-triggered
-launch starts hidden in the tray rather than popping a window open the moment
-you log in.
+Toggle it on or off from Settings and the change is applied to Windows right
+away.
+
+**If you change it outside RepoSync, the OS wins.** Turning RepoSync's startup
+entry off in Task Manager's Startup tab (or on, from anywhere that adds one)
+sticks. On its next launch RepoSync notices the disagreement and updates its
+own setting to match what Windows actually says, rather than re-registering
+itself behind your back. So the toggle in Settings always reflects reality,
+and a deliberate change made outside the app is not undone the next morning.
+
+One consequence worth knowing: if security software or a workplace policy
+strips startup entries, that looks exactly like you removing one, so RepoSync
+will agree with it and the toggle will read as off. It isn't silent - the
+setting visibly changes, and the launch is recorded in the diagnostic log
+under `autostart.adopted_os_state`. If you find it off and didn't turn it off,
+that is what happened; switch it back on and see whether it survives the next
+restart.
+
+RepoSync only draws this conclusion when it can actually read the registration.
+If that check fails, it changes nothing and looks again next time.
+
+As noted in section 8, an autostart-triggered launch starts hidden in the tray
+rather than popping a window open the moment you log in.
 
 ## 11. Auto-update: honest about where it stands
 
