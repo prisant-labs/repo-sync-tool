@@ -31,6 +31,7 @@ use crate::AppState;
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_add_path(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<RepoId, AppError> {
@@ -38,7 +39,13 @@ pub async fn repo_add_path(
     // long-running git operation never holds the lock against a `settings_set`
     // re-probe (BL-NI-19). The engine is cheap to clone (it wraps shared handles).
     let git = { state.git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
-    reposync_core::repo::add(&state.pool, &git, std::path::Path::new(&path)).await
+    let id = reposync_core::repo::add(&state.pool, &git, std::path::Path::new(&path)).await?;
+    // A newly added repo has a current `created_at`, so it belongs in Open recent
+    // immediately rather than after the first unrelated refresh (BL-NI-40).
+    // `AppHandle` is INJECTED by Tauri, not a frontend argument, so this does not
+    // change the IPC contract.
+    crate::tray::refresh_recent_menu(&app).await;
+    Ok(id)
 }
 
 /// Run a "check now" for a tracked repo, then broadcast the result.
@@ -66,6 +73,9 @@ pub async fn repo_check_now(
     emit_check_started(&app, id);
     let result = reposync_core::repo::check_now(&state.pool, &git, RepoId(id)).await?;
     emit_check_completed(&app, &result);
+    // A check is what makes a repo "recently active", so this is the single-repo
+    // counterpart of the burst refresh (BL-NI-40). A no-op unless the order moved.
+    crate::tray::refresh_recent_menu(&app).await;
     Ok(result)
 }
 
@@ -251,6 +261,11 @@ pub(crate) async fn check_all_enabled(
         emit_error_raised(app, &representative);
     }
 
+    // A burst is the single event most likely to reorder "most recently active",
+    // so the tray's Open recent submenu is refreshed once after it rather than
+    // once per repo (BL-NI-40). A no-op when the order did not actually change.
+    crate::tray::refresh_recent_menu(app).await;
+
     Ok(checked)
 }
 
@@ -347,12 +362,21 @@ pub async fn repo_scan_parent(
 /// Remove a tracked repo (does not touch the working tree).
 #[tauri::command]
 #[specta::specta]
-pub async fn repo_remove(state: tauri::State<'_, AppState>, id: i64) -> Result<(), AppError> {
+pub async fn repo_remove(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), AppError> {
     // Hold the per-repo lock across the delete so a scheduled job on this repo
     // cannot race the removal, then evict the now-dead lock entry.
     let _lock = state.locks.lock_handle(RepoId(id)).lock_owned().await;
     reposync_core::store::repo_remove(&state.pool, RepoId(id)).await?;
     state.locks.remove(RepoId(id));
+    // A removed repo must not linger in the tray's Open recent submenu, which is
+    // the one surface that used to keep showing it until the next restart
+    // (BL-NI-40). `AppHandle` is INJECTED by Tauri, not a frontend argument, so
+    // this does not change the IPC contract or the generated bindings.
+    crate::tray::refresh_recent_menu(&app).await;
     Ok(())
 }
 
@@ -434,6 +458,9 @@ pub async fn repo_update_now(
     emit_update_started(&app, id, update_mode_label(&mode));
     let result = reposync_core::repo::update_now(&state.pool, &git, RepoId(id), mode).await?;
     emit_update_completed(&app, id, &result.outcome);
+    // An update writes last_checked_at and often last_updated_at, so it is a
+    // recency writer exactly like a check (BL-NI-40).
+    crate::tray::refresh_recent_menu(&app).await;
     Ok(result)
 }
 
