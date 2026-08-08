@@ -235,6 +235,14 @@ function Warnings({ d }: { d: Diagnostics }) {
       "Logging started but the folder contains no log files. Events may not be reaching disk.",
     );
   }
+  if (d.gitExplicitPath && d.gitExplicitPathHonored === false) {
+    // Silent until now: Settings showed the configured path, Diagnostics showed
+    // the resolved one, and nothing compared them, so a typo produced a working
+    // app running a git the user did not choose.
+    items.push(
+      `The git path set in Settings (${d.gitExplicitPath}) could not be used, so RepoSync fell back to ${d.gitPath ?? "another git"}. Fix or clear that setting.`,
+    );
+  }
   if (d.logDroppedLines > 0) {
     // A separate condition from a write failure, and phrased to say which it is.
     // A dropped line is RepoSync choosing to lose output rather than stall the

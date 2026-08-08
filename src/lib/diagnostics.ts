@@ -40,6 +40,14 @@ export function formatDiagnosticsReport(d: Diagnostics): string {
   const gitState = !d.gitResolved ? "NOT FOUND" : d.gitMeetsFloor ? "ok" : "BELOW 2.30 FLOOR";
   const git = `${gitState}${d.gitVersion ? ` ${d.gitVersion}` : ""}${
     d.gitPath ? ` (${d.gitPath})` : ""
+  }${
+    // A configured path that is NOT the one running. Marked in upper case like
+    // the other act-on-it conditions, and it names the configured value, because
+    // the resolved one is already on this line and the whole point is the gap
+    // between them.
+    d.gitExplicitPath && d.gitExplicitPathHonored === false
+      ? ` [CONFIGURED PATH IGNORED: ${d.gitExplicitPath}]`
+      : ""
   }`;
   const logging = d.loggingActive
     ? `${d.logLevel ?? "?"}, ${d.logMaxFiles} days, ${formatBytes(d.logMaxBytes)} max`

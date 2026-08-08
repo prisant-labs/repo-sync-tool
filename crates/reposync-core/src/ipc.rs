@@ -179,6 +179,28 @@ pub struct Diagnostics {
     /// Whether a git executable was resolved at all. `false` is the only state
     /// in which RepoSync will not run git.
     pub git_resolved: bool,
+    /// The git path the user CONFIGURED in Settings, or `None` if they set none.
+    ///
+    /// Reported alongside the RESOLVED `git_path` so the two can be compared,
+    /// which nothing did before BL-NI-39: Settings showed the configured value,
+    /// Diagnostics showed the resolved one, and a wrong configured path fell back
+    /// silently to a working git that was not the one named on screen.
+    pub git_explicit_path: Option<String>,
+    /// Whether the configured path is the one actually running, or `None` when
+    /// the question does not apply or cannot be answered.
+    ///
+    /// `Option` rather than `bool` deliberately. A bare `bool` had `true` meaning
+    /// four different things - honored, nothing configured, settings unreadable,
+    /// and configured-but-no-git-at-all - which is the same overclaiming this
+    /// field was added to fix, one level up. `None` says "no comparison was made"
+    /// and leaves the reason to the fields that already carry it
+    /// (`git_explicit_path` for whether anything is set, `git_resolved` for
+    /// whether a git was found at all).
+    ///
+    /// `Some(false)` is the condition worth surfacing and means exactly one
+    /// thing: the user configured a git, RepoSync could not use it, and it is
+    /// running a different one.
+    pub git_explicit_path_honored: Option<bool>,
     /// Whether the resolved git is at or above the supported >= 2.30 floor.
     ///
     /// Split from `git_resolved` rather than folded into one "available" flag,
