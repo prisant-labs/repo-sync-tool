@@ -94,7 +94,15 @@ export function ReposScreen({
   );
 
   const counts = useMemo(() => {
-    const c: Record<RepoStatus, number> = { sync: 0, ahead: 0, behind: 0, dirty: 0, failed: 0, paused: 0 };
+    const c: Record<RepoStatus, number> = {
+      sync: 0,
+      ahead: 0,
+      behind: 0,
+      dirty: 0,
+      failed: 0,
+      paused: 0,
+      noUpstream: 0,
+    };
     for (const r of list) c[deriveStatus(r)] += 1;
     return c;
   }, [list]);

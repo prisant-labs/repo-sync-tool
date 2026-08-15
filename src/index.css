@@ -40,6 +40,7 @@
   --color-status-dirty: var(--status-dirty);
   --color-status-failed: var(--status-failed);
   --color-status-paused: var(--status-paused);
+  --color-status-no-upstream: var(--status-no-upstream);
   --color-status-release: var(--status-release);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -85,6 +86,12 @@
   --status-dirty: oklch(0.54 0.1 79);
   --status-failed: oklch(0.53 0.19 27);
   --status-paused: oklch(0.51 0.02 258);
+  /* Teal, hue 200: the only sizeable gap left between sync green (150) and the
+     interaction accent (264), so it collides with neither. Chroma sits between
+     paused (0.02) and behind (0.19) on purpose - "no upstream" should read as
+     notable without shouting, since BL-NI-77 was scoped to stop the badge
+     lying, not to escalate the repo. */
+  --status-no-upstream: oklch(0.5 0.07 200);
   --status-release: oklch(0.51 0.19 349);
 }
 
@@ -125,6 +132,9 @@
   --status-dirty: oklch(0.8 0.13 85);
   --status-failed: oklch(0.7 0.18 24);
   --status-paused: oklch(0.66 0.02 258);
+  /* Lighter and slightly lower chroma than the light value, the same adjustment
+     every other status token makes for AA on the dark surface. */
+  --status-no-upstream: oklch(0.73 0.06 200);
   --status-release: oklch(0.75 0.17 349);
 }
 

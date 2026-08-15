@@ -79,6 +79,7 @@ the dark surface). Rendered always as color **plus** a lucide icon **plus** a wo
 | **dirty** | amber | `0.54 0.1 79` | `0.8 0.13 85` | alert-triangle |
 | **failed** | red | `0.53 0.19 27` | `0.7 0.18 24` | x-circle |
 | **paused** | neutral | `0.51 0.02 258` | `0.66 0.02 258` | pause-circle |
+| **no upstream** | teal | `0.5 0.07 200` | `0.73 0.06 200` | unlink |
 | **release** | magenta | `0.51 0.19 349` | `0.75 0.17 349` | package |
 
 `behind` is deliberately **violet** (hue ~293), not blue, so it never reads as the
@@ -86,6 +87,17 @@ interaction accent (hue 264) and so it stays distinct from `failed` red and `syn
 `paused` is a near-neutral (very low chroma), so a disabled repo reads as "off," not as a
 status that shouts. `release` is a signal color for "a new upstream release exists," not a
 repo state.
+
+`no upstream` (added 2026-08-15, BL-NI-77) is **teal** at hue ~200, the only sizeable gap
+left between `sync` green (150) and the interaction accent (264). Its chroma sits between
+`paused` (0.02) and `behind` (0.19) on purpose: the state means "this repo cannot sync,
+and you probably did not know," which is worth noticing without being an alarm. It was
+given its own token rather than reusing `paused`'s neutral because the two look similar in
+weight but mean opposite things about responsibility - `paused` is "you turned this off,"
+`no upstream` is "this stopped working" - and sharing a color invites reading the second as
+the first and moving on. The state exists because the badge previously read **"In sync"**
+for a repo whose upstream branch had been deleted, which is the strongest possible version
+of the wrong thing to say.
 
 ### Neutrals (shadcn neutral scale, oklch)
 Cool, near-hueless grays. `--background` white (`oklch(1 0 0)`) / near-black in dark;

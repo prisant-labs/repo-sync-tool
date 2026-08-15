@@ -1,26 +1,62 @@
-import { AlertTriangle, ArrowDown, ArrowUp, Check, PauseCircle, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, Check, PauseCircle, Unlink, XCircle } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { RepoSummary } from "@/lib/bindings";
 
 /** The 7-state taxonomy, derived on the frontend from raw RepoSummary facts. */
-export type RepoStatus = "sync" | "ahead" | "behind" | "dirty" | "failed" | "paused";
+export type RepoStatus =
+  | "sync"
+  | "ahead"
+  | "behind"
+  | "dirty"
+  | "failed"
+  | "paused"
+  | "noUpstream";
 
 type StatusFacts = Pick<
   RepoSummary,
-  "isDirty" | "enabled" | "autoPaused" | "lastErrorCode" | "aheadCount" | "behindCount"
+  | "isDirty"
+  | "enabled"
+  | "autoPaused"
+  | "lastErrorCode"
+  | "aheadCount"
+  | "behindCount"
+  | "upstreamState"
 >;
 
 /**
- * Priority order: paused > failed > dirty > behind > ahead > sync.
+ * Priority order: paused > failed > dirty > noUpstream > behind > ahead > sync.
  *
  * The wire type carries only raw facts (no `status` field), so this ranking is
  * a frontend policy decision. Re-ranking (e.g. "dirty-and-behind reads as
  * behind") is a one-line change here, never a backend migration.
+ *
+ * `noUpstream` sits ABOVE behind and ahead deliberately. Those two describe a
+ * comparison against an upstream, and when there is no upstream to compare
+ * against the backend reports both counts as null, so they cannot fire anyway.
+ * Ranking it above them says the same thing in the code rather than relying on
+ * a null to keep the lower branches quiet.
+ *
+ * It sits BELOW dirty and failed because those are things to act on now, and
+ * BL-NI-77 was deliberately scoped to stop the badge making a false statement
+ * rather than to escalate the repo.
  */
 export function deriveStatus(r: StatusFacts): RepoStatus {
   if (!r.enabled || r.autoPaused) return "paused";
   if (r.lastErrorCode) return "failed";
   if (r.isDirty) return "dirty";
+  // Only `deleted` and `none` mean there is nothing to sync with. `tracking` is
+  // healthy.
+  //
+  // `null` means NOT YET OBSERVED: a row older than migration 0008 that has not
+  // been checked since. It falls through, which on a clean repo lands on "sync".
+  // Being straight about that, since it is the reassuring answer this state was
+  // added to stop assuming: falling through is not neutral, it is the
+  // pre-BL-NI-77 behaviour, chosen because the alternative is worse. Claiming
+  // "no upstream" from an absent observation would badge EVERY repo as broken
+  // the moment the migration lands and before anything has been re-checked. The
+  // window is one check per repo and then it is gone, which a wrong badge on the
+  // whole library is not.
+  if (r.upstreamState === "deleted" || r.upstreamState === "none") return "noUpstream";
   if ((r.behindCount ?? 0) > 0) return "behind";
   if ((r.aheadCount ?? 0) > 0) return "ahead";
   return "sync";
@@ -39,6 +75,7 @@ export const STATUS_ICON: Record<RepoStatus, LucideIcon> = {
   dirty: AlertTriangle,
   failed: XCircle,
   paused: PauseCircle,
+  noUpstream: Unlink,
 };
 
 /**
@@ -55,6 +92,17 @@ export const STATUS_STYLE: Record<
   dirty: { label: "Dirty", text: "text-status-dirty", bar: "bg-status-dirty", tint: "bg-status-dirty/12" },
   failed: { label: "Failed", text: "text-status-failed", bar: "bg-status-failed", tint: "bg-status-failed/12" },
   paused: { label: "Paused", text: "text-status-paused", bar: "bg-status-paused", tint: "bg-status-paused/12" },
+  // Its own token rather than reusing `paused`'s near-neutral. The two look
+  // similar in weight on purpose (neither should shout), but they mean opposite
+  // things about who is responsible: paused is "you turned this off", noUpstream
+  // is "this cannot run and you probably did not know". Sharing a color would
+  // invite reading the second as the first and moving on.
+  noUpstream: {
+    label: "No upstream",
+    text: "text-status-no-upstream",
+    bar: "bg-status-no-upstream",
+    tint: "bg-status-no-upstream/12",
+  },
 };
 
 /** A human "behind by N" style lag label from the raw counts + derived status. */
@@ -65,6 +113,10 @@ export function lagLabel(r: StatusFacts): string {
   if (status === "dirty") return "uncommitted, skipped";
   if (status === "failed") return "check failed";
   if (status === "paused") return "watching paused";
+  // Names the cause, not the symptom. "current" would be the literal reading of
+  // ahead=0/behind=0, and it is exactly the false reassurance BL-NI-77 filed:
+  // the counts are zero because there is nothing to compare against.
+  if (status === "noUpstream") return "upstream gone, nothing to sync";
   return "current";
 }
 
