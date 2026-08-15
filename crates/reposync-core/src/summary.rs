@@ -489,6 +489,48 @@ mod tests {
         );
     }
 
+    /// A repo that is merely BEHIND is not attention, and that is a decision
+    /// rather than an oversight (BL-NI-76).
+    ///
+    /// The Dashboard tile above this number used to be hinted "dirty, failed,
+    /// behind" while the query has only ever been `last_error_code IS NOT NULL
+    /// OR is_dirty = 1`. The label was corrected rather than the rule, because
+    /// the default `update_mode` is `fetch_only` - remote refs are updated and
+    /// the working tree is never touched - so behind is the designed steady
+    /// state of a watched library, not an anomaly. Observed on a real 13-repo
+    /// library: two repos at 161 and 65 commits behind, both clean, both
+    /// correctly outside an attention list whose every member was dirty.
+    ///
+    /// This test exists so the two cannot drift apart again silently: anyone
+    /// adding behind-ness to the rule has to delete an assertion that says in
+    /// words why it was left out, and can then go fix the label to match.
+    #[tokio::test]
+    async fn attention_excludes_a_repo_that_is_only_behind() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+
+        let drifting = seed_repo(&pool, "drifting").await;
+        // Deliberately NOT via `seed_state`: that helper cannot express a behind
+        // count, and the whole point here is a repo whose only remarkable
+        // property is how far behind it is.
+        sqlx::query(
+            "INSERT INTO repo_local_state (repo_id, last_error_code, is_dirty, behind_count) \
+             VALUES (?, NULL, 0, 161)",
+        )
+        .bind(drifting)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let s = summary_today(&pool, &w).await.unwrap();
+        assert_eq!(
+            s.attention_count, 0,
+            "a clean, error-free repo is not attention no matter how far behind it is"
+        );
+        assert!(s.attention.is_empty());
+    }
+
     /// The attention query must fire on state a REAL failing run produced, not only
     /// on state a test fabricated.
     ///
