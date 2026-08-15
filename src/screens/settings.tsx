@@ -154,15 +154,40 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           <CardTitle>Integrations</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Field label="GitHub token" hint="Stored in the OS keychain, never on disk. Managed outside this screen.">
+          {/*
+            This row used to read "Stored in the OS keychain, never on disk.
+            Managed outside this screen." None of that was true. The V1 token
+            provider is `github::NoToken`, which always returns `None`;
+            `github_token_present` is a derived flag nothing writes; and there
+            is no other screen where a token could be managed. So the app was
+            describing a keychain it has never written to, on the one surface
+            where a user is entitled to know exactly where their credentials
+            live.
+
+            The wording now states the situation and the consequence, because
+            the consequence is the part that affects someone with a large
+            library: unauthenticated GitHub reads are capped at 60 per hour for
+            the whole app, not per repo. Keeping that visible is the reason the
+            row stays instead of being hidden until BL-V11-02 (keyring PAT).
+          */}
+          <Field
+            label="GitHub token"
+            hint="RepoSync reads GitHub without signing in. GitHub allows 60 requests an hour that way, shared across all your repos."
+          >
             <span
               className={
                 draft.githubTokenPresent
                   ? "font-mono text-xs font-semibold text-status-sync"
-                  : "font-mono text-xs text-muted-foreground"
+                  : "font-mono text-xs text-foreground/70"
               }
             >
-              {draft.githubTokenPresent ? "present" : "not set"}
+              {/*
+                The `present` branch cannot render in V1 and is kept for
+                BL-V11-02 rather than deleted. "not supported yet" rather than
+                "not set", because "not set" invites the user to go and set it
+                and there is nowhere to do that.
+              */}
+              {draft.githubTokenPresent ? "present" : "not supported yet"}
             </span>
           </Field>
         </CardContent>
