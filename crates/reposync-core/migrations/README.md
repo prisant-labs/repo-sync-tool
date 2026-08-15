@@ -37,6 +37,19 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
 - `0006_auto_update.sql` - additive `settings.auto_update_check` column (E-18):
   the on-launch app-update-check toggle, `NOT NULL DEFAULT 1` (on). `settings` has
   no inbound foreign keys, so a plain `ALTER TABLE ADD COLUMN` is safe.
+- `0007_close_minimizes_to_tray.sql` - additive
+  `settings.close_minimizes_to_tray` column (E-13): whether the window's close
+  button hides to the tray or quits, `NOT NULL DEFAULT 1` (hide), which preserves
+  the previously hardcoded behavior for every existing install.
+- `0008_upstream_state.sql` - additive `repo_local_state.upstream_state` column
+  (BL-NI-77): the three-state upstream classification (`tracking` / `none` /
+  `deleted`) that `policy::UpstreamState` already produced on every check and
+  that nothing persisted. `upstream_branch` is NULL for both `none` and
+  `deleted`, so without this the UI could not tell a repo that is genuinely in
+  sync from one whose upstream was deleted, and it defaulted to the reassuring
+  answer. **NULLABLE with no default, deliberately:** a backfilled value would be
+  a classification no check ever made for that row, so NULL means "not observed
+  since this column existed" and resolves on the repo's next check.
 
 ## Migration policy
 

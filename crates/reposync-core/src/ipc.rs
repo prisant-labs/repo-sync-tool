@@ -276,6 +276,16 @@ pub struct RepoSummary {
     /// The HEAD commit's committer time (E-17), distinct from `last_checked_at`
     /// ("when RepoSync last looked"). `None` when the inspect never read it.
     pub last_local_commit_at: Option<i64>,
+    /// The upstream relationship as the policy engine last classified it
+    /// (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync
+    /// from one whose upstream was deleted and therefore cannot sync at all.
+    ///
+    /// `None` means NOT YET OBSERVED: the row predates migration `0008` and has
+    /// not been checked since. It is a fourth fact, distinct from all three
+    /// states, and consumers must render it as unknown rather than assuming
+    /// `Tracking` - assuming the reassuring value is the bug this field exists to
+    /// fix. It resolves itself the first time the repo is checked.
+    pub upstream_state: Option<crate::policy::UpstreamState>,
 }
 
 /// The full detail of a tracked repo (detail view). Repeats every
@@ -310,6 +320,11 @@ pub struct RepoDetail {
     pub active_branch: Option<String>,
     pub head_sha: Option<String>,
     pub upstream_branch: Option<String>,
+    /// See [`RepoSummary::upstream_state`]. Repeated here because the detail
+    /// drawer derives its own status badge from this type, so omitting it would
+    /// leave the drawer saying "In sync" about a repo the list already knows
+    /// cannot sync.
+    pub upstream_state: Option<crate::policy::UpstreamState>,
     pub last_local_commit_at: Option<i64>,
     pub last_updated_at: Option<i64>,
     pub last_attempted_at: Option<i64>,
@@ -679,6 +694,10 @@ mod tests {
             latest_release_tag: Some("v1.0.0".into()),
             open_pr_count: Some(3),
             last_local_commit_at: Some(1_699_400_000),
+            // Deliberately the Deleted variant rather than Tracking: the round-trip
+            // has to prove a non-default variant survives, and Deleted is the one
+            // the UI branches on (BL-NI-77).
+            upstream_state: Some(crate::policy::UpstreamState::Deleted),
         };
         assert_round_trip(&summary);
 
@@ -705,6 +724,7 @@ mod tests {
             active_branch: Some("main".into()),
             head_sha: Some("abc123".into()),
             upstream_branch: Some("origin/main".into()),
+            upstream_state: Some(crate::policy::UpstreamState::Tracking),
             last_local_commit_at: Some(1_699_500_000),
             last_updated_at: Some(1_700_000_000),
             last_attempted_at: Some(1_700_000_001),

@@ -19,6 +19,7 @@ use crate::ipc::{
     GroupSummary, RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanCandidate,
     ScanResult, Settings, UpdateMode, UpdatePolicy,
 };
+use crate::policy::UpstreamState;
 
 /// The maximum directory depth a parent-folder scan descends (defense against a
 /// pathological tree). The strategy doc bounds the walk; 6 covers the common
@@ -49,6 +50,7 @@ pub async fn repo_list(
             s.is_dirty AS is_dirty, s.is_detached AS is_detached, \
             s.auto_paused AS auto_paused, s.last_checked_at AS last_checked_at, \
             s.last_error_code AS last_error_code, \
+            s.upstream_state AS upstream_state, \
             s.last_local_commit_at AS last_local_commit_at, \
             m.latest_release_tag AS latest_release_tag, \
             m.open_pr_count AS open_pr_count \
@@ -101,9 +103,22 @@ pub async fn repo_list(
             latest_release_tag: r.try_get("latest_release_tag")?,
             open_pr_count: r.try_get("open_pr_count")?,
             last_local_commit_at: r.try_get("last_local_commit_at")?,
+            upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
         });
     }
     Ok(out)
+}
+
+/// Read the persisted upstream classification (BL-NI-77).
+///
+/// A NULL column and an unrecognized string both become `None`, and both mean
+/// the same thing to a consumer: NOT OBSERVED. NULL is a row that predates
+/// migration `0008` and has not been checked since; an unrecognized string is a
+/// value written by a newer build than the one reading it. Neither is evidence
+/// of a particular upstream state, and mapping either onto `Tracking` would
+/// invent the reassuring answer this field exists to stop the UI assuming.
+fn upstream_state_from_row(raw: Option<String>) -> Option<UpstreamState> {
+    raw.as_deref().and_then(UpstreamState::from_db_str)
 }
 
 /// Get the full detail of a single tracked repo, or [`AppError::NotFound`] if no
@@ -117,7 +132,8 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
             r.check_frequency_min AS check_frequency_min, r.enabled AS enabled, \
             r.created_at AS created_at, r.notes AS notes, \
             s.active_branch AS active_branch, s.head_sha AS head_sha, \
-            s.upstream_branch AS upstream_branch, s.ahead_count AS ahead_count, \
+            s.upstream_branch AS upstream_branch, s.upstream_state AS upstream_state, \
+            s.ahead_count AS ahead_count, \
             s.behind_count AS behind_count, s.is_dirty AS is_dirty, \
             s.is_detached AS is_detached, s.last_local_commit_at AS last_local_commit_at, \
             s.last_checked_at AS last_checked_at, s.last_updated_at AS last_updated_at, \
@@ -170,6 +186,7 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
         active_branch: r.try_get("active_branch")?,
         head_sha: r.try_get("head_sha")?,
         upstream_branch: r.try_get("upstream_branch")?,
+        upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
         last_local_commit_at: r.try_get("last_local_commit_at")?,
         last_updated_at: r.try_get("last_updated_at")?,
         last_attempted_at: r.try_get("last_attempted_at")?,
