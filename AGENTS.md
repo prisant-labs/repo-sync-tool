@@ -52,6 +52,18 @@ the typed helpers in `src/test/mock-ipc.ts` rather than stubbing `invoke`
 directly; they are typed against the generated bindings, so a mock cannot drift
 from the real command signature without failing to compile.
 
+Component tests are `*.test.tsx` beside the component, rendered with
+`@testing-library/react`. The vitest environment stays `node` by default so the
+pure-logic tests in `src/lib` keep proving they need no DOM; a component test
+opts into jsdom with a `// @vitest-environment jsdom` docblock on line one,
+which keeps the environment visible in the file that needs it. Assert on what
+the component MEANS (rendered text, states that must stay distinguishable),
+never on class names or DOM shape, so a restyle does not break a test that was
+never about styling. The bug worth writing one for is a state collapse: three
+`GitAvailability` states flattened to a boolean, or a `null` stream and an empty
+one rendered with the same words. Both have been shipped here before, both were
+green at the time, and both are pinned now.
+
 Rust:
 
 ```sh
