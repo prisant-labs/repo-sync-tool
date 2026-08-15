@@ -36,13 +36,45 @@
 
 name: Release
 
+# TWO ENTRY POINTS, and only one of them can publish anything.
+#
+#   push: tags v*      -> the real cut. preflight, then build, then a DRAFT Release.
+#   workflow_dispatch  -> a DRY RUN. preflight, then build and bundle on both
+#                         platforms, and nothing else. No Release, no asset upload,
+#                         no tag.
+#
+# The dry run exists because this workflow had never completed a single run. The only
+# Release run in this repo's history is the v0.9.0 tag on 2026-07-05, which failed in
+# four seconds with zero steps executed (the Actions billing gate on the old personal
+# account, resolved by the move to the paid org). So the installers attached to that
+# release were not produced by this pipeline, no macOS artifact has ever been produced
+# by it, and the entire preflight job below has never executed once. It is a gate that
+# has never been made to pass, let alone made to fail.
+#
+# WHY THE DISPATCH HAS NO `dry_run` INPUT. It was designed with a boolean input
+# defaulting to true. A boolean is a thing that can be flipped, and the only reason to
+# flip it would be to publish a release from a manual dispatch, which is exactly what
+# the tag-only trigger exists to prevent. Making the TRIGGER the mode removes the
+# switch instead of defaulting it: `github.event_name` cannot be set by whoever starts
+# the run, so there is no configuration in which a dispatch publishes.
+#
+# The dry run deliberately shares ONE code path with the real cut rather than being a
+# parallel copy. A separate dry-run job would prove that the copy works, which is not
+# the thing in doubt. The two diverge at exactly one step in each job, both guarded on
+# `github.event_name`.
+
 on:
   push:
     tags:
       - 'v*'
+  # Always a dry run. See the note above.
+  workflow_dispatch:
 
+# Read by default. Only the job that can create a Release is granted write, so
+# preflight (which does the bulk of the work) and every dry run are structurally
+# incapable of publishing rather than merely declining to.
 permissions:
-  contents: write   # create the GitHub Release
+  contents: read
 
 jobs:
   # ------------------------------------------------------------------------------------------
@@ -76,11 +108,42 @@ jobs:
           # Full history: the ancestry check below needs to walk from the tag to main.
           fetch-depth: 0
 
+      # --- Which version is under test ----------------------------------------------------
+      # On a tag the version comes FROM the tag, and the checks below prove the four
+      # declaration sites agree with it. On a dry run there is no tag, so tauri.conf.json
+      # (the file the bundler actually stamps into the artifact) becomes the reference and
+      # the other three are proven to agree with IT.
+      #
+      # Be clear about what that costs: on a dry run the tauri.conf.json comparison is a
+      # tautology, so the dry run proves the four sites are CONSISTENT and cannot prove
+      # they match a tag nobody has pushed yet. That is the one part of this gate a dry
+      # run structurally cannot reach, and the summary at the end of this job says so out
+      # loud rather than letting a green check imply otherwise.
+      - name: Resolve the version under test
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            echo "mode=dry-run" >> "$GITHUB_OUTPUT"
+            echo "DRY RUN: no tag. Reference version is tauri.conf.json's ${version}."
+          else
+            version="${GITHUB_REF_NAME#v}"
+            echo "mode=tag" >> "$GITHUB_OUTPUT"
+            echo "TAG: ${GITHUB_REF_NAME}. Reference version is ${version}."
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       # --- Tag ancestry -------------------------------------------------------------------
       # The tagged commit must be reachable from protected main. This is what stops a release
       # being cut from a side branch, a force-pushed ref, or a commit that never went through
       # a pull request. Equality counts (tagging main's tip is the normal case).
+      #
+      # Tag-only, and deliberately not faked for the dry run. There is no tag to check the
+      # ancestry OF, and a dry run is a thing you may well want to start from a branch, so
+      # asserting branch ancestry here would fail the runs this lane exists to enable.
       - name: Assert the tag is reachable from main
+        if: github.event_name != 'workflow_dispatch'
         shell: bash
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
@@ -98,7 +161,7 @@ jobs:
       - name: Assert the tag matches every declared version
         shell: bash
         run: |
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${{ steps.version.outputs.version }}"
           pkg_version="$(node -p "require('./package.json').version")"
           tauri_version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           cargo_version="$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
@@ -109,7 +172,7 @@ jobs:
           # one and ship a core crate whose version disagrees with the tag.
           ws_version="$(awk '/^\[workspace\.package\]/{f=1;next} /^\[/{f=0} f && /^version/{print;exit}' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')"
 
-          echo "tag:                     $tag_version"
+          echo "reference (${{ steps.version.outputs.mode }}): $tag_version"
           echo "package.json:            $pkg_version"
           echo "tauri.conf.json:         $tauri_version"
           echo "src-tauri/Cargo.toml:    $cargo_version"
@@ -119,12 +182,12 @@ jobs:
           for pair in "package.json:$pkg_version" "tauri.conf.json:$tauri_version" "src-tauri/Cargo.toml:$cargo_version" "Cargo.toml [workspace.package]:$ws_version"; do
             name="${pair%%:*}"; value="${pair#*:}"
             if [ "$value" != "$tag_version" ]; then
-              echo "::error::$name declares $value but the tag is $tag_version. Run scripts/bump-version.mjs and re-tag."
+              echo "::error::$name declares $value but the reference version is $tag_version. Run scripts/bump-version.mjs (and re-tag, if this was a tag push)."
               fail=1
             fi
           done
           [ "$fail" -eq 0 ] || exit 1
-          echo "OK: all version declarations agree with the tag."
+          echo "OK: all version declarations agree with the reference."
 
       # --- Release notes exist ------------------------------------------------------------
       # The GitHub Release body is derived from CHANGELOG.md. A tag with no matching section
@@ -132,7 +195,7 @@ jobs:
       - name: Assert CHANGELOG has a section for this version
         shell: bash
         run: |
-          tag_version="${GITHUB_REF_NAME#v}"
+          tag_version="${{ steps.version.outputs.version }}"
           if grep -qE "^## \[${tag_version}\]" CHANGELOG.md; then
             echo "OK: CHANGELOG.md has a section for ${tag_version}."
           else
@@ -228,11 +291,51 @@ jobs:
       - name: Updater production config hygiene
         run: node scripts/check-updater-config-hygiene.mjs
 
+      # --- What a dry run did NOT prove ----------------------------------------------------
+      # A green check that quietly skipped things is worse than no check, because it reads as
+      # coverage nobody has. Everything this lane cannot reach is named here, in the run's own
+      # output, next to the checks that did pass.
+      - name: State the limits of this dry run
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          {
+            echo "### Release dry run"
+            echo ""
+            echo "Proven on this commit:"
+            echo ""
+            echo "- the four version declaration sites agree with each other (\`${{ steps.version.outputs.version }}\`)"
+            echo "- CHANGELOG.md has a section for that version"
+            echo "- SECURITY.md is present and non-empty"
+            echo "- fmt, clippy, the fast test tier, typecheck, lint, and the frontend build all pass"
+            echo "- bindings.ts is not stale"
+            echo "- reposync-core pulls no tauri"
+            echo "- the updater production config carries neither the insecure transport flag nor the test pubkey"
+            echo "- both platforms build and bundle with the \`dist\` profile"
+            echo ""
+            echo "NOT proven, and not provable without a real tag:"
+            echo ""
+            echo "- that the four versions match a TAG. With no tag, tauri.conf.json is the reference, so its own comparison is a tautology."
+            echo "- tag ancestry from main. There is no tag to check."
+            echo "- Release creation, asset upload, and updater artifact signing. No dispatch can reach those steps."
+            echo "- that a signed \`latest.json\` is emitted and references the NSIS artifact. That needs the signing secret and a real cut."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   release:
-    name: release (${{ matrix.os }})
+    name: ${{ github.event_name == 'workflow_dispatch' && 'dry-run build' || 'release' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     # THE GATE. No preflight, no artifacts.
     needs: preflight
+    # The only grant of write in this workflow, so preflight runs read-only.
+    #
+    # Being precise about what this does and does not buy: a dispatch DOES run this job,
+    # because it shares every setup step with the real cut on purpose, so write is granted
+    # during a dry run too. What keeps a dry run from publishing is not the permission set
+    # but the pair of `github.event_name` guards on the two final steps, which whoever
+    # starts the run cannot set. The token is threaded into the tauri-action step alone,
+    # so the dry-run build step holds no credentials at all.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -286,7 +389,40 @@ jobs:
             echo "updater: no signing key - shipping DARK (plain installers only, no latest.json)"
           fi
 
+      # --- DRY RUN: build and bundle, and stop ---------------------------------------------
+      # Deliberately NOT tauri-action. That action's job is to create a Release and upload
+      # assets, and the safest way to prove it will not is to never invoke it: there is no
+      # input, flag, or misconfiguration of `pnpm tauri build` that publishes anything. Note
+      # also that no GITHUB_TOKEN reaches this step's environment.
+      #
+      # Same `dist` profile and same computed args as the real cut, so this proves the build
+      # the release would actually perform rather than a cheaper stand-in.
+      - name: Build and bundle (DRY RUN, publishes nothing)
+        if: github.event_name == 'workflow_dispatch'
+        run: pnpm tauri build ${{ steps.updater.outputs.args }}
+
+      - name: Report what the dry run produced
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          echo "### Bundles built on ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # `find` rather than a hardcoded path list: the bundle layout differs per OS, and a
+          # list that silently matched nothing would report success for a build that produced
+          # no artifact. If this prints nothing, that is the finding.
+          found=$(find target/dist/bundle target/release/bundle -type f \
+            \( -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.sig' \) 2>/dev/null || true)
+          if [ -z "$found" ]; then
+            echo "NOTHING FOUND under target/*/bundle. The build step reported success, so either the profile writes elsewhere or no bundle was produced. Worth investigating before trusting this lane." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$found" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # --- REAL CUT: only ever reachable from a v* tag push --------------------------------
       - name: Build and draft release (tauri-action)
+        if: github.event_name != 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

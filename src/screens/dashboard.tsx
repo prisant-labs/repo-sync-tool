@@ -76,10 +76,24 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
             <div className="flex flex-col gap-5">
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
                 <Stat label="Under watch" value={underWatch ?? "-"} hint={`${s.noChangeCount} in sync`} />
+                {/*
+                  The hint names the ACTUAL rule, which is `last_error_code IS
+                  NOT NULL OR is_dirty = 1` (summary.rs). It previously said
+                  "dirty, failed, behind" and behind was never part of it.
+
+                  Behind is deliberately excluded rather than missing. The
+                  default `update_mode` is `fetch_only`, which updates remote
+                  refs and never touches the working tree, so behind is the
+                  designed steady state of a watched library rather than an
+                  anomaly - folding it in here would make this number
+                  permanently non-zero and stop it meaning "act on this".
+                  Behind has its own violet badge on the Repos screen, which is
+                  where a drifting repo is meant to be read.
+                */}
                 <Stat
                   label="Need attention"
                   value={s.attentionCount}
-                  hint="dirty, failed, behind"
+                  hint="dirty or failed"
                   alert={s.attentionCount > 0}
                 />
                 <Stat label="Updated today" value={s.updatedCount} hint="fast-forwarded, clean" />
