@@ -70,7 +70,18 @@ impl V1Mode {
 /// states - detached, no-upstream, and deleted-upstream - that the grid treats
 /// differently, so the caller classifies the upstream explicitly rather than
 /// leaving the engine to guess from `None`/`None`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// The serde derives are here rather than on a mirrored copy in `ipc` on
+/// purpose. A second enum would need a `From` impl and a test pinning the two
+/// string mappings together, which is one more place for one fact to grow two
+/// representations that drift - the exact failure BL-NI-77 was filed about. This
+/// module's purity rule is about I/O (no git, no network, no DB, no clock); a
+/// derive performs none of those.
+///
+/// `snake_case` on the wire matches [`UpstreamState::as_db_str`], and a test
+/// pins that agreement rather than trusting the two mechanisms to stay aligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
 pub enum UpstreamState {
     /// A tracking branch is configured and its remote-tracking ref resolves, so
     /// ahead/behind is a real comparison.
@@ -80,6 +91,38 @@ pub enum UpstreamState {
     /// A tracking branch is configured but its remote-tracking ref no longer
     /// resolves - it was pruned/deleted (the deleted-upstream state).
     Deleted,
+}
+
+impl UpstreamState {
+    /// The stable string persisted in `repo_local_state.upstream_state` and
+    /// carried to the frontend on `RepoSummary` (BL-NI-77).
+    ///
+    /// Stable in the same sense as [`SkipReason::code`]: these strings are a
+    /// contract with rows already written on users' machines and with a frontend
+    /// that branches on them, so they are renamed only with a migration.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            UpstreamState::Tracking => "tracking",
+            UpstreamState::None => "none",
+            UpstreamState::Deleted => "deleted",
+        }
+    }
+
+    /// Parse the persisted string back.
+    ///
+    /// Returns `None` for both a NULL column and an unrecognized value, and the
+    /// caller must treat that as UNKNOWN rather than substituting a state. A NULL
+    /// means the row predates migration `0008` and has not been checked since, so
+    /// no classification was ever observed for it. Defaulting that to `Tracking`
+    /// would manufacture the exact reassuring answer BL-NI-77 was filed about.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "tracking" => Some(UpstreamState::Tracking),
+            "none" => Some(UpstreamState::None),
+            "deleted" => Some(UpstreamState::Deleted),
+            _ => None,
+        }
+    }
 }
 
 /// The observed git state the engine decides over. Built by the caller from the
@@ -758,6 +801,45 @@ mod tests {
         );
         assert_eq!(V1Mode::from_update_mode(&UpdateMode::PullStandard), None);
         assert_eq!(V1Mode::from_update_mode(&UpdateMode::PullRebase), None);
+    }
+
+    // --- BL-NI-77: the two string mappings for UpstreamState cannot drift. ----
+
+    /// `as_db_str` writes the column; serde writes the wire. They are separate
+    /// mechanisms producing what must be one vocabulary, which is exactly the
+    /// shape that rots silently: change the serde rename and the database keeps
+    /// its old spelling, so `from_db_str` starts returning `None` for rows that
+    /// are perfectly valid and every affected repo quietly becomes "unknown".
+    ///
+    /// Pinning them against each other rather than against a hardcoded list means
+    /// a new variant cannot be added to one side alone.
+    #[test]
+    fn db_and_wire_spellings_of_upstream_state_agree() {
+        for state in [
+            UpstreamState::Tracking,
+            UpstreamState::None,
+            UpstreamState::Deleted,
+        ] {
+            let wire = serde_json::to_string(&state).expect("serialize");
+            // serde emits a JSON string, so strip the quotes before comparing.
+            let wire = wire.trim_matches('"');
+            assert_eq!(
+                state.as_db_str(),
+                wire,
+                "the database spelling and the wire spelling of {state:?} disagree"
+            );
+            assert_eq!(
+                UpstreamState::from_db_str(state.as_db_str()),
+                Some(state),
+                "{state:?} must survive a round trip through the column"
+            );
+        }
+
+        // An unrecognized value is UNKNOWN, never a state. A build that starts
+        // reading a column a newer build wrote must not resolve the mismatch by
+        // picking the reassuring answer.
+        assert_eq!(UpstreamState::from_db_str("adrift"), None);
+        assert_eq!(UpstreamState::from_db_str(""), None);
     }
 
     // --- AC7: every skip-reason carries the corresponding AppError code. ------

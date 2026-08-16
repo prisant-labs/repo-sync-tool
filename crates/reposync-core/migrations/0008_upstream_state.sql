@@ -1,0 +1,40 @@
+-- 0008_upstream_state.sql - persist the upstream classification the engine
+-- already computes and then throws away.
+--
+-- `policy::UpstreamState` has three values: Tracking (a tracking branch is
+-- configured and its remote-tracking ref resolves), None (no tracking branch at
+-- all), and Deleted (a tracking branch is configured but its ref no longer
+-- resolves, so it was pruned). `repo::classify_upstream` produces that verdict on
+-- every check, from a live inspect plus a live "does an origin remote exist" read,
+-- and the policy engine acts on it correctly.
+--
+-- Nothing persisted it. `repo_local_state.upstream_branch` is NULL for BOTH None
+-- and Deleted, so a caller reading the database could not tell a branch that never
+-- tracked anything from one whose upstream was deleted. `RepoSummary` therefore
+-- carried neither, and `deriveStatus` on the frontend fell through to "In sync"
+-- for a repo that structurally cannot sync (BL-NI-77). The engine knew; the wire
+-- type carried nothing; the UI defaulted to the most reassuring answer.
+--
+-- WHY A COLUMN RATHER THAN A DERIVATION. The cheaper fix was to reconstruct the
+-- verdict in `repo_list` from `upstream_branch IS NULL AND NOT is_detached AND
+-- repos.remote_origin_url IS NOT NULL`. That reproduces the classification's shape
+-- but substitutes a URL captured when the repo was ADDED for the live remote read
+-- the classification actually uses, so the two disagree the moment a remote is
+-- removed or renamed. Storing the engine's own verdict is the version that cannot
+-- drift, and this repo has repeatedly been bitten by exactly the substitution the
+-- cheap fix would make.
+--
+-- NULLABLE, WITH NO DEFAULT, ON PURPOSE. A backfilled default would be a value
+-- nobody measured: every existing row would claim a classification that no check
+-- ever produced for it. NULL means "not observed since this column existed", which
+-- is a fourth and genuinely different fact from the three real states, and it
+-- resolves itself the first time each repo is checked. Consumers must treat NULL
+-- as "unknown" and must not infer Tracking from it.
+--
+-- repo_local_state has no inbound foreign keys, so a plain ALTER TABLE ADD COLUMN
+-- is safe and needs no table rebuild.
+--
+-- Migration discipline (see migrations/README.md): additive-only. 0001-0007 are
+-- FROZEN; this is the only new file.
+
+ALTER TABLE repo_local_state ADD COLUMN upstream_state TEXT;

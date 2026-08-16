@@ -56,6 +56,7 @@ const FOCAL_BORDER: Record<RepoStatus, string> = {
   dirty: "border-status-dirty/40",
   failed: "border-status-failed/40",
   paused: "border-status-paused/40",
+  noUpstream: "border-status-no-upstream/40",
 };
 
 // The two dirtyHandling / branchPolicy fields are not exposed on RepoDetail, so

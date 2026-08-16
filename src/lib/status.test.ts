@@ -26,6 +26,11 @@ function facts(overrides: Partial<Parameters<typeof deriveStatus>[0]> = {}) {
     lastErrorCode: null,
     aheadCount: 0,
     behindCount: 0,
+    // A healthy repo tracks something. Defaulting this to `null` would make
+    // every existing test in this file exercise the not-yet-observed path
+    // instead of the healthy one, which is a different assertion than the one
+    // they were written to make.
+    upstreamState: "tracking" as const,
     ...overrides,
   };
 }
@@ -85,6 +90,59 @@ describe("deriveStatus", () => {
 
   it("treats a disabled repo as paused even when it is also behind and dirty", () => {
     expect(deriveStatus(facts({ enabled: false, isDirty: true, behindCount: 5 }))).toBe("paused");
+  });
+
+  /**
+   * BL-NI-77. A repo whose upstream branch was deleted reported "In sync",
+   * because `deriveStatus` had no state for it and fell through to the last
+   * branch. Observed live: one repo recorded that outcome 39 times over ten
+   * days, every one of them green, while its badge said it was fine.
+   *
+   * The engine had always known (`policy::UpstreamState` is a three-state enum);
+   * the wire type carried nothing, so the UI defaulted to the reassuring answer.
+   */
+  it("does not call a repo in sync when its upstream was deleted", () => {
+    expect(deriveStatus(facts({ upstreamState: "deleted" }))).toBe("noUpstream");
+  });
+
+  it("treats a branch that never had an upstream the same way", () => {
+    // Different cause, same consequence: there is nothing to sync against. The
+    // two are kept distinct in the DATA (the engine and the column both carry
+    // three states) and deliberately collapsed only here, at the badge, where
+    // the user's question is "can this sync" rather than "why not".
+    expect(deriveStatus(facts({ upstreamState: "none" }))).toBe("noUpstream");
+  });
+
+  it("leaves a tracking repo alone", () => {
+    expect(deriveStatus(facts({ upstreamState: "tracking" }))).toBe("sync");
+  });
+
+  it("ranks a dirty tree above a missing upstream", () => {
+    // Both are true and only one can be shown. Dirty wins because it is the one
+    // the user can act on immediately.
+    expect(deriveStatus(facts({ upstreamState: "deleted", isDirty: true }))).toBe("dirty");
+  });
+
+  it("ranks a missing upstream above behind and ahead", () => {
+    // Contrived: with no upstream the backend reports null counts, so these
+    // cannot really co-occur. Pinned anyway, because the ranking is what stops a
+    // stale count from out-voting the fact that there is nothing to count against.
+    expect(deriveStatus(facts({ upstreamState: "deleted", behindCount: 9 }))).toBe("noUpstream");
+    expect(deriveStatus(facts({ upstreamState: "deleted", aheadCount: 9 }))).toBe("noUpstream");
+  });
+
+  /**
+   * `null` is NOT YET OBSERVED, not a state. It falls through to the
+   * pre-BL-NI-77 derivation, which on a clean repo lands on "sync".
+   *
+   * That is the reassuring answer, and it is chosen knowingly rather than by
+   * accident: the alternative badges every repo in the library as broken the
+   * moment migration 0008 lands and before anything has been re-checked. The
+   * window is one check per repo; a wrong badge on the whole library is not.
+   */
+  it("does not invent a broken upstream from an unobserved one", () => {
+    expect(deriveStatus(facts({ upstreamState: null }))).toBe("sync");
+    expect(deriveStatus(facts({ upstreamState: null, behindCount: 3 }))).toBe("behind");
   });
 });
 
