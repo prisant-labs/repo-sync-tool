@@ -311,7 +311,11 @@ jobs:
             echo "- bindings.ts is not stale"
             echo "- reposync-core pulls no tauri"
             echo "- the updater production config carries neither the insecure transport flag nor the test pubkey"
-            echo "- both platforms build and bundle with the \`dist\` profile"
+            echo ""
+            echo "This job says nothing about the BUILD. It runs before the build jobs start, so"
+            echo "listing 'both platforms build and bundle' here would have been a claim about work"
+            echo "that had not happened yet. Each build job writes its own summary of what it"
+            echo "actually produced; read those, and treat a missing one as a build that did not run."
             echo ""
             echo "NOT proven, and not provable without a real tag:"
             echo ""
@@ -375,6 +379,29 @@ jobs:
       # present; otherwise build the plain installers so a keyless tag still cuts a
       # Release (the updater ships dark). Testing `secrets.X != ''` in an env
       # expression evaluates to 'true'/'false' WITHOUT exposing the secret value.
+      # ARGUMENT ORDER IS LOAD-BEARING, and it was wrong until the first dry run
+      # proved it (2026-08-16, run 31930948351).
+      #
+      # `tauri build` takes its own flags, then `--`, then everything after that is
+      # passed through to the runner (cargo). Its own help says so: "[ARGS]...
+      # Command line arguments passed to the runner. Use `--` to explicitly mark
+      # the start of the arguments". `--profile` is a CARGO flag; the tauri CLI has
+      # no such option and rejects it outright:
+      #
+      #   error: unexpected argument '--profile' found
+      #   tip: to pass '--profile' as a value, use '-- --profile'
+      #
+      # `--config` is the opposite: a tauri CLI flag, so it must come BEFORE the
+      # separator. The previous value put a cargo flag first and a CLI flag second,
+      # which is wrong on both counts.
+      #
+      # This is NOT only a dry-run problem. tauri-action's README describes `args`
+      # as "additional arguments to the current tauri build command", i.e. appended
+      # to the same `tauri build` invocation, so the REAL tag path carried the same
+      # broken string and would have failed on the first real cut. That path still
+      # cannot be executed without pushing a tag, so what is proven here is the
+      # direct form; the tag form now at least uses the spelling the CLI documents
+      # rather than one empirically shown to fail.
       - name: Compute updater build args
         id: updater
         shell: bash
@@ -382,10 +409,10 @@ jobs:
           HAS_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
         run: |
           if [ "$HAS_SIGNING_KEY" = "true" ]; then
-            echo "args=--profile dist --config src-tauri/tauri.updater-prod.conf.json" >> "$GITHUB_OUTPUT"
+            echo "args=--config src-tauri/tauri.updater-prod.conf.json -- --profile dist" >> "$GITHUB_OUTPUT"
             echo "updater: signing key present - updater artifacts + latest.json will be produced"
           else
-            echo "args=--profile dist" >> "$GITHUB_OUTPUT"
+            echo "args=-- --profile dist" >> "$GITHUB_OUTPUT"
             echo "updater: no signing key - shipping DARK (plain installers only, no latest.json)"
           fi
 
