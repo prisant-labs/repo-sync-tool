@@ -358,11 +358,17 @@ async fn check_now_inner(
     //     condition. This mirrors the `status` line just below, which draws the
     //     same boundary for the activity receipt.
     let last_error_code = if fetch_failed { reason.clone() } else { None };
+    // BL-NI-77: persist the classification the policy engine just decided over,
+    // rather than recomputing it later from `upstream_branch IS NULL`, which
+    // cannot tell no-upstream from deleted-upstream. This is the SAME value
+    // `repo_state_from_reads` fed the decision above, so the row records what the
+    // engine actually acted on rather than a reconstruction of it.
+    let upstream_state = classify_upstream(&inspect, has_origin).as_db_str();
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
-         head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
-         last_attempted_at = ?, last_error_code = ? \
+         head_sha = ?, upstream_branch = ?, upstream_state = ?, last_local_commit_at = ?, \
+         last_checked_at = ?, last_attempted_at = ?, last_error_code = ? \
          WHERE repo_id = ?",
     )
     .bind(&inspect.active_branch)
@@ -372,6 +378,7 @@ async fn check_now_inner(
     .bind(inspect.is_detached as i64)
     .bind(&inspect.head_sha)
     .bind(&upstream)
+    .bind(upstream_state)
     .bind(inspect.last_commit_at)
     .bind(now)
     .bind(now)
@@ -592,11 +599,16 @@ async fn run_update_inner(
     // read twice by the CASE arms; on a failed run both columns keep their values
     // for the E-08 failure state machine to advance.
     let success_reset = if status == "success" { 1_i64 } else { 0_i64 };
+    // BL-NI-77, and deliberately classified from the POST-operation inspect rather
+    // than the pre-read: a fetch with --prune is exactly the operation that turns a
+    // Tracking repo into a Deleted one, so the row has to record the upstream as it
+    // stands after the work, not as it looked before.
+    let upstream_state = classify_upstream(&post, has_origin).as_db_str();
     sqlx::query(
         "UPDATE repo_local_state SET \
          active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
-         head_sha = ?, upstream_branch = ?, last_local_commit_at = ?, last_checked_at = ?, \
-         last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at), \
+         head_sha = ?, upstream_branch = ?, upstream_state = ?, last_local_commit_at = ?, \
+         last_checked_at = ?, last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at), \
          last_error_code = ?, \
          consecutive_failures = CASE WHEN ? = 1 THEN 0 ELSE consecutive_failures END, \
          auto_paused = CASE WHEN ? = 1 THEN 0 ELSE auto_paused END \
@@ -609,6 +621,7 @@ async fn run_update_inner(
     .bind(post.is_detached as i64)
     .bind(&post.head_sha)
     .bind(&upstream)
+    .bind(upstream_state)
     .bind(post.last_commit_at)
     .bind(now)
     .bind(now)
@@ -1567,6 +1580,38 @@ mod tests {
         assert_eq!(
             result.decision, "skip-with-reason",
             "a removed upstream is a typed skip"
+        );
+
+        // BL-NI-77: the classification the engine just used must also be on the
+        // ROW, because that is the only copy anything downstream can read. This
+        // assertion is the point of the whole change: `upstream_branch` is NULL
+        // for both no-upstream and deleted-upstream, so without this column a
+        // reader of the database cannot tell them apart, and `deriveStatus` on
+        // the frontend fell through to "In sync" for a repo that cannot sync.
+        //
+        // Asserted against the REAL production write here rather than against a
+        // seeded fixture. This repo has already shipped a column that three
+        // consumers read and nothing wrote (`last_error_code`, BL-NI-42), green
+        // the whole time, because its only writer was a test helper. A test that
+        // seeds the value it then checks proves nothing about whether production
+        // produces it.
+        let persisted: Option<String> =
+            sqlx::query("SELECT upstream_state FROM repo_local_state WHERE repo_id = ?")
+                .bind(id.0)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .try_get("upstream_state")
+                .unwrap();
+        assert_eq!(
+            persisted.as_deref(),
+            Some("deleted"),
+            "check_now must persist the engine's upstream classification, not leave it NULL"
+        );
+        assert_eq!(
+            persisted.as_deref().and_then(UpstreamState::from_db_str),
+            Some(UpstreamState::Deleted),
+            "the persisted string must parse back to the state the engine decided"
         );
     }
 

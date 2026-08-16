@@ -651,6 +651,13 @@ export type RepoDetail = {
 	activeBranch: string | null,
 	headSha: string | null,
 	upstreamBranch: string | null,
+	/**
+	 *  See [`RepoSummary::upstream_state`]. Repeated here because the detail
+	 *  drawer derives its own status badge from this type, so omitting it would
+	 *  leave the drawer saying "In sync" about a repo the list already knows
+	 *  cannot sync.
+	 */
+	upstreamState: UpstreamState | null,
 	lastLocalCommitAt: number | null,
 	lastUpdatedAt: number | null,
 	lastAttemptedAt: number | null,
@@ -727,6 +734,18 @@ export type RepoSummary = {
 	 *  ("when RepoSync last looked"). `None` when the inspect never read it.
 	 */
 	lastLocalCommitAt: number | null,
+	/**
+	 *  The upstream relationship as the policy engine last classified it
+	 *  (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync
+	 *  from one whose upstream was deleted and therefore cannot sync at all.
+	 * 
+	 *  `None` means NOT YET OBSERVED: the row predates migration `0008` and has
+	 *  not been checked since. It is a fourth fact, distinct from all three
+	 *  states, and consumers must render it as unknown rather than assuming
+	 *  `Tracking` - assuming the reassuring value is the bug this field exists to
+	 *  fix. It resolves itself the first time the repo is checked.
+	 */
+	upstreamState: UpstreamState | null,
 };
 
 /**  A candidate repository found while scanning a parent folder. */
@@ -867,6 +886,39 @@ export type UpdateStartedPayload = {
 	repoId: number,
 	mode: string,
 };
+
+/**
+ *  The upstream relationship of HEAD's branch, the distinction the decision
+ *  table needs that a bare ahead/behind cannot carry.
+ * 
+ *  `None` ahead/behind (no comparison base) is produced by THREE different
+ *  states - detached, no-upstream, and deleted-upstream - that the grid treats
+ *  differently, so the caller classifies the upstream explicitly rather than
+ *  leaving the engine to guess from `None`/`None`.
+ * 
+ *  The serde derives are here rather than on a mirrored copy in `ipc` on
+ *  purpose. A second enum would need a `From` impl and a test pinning the two
+ *  string mappings together, which is one more place for one fact to grow two
+ *  representations that drift - the exact failure BL-NI-77 was filed about. This
+ *  module's purity rule is about I/O (no git, no network, no DB, no clock); a
+ *  derive performs none of those.
+ * 
+ *  `snake_case` on the wire matches [`UpstreamState::as_db_str`], and a test
+ *  pins that agreement rather than trusting the two mechanisms to stay aligned.
+ */
+export type UpstreamState = 
+/**
+ *  A tracking branch is configured and its remote-tracking ref resolves, so
+ *  ahead/behind is a real comparison.
+ */
+"tracking" | 
+/**  No tracking branch is configured at all (the no-upstream state). */
+"none" | 
+/**
+ *  A tracking branch is configured but its remote-tracking ref no longer
+ *  resolves - it was pruned/deleted (the deleted-upstream state).
+ */
+"deleted";
 
 /**  A weekly roll-up: a window of [`DailySummary`] days. V1.1 stub (E-11 / V1.1). */
 export type WeeklySummary = {
