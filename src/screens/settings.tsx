@@ -72,7 +72,23 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
               suffix="min"
             />
           </Field>
-          <Field label="Quiet hours" hint="Pause scheduled checks during a daily window (local clock).">
+          {/*
+            The hint used to say only "Pause scheduled checks during a daily
+            window", which describes half of what the setting does. The same
+            `in_quiet_hours` predicate gates the notification path in
+            `notify::passes_gate`, so turning this on also silences tray
+            notifications, and someone enabling it to stop overnight git
+            activity was never told that.
+
+            "Run when the window ends" is the scheduler's actual behavior and
+            worth saying: there is no deferred queue, a repo that came due
+            inside the window simply becomes selectable again on the first tick
+            after it, so nothing is lost.
+          */}
+          <Field
+            label="Quiet hours"
+            hint="Pause scheduled checks and silence notifications during a daily window (local clock). Paused checks run when the window ends."
+          >
             <Switch
               checked={quietOn}
               onCheckedChange={(on) => {
