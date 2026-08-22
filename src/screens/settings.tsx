@@ -84,10 +84,17 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
             worth saying: there is no deferred queue, a repo that came due
             inside the window simply becomes selectable again on the first tick
             after it, so nothing is lost.
+
+            BL-NI-80 then made the notification half true in the same way. A
+            cycle can START outside the window and FINISH inside it, and those
+            notifications used to be discarded outright rather than withheld.
+            They are now held and delivered on the first tick after the window
+            ends, so "silence" means postponed here, not lost, and the hint says
+            which one it means.
           */}
           <Field
             label="Quiet hours"
-            hint="Pause scheduled checks and silence notifications during a daily window (local clock). Paused checks run when the window ends."
+            hint="Pause scheduled checks and silence notifications during a daily window (local clock). When the window ends, paused checks resume and any notifications held back during it arrive then."
           >
             <Switch
               checked={quietOn}

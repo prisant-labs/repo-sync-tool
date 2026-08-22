@@ -116,7 +116,11 @@ disk or the network:
   all of them at once.
 - **Jitter on startup.** Due repos are staggered by a random short delay so they do
   not all fire the instant the app launches.
-- **Quiet hours.** You can define hours during which no scheduled checks run.
+- **Quiet hours.** You can define hours during which no scheduled checks run and no
+  notifications are raised. Nothing is lost to the silence: a check that came due
+  inside the window simply runs on the first cycle after it, and a notification that
+  a cycle produced just as the window opened is held and delivered then rather than
+  discarded.
 - **Default cadence.** Repos are checked every 6 hours by default; you can change the
   frequency.
 - **3-strikes auto-pause.** A repo that fails repeatedly is automatically paused after

@@ -14,11 +14,25 @@
 //! stays Tauri-free: the plugin call and the emit live only here.
 //!
 //! Two firing sites, one chokepoint:
-//!   * the resident scheduler's per-cycle completion, coalesced ([`fire_cycle`],
-//!     fed by [`CollectingOutcomeWriter`] which records each failed job into a
-//!     per-cycle [`CycleNotifications`] buffer the tick loop drains); and
+//!   * the resident scheduler's per-cycle completion, coalesced
+//!     ([`fire_cycle_from_collector`], fed by [`CollectingOutcomeWriter`] which
+//!     records each failed job into a per-cycle [`CycleNotifications`] buffer); and
 //!   * the manual metadata refresh, when it brings in a genuinely new release
 //!     ([`fire_one`] with a single [`decide`]).
+//!
+//! The cycle path drains its buffer ONLY when it is actually going to fire
+//! (BL-NI-80). Inside quiet hours, or when the settings read fails, the buffer is
+//! left intact and the once-a-minute tick reconsiders it, so a cycle that straddles
+//! the start of the quiet window has its alerts withheld rather than destroyed.
+//!
+//! NOTE: this module is not the only place in the app that raises an OS toast.
+//! `updates.rs` raises the launch-time "update available" toast directly, outside
+//! this gate entirely (BL-NI-82). Establish that list with a search for the
+//! CAPABILITY, not by tracing calls from here:
+//!
+//! ```text
+//! grep -rnE 'notification\(\)|tauri_plugin_notification|NotificationExt' --include=*.rs crates/ src-tauri/
+//! ```
 
 use std::sync::{Arc, Mutex};
 
@@ -29,7 +43,7 @@ use tauri_specta::Event;
 
 use reposync_core::error::AppError;
 use reposync_core::ipc::{NotificationFiredPayload, RepoId, Settings};
-use reposync_core::notify::{coalesce, decide, LocalMinute, NoteKind, NotifiableEvent};
+use reposync_core::notify::{coalesce, decide, is_quiet, LocalMinute, NoteKind, NotifiableEvent};
 use reposync_core::policy::RepoStatus;
 use reposync_core::scheduler::{local_minutes_at, DbOutcomeWriter, DueRepo, OutcomeWriter};
 
@@ -95,31 +109,79 @@ pub fn fire_one(app: &AppHandle, settings: &Settings, event: &NotifiableEvent) {
 /// the cycle's events to a bounded set (each kind shown individually up to a cap,
 /// then one overflow summary - AC4), the edge raises + emits each. Quiet hours and
 /// the toggles are applied inside [`coalesce`], so this stays a dumb actuator.
-pub fn fire_cycle(app: &AppHandle, settings: &Settings, events: &[NotifiableEvent]) {
+///
+/// PRIVATE on purpose (BL-NI-80). [`fire_cycle_from_collector`] is the only caller,
+/// because it is the only place that can decide to HOLD a cycle's events instead of
+/// firing them. Reaching this directly means the events have already been drained,
+/// and [`coalesce`] filters rather than queues - so a second caller would silently
+/// destroy any event the gate rejects, which is exactly the defect fixed here.
+fn fire_cycle(app: &AppHandle, settings: &Settings, events: &[NotifiableEvent]) {
     for payload in coalesce(events, settings, local_minute_now()) {
         raise(app, &payload);
     }
 }
 
-/// Drain a cycle's collected failures and fire their coalesced toasts. Reads the
-/// settings once per cycle (the toggles + quiet hours that gate firing). A no-op
-/// when the cycle raised no notifiable events, so the common quiet cycle never
-/// touches the DB or the plugin.
+/// Fire a cycle's collected failures as coalesced toasts, or HOLD them for a later
+/// tick. A no-op when the cycle produced no notifiable events, so the common quiet
+/// cycle never touches the DB or the plugin.
+///
+/// Every path that declines to fire leaves the buffer INTACT, which is the fix for
+/// BL-NI-80. The tick loop calls this once a minute for the life of the process
+/// (`lib.rs`, in the unconditional `Ok(report)` arm), so anything still held is
+/// simply reconsidered a minute later.
+///
+/// The consuming step goes through [`CycleNotifications::drain_if`] rather than a
+/// bare drain, so "decide before consuming" is enforced by the type rather than by
+/// the order the statements happen to be written in.
 pub async fn fire_cycle_from_collector(
     app: &AppHandle,
     pool: &SqlitePool,
     collector: &CycleNotifications,
 ) {
-    let events = collector.drain();
-    if events.is_empty() {
+    // Peek rather than drain: the settings read and the quiet-hours check below both
+    // have to be able to bail out without consuming anything.
+    if collector.is_empty() {
         return;
     }
-    match reposync_core::store::settings_get(pool).await {
-        Ok(settings) => fire_cycle(app, &settings, &events),
+    let settings = match reposync_core::store::settings_get(pool).await {
+        Ok(settings) => settings,
         Err(e) => {
-            tracing::warn!("notify: could not read settings to fire cycle notifications: {e}")
+            // HOLD, do not drop. The previous order drained before this read, so a
+            // transient settings failure destroyed the cycle's notifications outright
+            // with nothing to retry - the same permanent-loss shape as the quiet-hours
+            // boundary, reached through a different door.
+            tracing::warn!(
+                "notify: could not read settings to fire cycle notifications, holding {} event(s) for the next tick: {e}",
+                collector.len()
+            );
+            return;
         }
-    }
+    };
+    // BL-NI-80: the quiet-hours decision gates the DRAIN, not the raise.
+    //
+    // The scheduler gates a cycle at its START (`run_due` returns early inside the
+    // window), but a cycle that began at 21:59 can finish at 22:00. Judging at fire
+    // time meant `coalesce` saw a quiet clock and FILTERED every event, and the drain
+    // had already emptied the buffer, so those alerts were gone permanently and the
+    // next cycle had nothing left to re-report.
+    //
+    // Holding satisfies AC3 ("no toast is raised during quiet hours") without losing
+    // the alert: the first tick after the window ends fires these alongside that
+    // cycle's own events, coalesced together into one bounded batch.
+    //
+    // The held buffer cannot grow while the window is open, which is what makes this
+    // a hold rather than an unbounded queue: inside the window `run_due` returns
+    // before running any job, so `CollectingOutcomeWriter::record` never pushes. What
+    // is held is exactly the one straddling cycle's events.
+    //
+    // Held events are in-memory and do not survive a restart. That is the intended
+    // trade: the failure itself is persisted (`last_error_code`, the activity log,
+    // and the Repos + attention surfaces read from it), so what a restart costs is
+    // the alert, never the record.
+    let Some(events) = collector.drain_if(|| !is_quiet(&settings, local_minute_now())) else {
+        return;
+    };
+    fire_cycle(app, &settings, &events);
 }
 
 /// Best-effort notification-permission reconciliation, run once at startup. On
@@ -158,17 +220,57 @@ pub struct CycleNotifications {
 }
 
 impl CycleNotifications {
-    /// Take the buffered events, leaving it empty for the next cycle. The scheduler
-    /// joins ALL of a cycle's jobs before the tick loop returns, so a drain right
-    /// after `start()`/`tick_once()` sees exactly that cycle's events with no
-    /// overlap from the next.
-    pub fn drain(&self) -> Vec<NotifiableEvent> {
-        std::mem::take(
-            &mut *self
-                .events
-                .lock()
-                .expect("cycle-notifications map poisoned"),
-        )
+    /// Take the buffered events ONLY if `may_fire` approves, and otherwise leave them
+    /// held for a later tick. Returns `None` when the buffer is empty or firing was
+    /// refused.
+    ///
+    /// This is the ONLY way to consume the buffer. There is deliberately no
+    /// unconditional `drain`, because an unconditional drain is the BL-NI-80 defect:
+    /// the scheduler joins all of a cycle's jobs before the tick loop returns, so
+    /// whoever consumes here holds exactly one cycle's events, and if the reason not
+    /// to fire them arrives after the drain they are simply gone.
+    ///
+    /// The decision and the drain are ONE operation on purpose (BL-NI-80). Expressed
+    /// as two statements they can be written in the wrong order, and the wrong order
+    /// is precisely the bug: draining first and asking afterwards discards whatever
+    /// the answer refuses, because [`coalesce`] filters rather than queues. Fusing
+    /// them means no caller can express the broken sequence, and the guarantee
+    /// becomes unit-testable here rather than resting on a comment.
+    ///
+    /// `may_fire` runs while the buffer lock is held, so it must stay cheap and must
+    /// not await - the same rule [`push`](CycleNotifications::push) follows. The real
+    /// caller passes a clock read plus a settings comparison, which qualifies.
+    pub fn drain_if(&self, may_fire: impl FnOnce() -> bool) -> Option<Vec<NotifiableEvent>> {
+        let mut held = self
+            .events
+            .lock()
+            .expect("cycle-notifications map poisoned");
+        if held.is_empty() || !may_fire() {
+            return None;
+        }
+        Some(std::mem::take(&mut *held))
+    }
+
+    /// Whether the buffer currently holds nothing, WITHOUT consuming it.
+    ///
+    /// The firing path needs to know there is work before it reads settings, and it
+    /// needs to be able to abandon the attempt afterwards without having consumed
+    /// anything (BL-NI-80). `drain().is_empty()` cannot answer this question: asking
+    /// it is what destroys the answer.
+    pub fn is_empty(&self) -> bool {
+        self.events
+            .lock()
+            .expect("cycle-notifications map poisoned")
+            .is_empty()
+    }
+
+    /// How many events are currently held, WITHOUT consuming them. Used to say how
+    /// much is being carried forward when firing is postponed.
+    pub fn len(&self) -> usize {
+        self.events
+            .lock()
+            .expect("cycle-notifications map poisoned")
+            .len()
     }
 
     /// Buffer one notifiable event. The lock is held only for the push (never
@@ -380,7 +482,7 @@ mod tests {
         // The buffer hands the tick loop exactly the cycle's events and resets, so
         // the next cycle starts clean (no cross-cycle leakage into coalescing).
         let buf = CycleNotifications::default();
-        assert!(buf.drain().is_empty(), "starts empty");
+        assert!(buf.drain_if(|| true).is_none(), "starts empty");
         buf.push(NotifiableEvent {
             kind: NoteKind::Failure,
             repo_id: 1,
@@ -393,8 +495,92 @@ mod tests {
             repo_name: "b".into(),
             detail: None,
         });
-        let drained = buf.drain();
+        let drained = buf.drain_if(|| true).expect("the cycle's events");
         assert_eq!(drained.len(), 2, "drain returns the buffered events");
-        assert!(buf.drain().is_empty(), "drain leaves the buffer empty");
+        assert!(
+            buf.drain_if(|| true).is_none(),
+            "drain leaves the buffer empty"
+        );
+    }
+
+    #[test]
+    fn cycle_notifications_peeks_without_consuming() {
+        // BL-NI-80. The firing path asks `is_empty` BEFORE it reads settings, and
+        // may then abandon the attempt - settings unreadable - without having
+        // consumed anything, so the next tick can reconsider. The old code asked with
+        // `drain().is_empty()`, which cannot serve that purpose: it destroys the
+        // answer in the act of asking, and that is the whole defect.
+        let buf = CycleNotifications::default();
+        assert!(buf.is_empty(), "starts empty");
+        assert_eq!(buf.len(), 0, "starts empty");
+
+        buf.push(NotifiableEvent {
+            kind: NoteKind::Failure,
+            repo_id: 1,
+            repo_name: "straddler".into(),
+            detail: None,
+        });
+
+        // The tick loop asks once a minute for as long as the events stay held, so
+        // repeated peeking must be free of side effects.
+        for attempt in 1..=3 {
+            assert!(!buf.is_empty(), "peek {attempt} still sees the held event");
+            assert_eq!(buf.len(), 1, "peek {attempt} did not consume");
+        }
+
+        assert_eq!(
+            buf.drain_if(|| true).expect("still there").len(),
+            1,
+            "the event survived every peek and is still there to fire"
+        );
+        assert!(buf.is_empty(), "draining is the only thing that empties it");
+    }
+
+    #[test]
+    fn drain_if_holds_the_buffer_when_firing_is_refused() {
+        // BL-NI-80, the load-bearing guarantee. A refused fire must leave the events
+        // exactly where they were, because `coalesce` filters rather than queues: an
+        // event drained and then refused is not deferred, it is destroyed. That is
+        // the whole defect, and this is the assertion that would catch its return.
+        //
+        // Refusal here stands for the real caller's `is_quiet(...)` verdict; the
+        // clock and the settings are the core's business and are pinned there.
+        let buf = CycleNotifications::default();
+
+        // An empty buffer yields nothing even when firing is allowed, so the common
+        // quiet cycle stays a no-op.
+        assert!(
+            buf.drain_if(|| true).is_none(),
+            "an empty buffer has nothing to fire"
+        );
+
+        buf.push(NotifiableEvent {
+            kind: NoteKind::Failure,
+            repo_id: 1,
+            repo_name: "straddler".into(),
+            detail: None,
+        });
+
+        // The tick loop asks once a minute for as long as the window stays open, so
+        // a refusal has to be repeatable AND non-destructive every single time.
+        for minute in 1..=3 {
+            assert!(
+                buf.drain_if(|| false).is_none(),
+                "refusal {minute} yields no events to fire"
+            );
+            assert_eq!(
+                buf.len(),
+                1,
+                "refusal {minute} left the event HELD, not consumed"
+            );
+        }
+
+        // The first tick after the window ends gets them, intact.
+        let fired = buf
+            .drain_if(|| true)
+            .expect("approval yields the held events");
+        assert_eq!(fired.len(), 1, "every held event survived to be reported");
+        assert_eq!(fired[0].repo_name, "straddler");
+        assert!(buf.is_empty(), "approval is what consumes the buffer");
     }
 }
