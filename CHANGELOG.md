@@ -66,6 +66,49 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   history or a smaller footprint.
 
 ### Fixed
+- **A repository whose upstream branch was deleted no longer reads "In sync".**
+  RepoSync has always known the difference between a repository tracking a live
+  upstream, one with no upstream at all, and one whose upstream was deleted from
+  the remote, and it correctly skips checking the last of those instead of
+  reporting a failure. Nothing carried that verdict out to the views, so they
+  fell through to the most reassuring answer available. One repository recorded
+  this outcome 39 times over ten days, green every time, while showing "In sync"
+  for a branch that structurally could not sync. It now has its own status,
+  **No upstream**. Two limits worth knowing: it ranks below "dirty" and "failed"
+  and stays out of the "Needs attention" count, because it describes a fact
+  about the repository rather than something to act on today; and a repository
+  last checked before this release keeps its previous badge until its next
+  check, then changes over.
+- **Quiet hours no longer discards the notifications it withholds, and the
+  setting now describes both halves of what it does.** The hint mentioned only
+  the paused checks, so turning it on to stop overnight git activity also muted
+  failure alerts without saying so. Worse, a cycle that began before the window
+  opened and finished inside it had every notification it produced destroyed
+  rather than delayed: a fetch that failed at 21:59 with quiet hours starting at
+  22:00 was never reported at all, and the next cycle had nothing left to report
+  with. Withheld notifications are now held and delivered on the first cycle
+  after the window ends, folded in with that cycle's own. Held alerts live in
+  memory and do not survive a restart, which can cost you the alert but never
+  the record: the failure stays on the repository, in the Activity log, and in
+  the "Needs attention" count.
+- **The Dashboard's "Needs attention" hint promised a rule the count does not
+  implement.** It read "dirty, failed, behind"; the number has only ever counted
+  repositories that are dirty or have a recorded failure. It now reads "dirty or
+  failed". Behind-ness was deliberately left out rather than folded in: the
+  default update mode fetches without touching your working tree, so a watched
+  library drifting behind is the intended steady state rather than an anomaly,
+  and counting it would make the number permanently non-zero and stop it meaning
+  "act on this". Behind-ness keeps its own badge on the Repos screen.
+- **The Settings row for a GitHub token described a keychain RepoSync has never
+  written to.** It read "Stored in the OS keychain, never on disk. Managed
+  outside this screen." None of that is true in this version: there is no token
+  provider, nothing writes to a keychain, and there is no other screen. The row
+  now says what actually applies, that RepoSync reads GitHub without signing in
+  and GitHub allows 60 requests an hour that way, shared across all your
+  repositories. Its value reads "not supported yet" rather than "not set",
+  because "not set" invited you to go and set it and there was nowhere to do
+  that. The row stayed rather than being hidden because that 60-per-hour ceiling
+  is a real constraint on a large library.
 - **A repository whose checks are failing now actually appears in "Needs
   attention", and shows as failed in the Repos list.** It previously appeared
   only if it also happened to have uncommitted changes. The error code every one
