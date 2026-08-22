@@ -66,6 +66,17 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   history or a smaller footprint.
 
 ### Fixed
+- **A problem at GitHub no longer reports itself as a problem with your internet.**
+  When GitHub answered a metadata refresh with an error, RepoSync classified
+  every case it did not have a specific name for as a lost connection and told
+  you "no network connection" - about a request that had plainly gone through,
+  since a round trip had to complete for that error to come back at all. You
+  would go and check your wifi while the actual problem was a GitHub outage or a
+  refused request. It now reports which error GitHub returned, and how it is
+  treated follows from that: a server error (5xx) is temporary and gets retried,
+  while a refusal (4xx) is not and stops, where previously every case was retried
+  forever under the wrong explanation. Requests that genuinely never reach GitHub
+  still report as a lost connection, which is what that message was always for.
 - **A repository whose upstream branch was deleted no longer reads "In sync".**
   RepoSync has always known the difference between a repository tracking a live
   upstream, one with no upstream at all, and one whose upstream was deleted from

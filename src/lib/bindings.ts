@@ -25,8 +25,8 @@ export const commands = {
 	/**
 	 *  Run a "check now" over every ENABLED repo (E-13 tray "Check All Now").
 	 * 
-	 *  The additive E-13 backend command behind the tray "Check All Now" item (also
-	 *  callable from the frontend). Selects the enabled repos (the pure
+	 *  The additive E-13 IPC wrapper around [`check_all_enabled`]. Selects the enabled
+	 *  repos (the pure
 	 *  [`reposync_core::store::select_check_all_targets`]) and runs each through the
 	 *  SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
 	 *  never launch two `git` processes in one working tree. Returns the number of repos

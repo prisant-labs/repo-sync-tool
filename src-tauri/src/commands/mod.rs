@@ -81,8 +81,8 @@ pub async fn repo_check_now(
 
 /// Run a "check now" over every ENABLED repo (E-13 tray "Check All Now").
 ///
-/// The additive E-13 backend command behind the tray "Check All Now" item (also
-/// callable from the frontend). Selects the enabled repos (the pure
+/// The additive E-13 IPC wrapper around [`check_all_enabled`]. Selects the enabled
+/// repos (the pure
 /// [`reposync_core::store::select_check_all_targets`]) and runs each through the
 /// SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
 /// never launch two `git` processes in one working tree. Returns the number of repos
@@ -98,6 +98,18 @@ pub async fn repo_check_now(
 /// repos to be checked, N were checked, and some of them came back with bad news
 /// that the per-repo event now carries. The `error:raised` arm is left for the
 /// checks that could not RUN at all.
+//
+// BL-NI-86: this command currently has NO CALLER. Its doc used to say it was
+// "behind the tray Check All Now item (also callable from the frontend)", and
+// neither half was true: the tray reaches the behavior by calling
+// `check_all_enabled` directly (`tray.rs`), and no frontend code calls
+// `repoCheckAll`. It stays registered because the specta export is a real IPC
+// surface a frontend control could use, but until something calls it, do not read
+// this as the live path. Whether to wire a control or drop the export is open.
+//
+// Deliberately a `//` non-doc comment, like `repo_refresh_metadata`s: tauri-specta
+// copies `///` docs into the generated TypeScript JSDoc, so rationale written as a
+// doc comment bloats `bindings.ts` and shows up in a frontend author's tooltip.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_check_all(
@@ -496,6 +508,13 @@ fn refresh_report_error(
         | RefreshOutcome::NotModified
         | RefreshOutcome::Skipped => None,
         RefreshOutcome::NetworkLost => Some(AppError::Offline),
+        // BL-NI-84: GitHub answered, and answered with an error. This used to collapse
+        // into the arm above and tell the user "no network connection" about a request
+        // that demonstrably completed. Two things were wrong, not one: the message, and
+        // the RETRYABILITY, because `Offline` is unconditionally retryable while
+        // `GithubApiError` already keys off the status (5xx transient, 4xx terminal),
+        // so a 401 was retried forever under a message blaming the user's connection.
+        RefreshOutcome::ApiError { status } => Some(AppError::GithubApiError { status }),
         RefreshOutcome::NotFound => Some(AppError::NotFound {
             entity: format!("GitHub repository for repo {repo_id}"),
         }),
@@ -1818,6 +1837,33 @@ mod tests {
             refresh_report_error(&report(RefreshOutcome::NotFound, None), 7),
             Some(AppError::NotFound { .. })
         ));
+
+        // BL-NI-84: an error STATUS from GitHub is not a network loss, and the status
+        // has to survive the mapping. It carries both halves of the fix: the message
+        // the user reads, and the retryability, since AppError::Offline is
+        // unconditionally retryable while GithubApiError keys off the status.
+        for status in [401, 403, 422, 500, 503] {
+            let mapped =
+                refresh_report_error(&report(RefreshOutcome::ApiError { status }, None), 7);
+            assert!(
+                matches!(mapped, Some(AppError::GithubApiError { status: s }) if s == status),
+                "status {status} must reach the user as github.api_error carrying {status}, got {mapped:?}"
+            );
+            assert!(
+                !matches!(mapped, Some(AppError::Offline)),
+                "status {status} arrived over a working network and must never read as offline"
+            );
+        }
+        // The distinction is only worth having if it changes behavior: a 4xx is
+        // terminal and a 5xx is transient, where Offline was always retryable.
+        assert!(
+            !AppError::GithubApiError { status: 401 }.retryable(),
+            "a 401 is terminal; retrying it forever is what the old mapping did"
+        );
+        assert!(
+            AppError::GithubApiError { status: 503 }.retryable(),
+            "a 503 is transient and should still be retried"
+        );
 
         // RateLimited carries the parsed reset time through to an honest error.
         let rl = RateLimit {
