@@ -127,6 +127,39 @@ pub struct PrCounts {
     pub default_branch: i64,
 }
 
+/// Classify a repo-resource HTTP STATUS into a terminal [`RepoFetch`], or `None`
+/// when the status is a success and the caller should go on to read the body.
+///
+/// Pure, and separated from the transport on purpose (BL-NI-84). Every test in this
+/// module injects `RepoFetch` values through a fake transport, so before this
+/// existed the real status-to-classification mapping had NO coverage at all: the
+/// suite exercised the mechanism directly and never asked what the production
+/// classifier actually produced. That is how a 500 came to be reported as "no
+/// network connection" through a green test suite.
+///
+/// Ordering is load-bearing and matches the original inline sequence: 304 is not a
+/// success status, so it MUST be answered before the success check, or every ETag
+/// hit would be classified as an error.
+pub(crate) fn classify_repo_status(status: u16, rate_limit: RateLimit) -> Option<RepoFetch> {
+    // 304 first: it is not 2xx, and it is the common healthy case.
+    if status == 304 {
+        return Some(RepoFetch::NotModified { rate_limit });
+    }
+    if status == 404 {
+        return Some(RepoFetch::NotFound);
+    }
+    // A 403 is rate limiting ONLY when the budget says so; a 403 for any other
+    // reason (blocked, abuse detection, auth) is an API error, not a rate limit.
+    if status == 403 && rate_limit.remaining <= 0 {
+        return Some(RepoFetch::RateLimited { rate_limit });
+    }
+    if (200..300).contains(&status) {
+        return None;
+    }
+    // Everything else: GitHub answered, and the answer was an error. NOT NetworkLost.
+    Some(RepoFetch::ApiError { status })
+}
+
 /// One repo-RESOURCE fetch result (the repo GET only - NOT the release or PR
 /// sub-resources, which are separate calls with their own ETags). The transport
 /// classifies the HTTP outcome; [`refresh_one`] decides what to persist.
@@ -142,11 +175,24 @@ pub enum RepoFetch {
     /// 304 Not Modified: the cached repo metadata is still current; only the budget.
     NotModified { rate_limit: RateLimit },
     /// A transport/connectivity failure (the cached row must be left intact).
+    ///
+    /// This means the request did NOT complete: DNS, TCP, TLS, or a dropped
+    /// connection. A response that arrived carrying an error STATUS is
+    /// [`RepoFetch::ApiError`], not this (BL-NI-84).
     NetworkLost,
     /// 404: the repo is not found on GitHub.
     NotFound,
     /// Rate-limited: a 403 with remaining 0, or the budget hit the backoff floor.
     RateLimited { rate_limit: RateLimit },
+    /// GitHub answered, and answered with an error status this classifier does not
+    /// give its own variant: 5xx, 401, a non-rate-limited 403, an unexpected 3xx
+    /// (redirects are refused as an SSRF defence, so one lands here).
+    ///
+    /// Distinct from [`RepoFetch::NetworkLost`] because the network demonstrably
+    /// WORKED: a round-trip completed in order to receive this status. Collapsing
+    /// the two told the user "no network connection" about a GitHub outage, and
+    /// made a terminal 401 look like a retryable one (BL-NI-84).
+    ApiError { status: u16 },
 }
 
 /// The conclusive state of the latest-release sub-resource fetch (BL-NI-15a/b). The
@@ -205,16 +251,27 @@ pub enum RefreshOutcome {
     /// Not a GitHub repo (`host_type` != github or an unparseable URL); skipped.
     Skipped,
     /// Engine-level failures, surfaced for E-05 to wrap.
+    ///
+    /// `NetworkLost` means the request did not complete. `ApiError` means GitHub
+    /// answered with an error status; the two are kept apart because the edge maps
+    /// them to different [`crate::error::AppError`]s with different remediation AND
+    /// different retryability, and collapsing them got both wrong (BL-NI-84).
     NetworkLost,
     NotFound,
     RateLimited,
+    ApiError {
+        status: u16,
+    },
 }
 
 /// The full result of [`refresh_one`]: the [`RefreshOutcome`] plus the rate-limit
 /// budget observed when the network was actually reached (`Some` on a 200/304 for
 /// any of the three resources; `None` when served from cache, skipped, or on a
 /// repo-resource transport failure that carries no budget). The refresh-pass
-/// orchestrator feeds `rate_limit` to [`should_backoff`] to decide whether to pause.
+/// orchestrator would feed `rate_limit` to [`should_backoff`] to decide whether to
+/// pause. NOTE (BL-NI-69): nothing does. `should_backoff` has no production caller;
+/// the proactive protection that IS live is [`RateBudgeter`], which caps aggregate
+/// usage locally rather than reading GitHub's returned headers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshReport {
     pub outcome: RefreshOutcome,
@@ -666,8 +723,9 @@ pub fn should_backoff(rate_limit: &RateLimit) -> bool {
 }
 
 /// The most conservative (lowest `remaining`) budget among those observed this pass,
-/// so the caller's [`should_backoff`] fires on the tightest of the repo/release/PR
-/// reads. `None` when no network budget was observed.
+/// so a caller COULD fire [`should_backoff`] on the tightest of the repo/release/PR
+/// reads. `None` when no network budget was observed. NOTE (BL-NI-69): no caller
+/// currently does; the budget is surfaced, and nothing consumes it for backoff.
 fn worst_budget(budgets: &[RateLimit]) -> Option<RateLimit> {
     budgets.iter().copied().min_by_key(|b| b.remaining)
 }
@@ -796,8 +854,8 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
     let mut changed = false;
 
     // Collect the budgets observed across the reads issued this pass; the report
-    // surfaces the MOST conservative one so the edge's `should_backoff` fires on the
-    // tightest.
+    // surfaces the MOST conservative one so an edge COULD back off on the tightest.
+    // BL-NI-69: no edge currently does; `should_backoff` has no production caller.
     let mut budgets: Vec<RateLimit> = Vec::with_capacity(MAX_REQUESTS_PER_REPO);
 
     // 4. The repo resource is fetched ONLY when it is itself due. A fresh repo whose
@@ -824,6 +882,21 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
             RepoFetch::NotFound => {
                 return Ok(RefreshReport {
                     outcome: RefreshOutcome::NotFound,
+                    rate_limit: None,
+                    release_stale: false,
+                    pr_stale: false,
+                    requests_made,
+                    changed: false,
+                });
+            }
+            // BL-NI-84: short-circuits exactly like the other repo-resource failures
+            // (no sub-fetches, cache left intact), but carries the STATUS so the edge
+            // can say which error GitHub returned instead of claiming the network is
+            // down. `rate_limit: None` because a budget read off an error response is
+            // not a reading worth acting on.
+            RepoFetch::ApiError { status } => {
+                return Ok(RefreshReport {
+                    outcome: RefreshOutcome::ApiError { status },
                     rate_limit: None,
                     release_stale: false,
                     pr_stale: false,
@@ -1279,17 +1352,8 @@ impl Transport for ReqwestTransport {
         let rate_limit = Self::rate_limit_from(resp.headers());
         let status = resp.status();
 
-        if status == reqwest::StatusCode::NOT_MODIFIED {
-            return RepoFetch::NotModified { rate_limit };
-        }
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return RepoFetch::NotFound;
-        }
-        if status == reqwest::StatusCode::FORBIDDEN && rate_limit.remaining <= 0 {
-            return RepoFetch::RateLimited { rate_limit };
-        }
-        if !status.is_success() {
-            return RepoFetch::NetworkLost;
+        if let Some(terminal) = classify_repo_status(status.as_u16(), rate_limit) {
+            return terminal;
         }
 
         let new_etag = Self::etag_of(resp.headers());
@@ -1700,6 +1764,105 @@ mod tests {
         assert!(
             !is_within_refresh_window(Some(now - REFRESH_WINDOW_SECS - 1), now),
             "fetched > 24h ago -> out of window"
+        );
+    }
+
+    // --- classify_repo_status (BL-NI-84) -------------------------------------
+
+    /// A budget with requests left, so a 403 is NOT rate limiting.
+    fn budget_ok() -> RateLimit {
+        RateLimit {
+            remaining: 50,
+            limit: 60,
+            reset_at: 0,
+        }
+    }
+
+    /// An exhausted budget, so a 403 IS rate limiting.
+    fn budget_spent() -> RateLimit {
+        RateLimit {
+            remaining: 0,
+            limit: 60,
+            reset_at: 1_700_000_000,
+        }
+    }
+
+    #[test]
+    fn classify_repo_status_answers_304_before_the_error_fallthrough() {
+        // 304 is NOT a 2xx, so it can never be absorbed by the success check and
+        // MUST be answered explicitly. If that branch is ever dropped, every ETag
+        // cache hit falls into the error arm and the caching layer inverts: the
+        // healthiest possible response starts reporting as a GitHub failure.
+        //
+        // Stated as "before the error fallthrough" rather than "before the success
+        // check" on purpose. The success check is not what threatens it (verified by
+        // mutation: moving the 304 branch past the success check changes nothing,
+        // while deleting it fails exactly this test).
+        assert_eq!(
+            classify_repo_status(304, budget_ok()),
+            Some(RepoFetch::NotModified {
+                rate_limit: budget_ok()
+            }),
+            "304 must classify as NotModified, never as an error"
+        );
+    }
+
+    #[test]
+    fn classify_repo_status_keeps_a_success_for_the_body_reader() {
+        // None means "not terminal, go read the body". Every 2xx must yield None.
+        for ok in [200, 201, 204, 299] {
+            assert_eq!(
+                classify_repo_status(ok, budget_ok()),
+                None,
+                "{ok} is a success and must not be classified as terminal"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_repo_status_separates_a_rate_limited_403_from_every_other_403() {
+        // The budget, not the status, is what makes a 403 a rate limit. A 403 with
+        // requests still on the clock is GitHub refusing for some OTHER reason
+        // (blocked, abuse detection, auth), and calling that "rate limited" would
+        // make the app wait for a reset that is not the problem.
+        assert_eq!(
+            classify_repo_status(403, budget_spent()),
+            Some(RepoFetch::RateLimited {
+                rate_limit: budget_spent()
+            }),
+            "403 with an exhausted budget is rate limiting"
+        );
+        assert_eq!(
+            classify_repo_status(403, budget_ok()),
+            Some(RepoFetch::ApiError { status: 403 }),
+            "403 with budget remaining is an API error, not a rate limit"
+        );
+    }
+
+    #[test]
+    fn classify_repo_status_never_reports_a_completed_request_as_network_loss() {
+        // BL-NI-84, the whole point. Every one of these arrived as an ANSWER: a
+        // round-trip completed to receive it. Reporting them as NetworkLost told the
+        // user "no network connection" about a GitHub outage or an auth refusal, and
+        // (because AppError::Offline is unconditionally retryable while
+        // GithubApiError keys off the status) retried a terminal 401 forever.
+        for status in [301, 302, 400, 401, 422, 500, 502, 503, 504] {
+            let got = classify_repo_status(status, budget_ok());
+            assert_eq!(
+                got,
+                Some(RepoFetch::ApiError { status }),
+                "status {status} must carry its own identity, not collapse to NetworkLost"
+            );
+            assert_ne!(
+                got,
+                Some(RepoFetch::NetworkLost),
+                "status {status} arrived over a working network"
+            );
+        }
+        // 404 keeps its own variant rather than folding into the generic error.
+        assert_eq!(
+            classify_repo_status(404, budget_ok()),
+            Some(RepoFetch::NotFound)
         );
     }
 
@@ -2506,8 +2669,10 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_surfaces_rate_limit_budget_for_backoff() {
-        // A near-exhausted budget on any read must reach the caller so should_backoff
-        // fires. Here the PR read carries the tightest budget.
+        // A near-exhausted budget on any read must REACH the caller. That is all this
+        // proves: it pins the plumbing, not the backoff. BL-NI-69 records that nothing
+        // consumes it, and this test passing is exactly why that went unnoticed.
+        // Here the PR read carries the tightest budget.
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;
         let id = seed_github_repo(&pool).await;
