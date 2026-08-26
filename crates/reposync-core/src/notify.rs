@@ -79,14 +79,30 @@ impl LocalMinute {
 /// event.
 pub const MAX_INDIVIDUAL_TOASTS: usize = 3;
 
-/// Whether an event passes the gate: not during quiet hours (AC3), and its kind's
-/// toggle is on (AC1/AC2). Quiet hours reuse the scheduler's tested predicate.
-fn passes_gate(event: &NotifiableEvent, settings: &Settings, now: LocalMinute) -> bool {
-    if in_quiet_hours(
+/// Whether `now` falls inside the configured quiet-hours window, reusing the
+/// scheduler's tested predicate.
+///
+/// Public because the EDGE needs to ask this question BEFORE it drains a cycle's
+/// collected events (BL-NI-80). [`coalesce`] can only filter, and a filtered event is
+/// gone, so an edge that drains first and asks later destroys every notification a
+/// cycle straddling the window boundary produced. Asking here lets the edge HOLD the
+/// buffer for a later tick instead, which is what AC3 ("no toast is raised during
+/// quiet hours") actually wants: withhold the toast, do not lose the alert.
+///
+/// [`passes_gate`] is defined in terms of this so the edge's hold decision and the
+/// core's fire decision are provably the same question, not two spellings of it.
+pub fn is_quiet(settings: &Settings, now: LocalMinute) -> bool {
+    in_quiet_hours(
         now.get(),
         settings.quiet_hours_start,
         settings.quiet_hours_end,
-    ) {
+    )
+}
+
+/// Whether an event passes the gate: not during quiet hours (AC3), and its kind's
+/// toggle is on (AC1/AC2). Quiet hours reuse the scheduler's tested predicate.
+fn passes_gate(event: &NotifiableEvent, settings: &Settings, now: LocalMinute) -> bool {
+    if is_quiet(settings, now) {
         return false;
     }
     // NOTE (Codex review finding 4): auth is gated by `notify_on_failure`, per the spec
@@ -436,5 +452,60 @@ mod tests {
         let out = coalesce(&[failure(1)], &settings(true, true, None), MIDDAY);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, "failure");
+    }
+
+    #[test]
+    fn is_quiet_asks_exactly_what_the_gate_asks() {
+        // BL-NI-80. The EDGE calls `is_quiet` to decide whether to HOLD a cycle's
+        // buffered events; the core calls it inside `passes_gate` to decide whether
+        // to fire them. Those two must never disagree: if the edge believes it is
+        // outside the window and the gate believes it is inside, the edge drains a
+        // buffer that `coalesce` then filters to nothing, and the alerts are gone -
+        // which is precisely the permanent loss this split exists to prevent.
+        //
+        // Pinned across the boundary rather than trusted for being one expression
+        // today, because the risk is someone later giving the gate a second reason
+        // to refuse, or teaching one of the two about a rule the other does not know.
+        let s = settings(true, true, Some((540, 1020))); // 09:00 to 17:00
+        for minute in [0, 539, 540, 541, 600, 1019, 1020, 1021, 1439] {
+            let now = LocalMinute::new(minute).expect("valid minute-of-day");
+            // Both toggles are ON, so quiet hours is the gate's only remaining
+            // reason to refuse: `passes_gate` is false exactly when `is_quiet`.
+            assert_eq!(
+                is_quiet(&s, now),
+                !passes_gate(&failure(1), &s, now),
+                "is_quiet and passes_gate disagree at minute {minute}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_quiet_handles_the_unconfigured_and_wrapping_windows() {
+        // The edge now asks this on EVERY tick rather than only when a cycle
+        // produced events, so both shapes matter. The wrapping window is also the
+        // default (22:00 to 07:00), which is where the BL-NI-80 straddle lives.
+        let unset = settings(true, true, None);
+        for minute in [0, 419, 420, 1319, 1320, 1439] {
+            let now = LocalMinute::new(minute).expect("valid minute-of-day");
+            assert!(
+                !is_quiet(&unset, now),
+                "an unconfigured window is never quiet (minute {minute})"
+            );
+        }
+
+        let wrapping = settings(true, true, Some((1320, 420))); // 22:00 to 07:00
+        let quiet_at = |m: i64| is_quiet(&wrapping, LocalMinute::new(m).expect("valid minute"));
+        assert!(!quiet_at(1319), "21:59 is outside: a cycle may START here");
+        assert!(
+            quiet_at(1320),
+            "22:00 is inside: the same cycle may FINISH here"
+        );
+        assert!(quiet_at(1439), "23:59 is inside");
+        assert!(quiet_at(0), "the window wraps past midnight");
+        assert!(quiet_at(419), "06:59 is still inside");
+        assert!(
+            !quiet_at(420),
+            "07:00 is the exclusive end, when held events fire"
+        );
     }
 }
