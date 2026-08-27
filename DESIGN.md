@@ -125,7 +125,7 @@ flourish. (Named faces are intentionally not pinned; the register split is what 
 load-bearing, not a specific typeface.)
 
 ### Hierarchy (a deliberately tight, dense ramp)
-- **View title / eyebrow** mono, uppercase, tracked (the topbar breadcrumb).
+- **View title / eyebrow** mono, uppercase, tracked. Reserved; the topbar breadcrumb that carried this tier was removed on 2026-08-26 because it restated the sidebar selection and the page heading directly beneath it, so no surface currently uses this register.
 - **Page heading** sans, ~2xl bold (a screen title like "Dashboard").
 - **Identity / body** mono ~13-14px: repo names, primary cell text.
 - **Cell / help** mono or sans ~12px: dense cell text, inline help.

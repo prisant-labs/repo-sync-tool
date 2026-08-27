@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Activity, AlertTriangle, LayoutDashboard, List, Moon, Settings, Sun, X } from "lucide-react";
+import { Activity, AlertTriangle, LayoutDashboard, List, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { events } from "@/lib/bindings";
 import { useToast } from "@/hooks/use-toast";
@@ -60,7 +60,6 @@ export function AppShell() {
   const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
   const { dark, toggle } = useTheme();
   const appVersion = useAppVersion();
-  const active = NAV.find((n) => n.id === view);
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
   const toast = useToast();
@@ -182,21 +181,6 @@ export function AppShell() {
             </Button>
           </div>
         )}
-        <header className="flex items-center gap-3 border-b border-border px-6 py-3">
-          <h1 className="font-mono text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-            RepoSync / <span className="text-foreground">{active ? active.label : ""}</span>
-          </h1>
-          <Button
-            variant="outline"
-            size="icon"
-            className="ml-auto"
-            onClick={toggle}
-            title="Toggle light / dark"
-            aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
-          >
-            {dark ? <Sun /> : <Moon />}
-          </Button>
-        </header>
         <div className="min-h-0 flex-1 overflow-auto p-6">
           {view === "dashboard" && <DashboardScreen onOpenRepos={() => setView("repos")} />}
           {view === "repos" && (
@@ -208,7 +192,7 @@ export function AppShell() {
             />
           )}
           {view === "activity" && <ActivityScreen />}
-          {view === "settings" && <SettingsScreen />}
+          {view === "settings" && <SettingsScreen dark={dark} onToggleTheme={toggle} />}
         </div>
       </main>
     </div>

@@ -132,7 +132,6 @@ export function ReposScreen({
       <div className="flex flex-wrap items-end gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Repos</h2>
-          <p className="text-sm text-muted-foreground">Every repository RepoSync is watching.</p>
         </div>
         <Button size="sm" className="ml-auto" onClick={() => setAddOpen(true)}>
           <Plus /> Add repos
