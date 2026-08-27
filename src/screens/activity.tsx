@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { History } from "lucide-react";
+import { CheckCircle2, ChevronRight, History, XCircle } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { AsyncPanel } from "@/components/async-panel";
@@ -65,14 +65,32 @@ export function ActivityScreen() {
     <div className="mx-auto flex max-w-4xl flex-col gap-5">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Activity</h2>
-        <p className="text-sm text-muted-foreground">
-          The audit trail of every check and update, newest first. Select a row for the full
-          receipt.
-        </p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex flex-wrap gap-1.5">
+      {/*
+        The two chip groups are independent axes that AND together, and as one
+        undifferentiated row of six pills they read as a single either/or set -
+        "Failed" looks like a sibling of "Updates" rather than a second
+        question being asked about the same rows. The axis labels and the rule
+        between the groups are the whole fix; the filter state, the chips, and
+        the server-side query are untouched.
+
+        The labels use the mono/uppercase/tracked field-label register from
+        DESIGN.md rather than plain muted body text, and `text-foreground/70`
+        rather than `text-muted-foreground`, so an 11px label still clears AA.
+      */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div
+          role="group"
+          aria-labelledby="activity-filter-action-label"
+          className="flex flex-wrap items-center gap-1.5"
+        >
+          <span
+            id="activity-filter-action-label"
+            className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
+          >
+            Actions:
+          </span>
           {ACTION_CHIPS.map((c) => (
             <FilterChip
               key={c.value}
@@ -82,7 +100,18 @@ export function ActivityScreen() {
             />
           ))}
         </div>
-        <div className="flex flex-wrap gap-1.5">
+        <span aria-hidden="true" className="h-5 w-px shrink-0 bg-border" />
+        <div
+          role="group"
+          aria-labelledby="activity-filter-outcome-label"
+          className="flex flex-wrap items-center gap-1.5"
+        >
+          <span
+            id="activity-filter-outcome-label"
+            className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
+          >
+            Outcome:
+          </span>
           {STATUS_CHIPS.map((c) => (
             <FilterChip
               key={c.value}
@@ -130,12 +159,37 @@ export function ActivityScreen() {
                 <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
                   {row.actionType}
                 </span>
-                <span className="truncate text-sm text-foreground/90">
-                  {row.summary ?? row.status}
+                {/*
+                  The chip lives inside the existing summary cell rather than
+                  as a fifth grid column: a real outcome column is BL-NI-89 and
+                  is blocked on the row-standard decision, so the grid template
+                  here is deliberately unchanged.
+
+                  The old `?? row.status` fallback is gone because the chip now
+                  always renders that same word; keeping both would print
+                  "failed  failed" on every row that has no summary.
+                */}
+                <span className="flex min-w-0 items-center gap-2">
+                  <OutcomeChip status={row.status} />
+                  <span className="truncate text-sm text-foreground/90">{row.summary}</span>
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
                   {repoNames.get(row.repoId) ?? ""}
                 </span>
+                {/*
+                  The row opens the receipt drawer, and until this chevron it
+                  said so nowhere: the page byline that used to read "Select a
+                  row for the full receipt" was removed with the other three,
+                  and a hover background is not an affordance a keyboard or
+                  first-time user can see. DESIGN.md asks that destination and
+                  open actions stay discoverable, so the cue is a permanent part
+                  of the row rather than something hover reveals.
+
+                  `aria-hidden` because the row's own `aria-haspopup="dialog"`
+                  already tells a screen reader what activating it does; the
+                  glyph would only repeat it as noise.
+                */}
+                <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground/70" />
               </button>
             ))}
           </Card>
@@ -173,5 +227,49 @@ export function ActivityScreen() {
         )}
       </Drawer>
     </div>
+  );
+}
+
+/**
+ * The activity row's own `status` string, which is not the repo status
+ * taxonomy (`RepoStatus` / `StatusBadge`): `"success"` and `"failed"` are the
+ * only two values the backend writes, and neither is a `RepoStatus` member the
+ * badge could take.
+ *
+ * This is a deliberate duplicate of `StatusChip` in `activity-receipt.tsx`,
+ * down to the class strings and the predicate, so the list row and the receipt
+ * it opens cannot drift apart visually. Consolidating the two into one shared
+ * component is the right follow-up; it is not done here because the receipt is
+ * outside this change's file scope, and a second near-miss pattern would be a
+ * worse outcome than one honest copy.
+ *
+ * The key is "is this bad", not `=== "success"`. `status` is typed as a bare
+ * `string` on the wire, so an unmapped value must not be able to render as a
+ * failure; falling through to the sync styling keeps an unknown value from
+ * inventing an alarm.
+ *
+ * DESIGN.md requires color PLUS icon PLUS word, and the icon is the part that
+ * is easy to get wrong: the pill's SHAPE is identical in both states, so it
+ * carries no information and cannot be counted as the third channel. The
+ * differing lucide glyph is what makes this legible in grayscale and to a
+ * red-green colorblind reader, so it is not decoration.
+ *
+ * The tint is /10 rather than /15 because at /15 the light-mode success pill
+ * computes to 4.40:1 against its own background, under the 4.5:1 AA floor that
+ * DESIGN.md requires of small text. At /10 it is 4.60:1 and failed is 5.34:1.
+ */
+function OutcomeChip({ status }: { status: string }) {
+  const bad = status === "failed" || status === "error";
+  const Icon = bad ? XCircle : CheckCircle2;
+  return (
+    <span
+      className={cn(
+        "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
+        bad ? "bg-status-failed/10 text-status-failed" : "bg-status-sync/10 text-status-sync",
+      )}
+    >
+      <Icon aria-hidden className="size-3" />
+      {status}
+    </span>
   );
 }

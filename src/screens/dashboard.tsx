@@ -47,7 +47,6 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
       <div className="flex flex-wrap items-end gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Dashboard</h2>
-          <p className="text-sm text-muted-foreground">A live roll-up of your watched repositories.</p>
         </div>
         <div className="ml-auto flex gap-2">
           <Button variant="outline" size="sm" onClick={refetch}>

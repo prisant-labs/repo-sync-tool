@@ -50,6 +50,17 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   answer. **NULLABLE with no default, deliberately:** a backfilled value would be
   a classification no check ever made for that row, so NULL means "not observed
   since this column existed" and resolves on the repo's next check.
+- `0009_editor_terminal_defaults.sql` - data migration that backfills
+  `settings.editor_command` and `settings.terminal_command`, which 0002 declared
+  with no DEFAULT and which have therefore been NULL on every install. Both
+  `repo_open_editor` and `repo_open_terminal` return `InvalidSetting` on NULL, so
+  "Open in -> Editor" and "-> Terminal" have never worked out of the box while the
+  Settings placeholders ("code", "default") read like configured values. Sets
+  `code` and `wt` only where the value is NULL or blank, so a deliberate choice is
+  never overwritten. SQLite cannot add a DEFAULT to an existing column without
+  rebuilding the table, so fresh installs get the same values from the seeding
+  INSERT in `store::settings_get` instead: the singleton row does not exist yet
+  when this migration runs.
 
 ## Migration policy
 

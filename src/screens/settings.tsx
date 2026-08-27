@@ -15,15 +15,41 @@ import { useSettings } from "@/hooks/queries";
 import { hhMmToMinutes, minutesToHhMm } from "@/lib/time";
 import { useToast } from "@/hooks/use-toast";
 
-export function SettingsScreen() {
+export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: () => void }) {
   const settings = useSettings();
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5">
       <div>
         <h2 className="text-2xl font-bold tracking-tight">Settings</h2>
-        <p className="text-sm text-muted-foreground">How RepoSync checks, notifies, and integrates.</p>
       </div>
+
+      {/*
+        Appearance sits OUTSIDE the AsyncPanel on purpose. Theme is not a
+        `Settings` field: it has no column, no migration and no wire
+        representation, it is React state owned by `AppShell`. Rendering it
+        inside the panel would tie the app's only theme control to a database
+        read, so a failed `settings_get` - precisely when someone may be staring
+        at an error they are struggling to read - would leave no way to switch
+        themes at all. It has no data dependency, so it does not sit behind one.
+      */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Appearance</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Field
+            label="Dark theme"
+            hint="Applies immediately. Not saved yet - RepoSync starts in light theme each launch."
+          >
+            <Switch
+              checked={dark}
+              onCheckedChange={() => onToggleTheme()}
+              aria-label="Dark theme"
+            />
+          </Field>
+        </CardContent>
+      </Card>
 
       <AsyncPanel state={settings}>
         {(s) => <SettingsForm initial={s} onSaved={settings.refetch} />}

@@ -370,8 +370,12 @@ pub fn open_editor(editor_cmd: &str, path: &Path) -> Result<(), AppError> {
         // spawning successfully and swallowing the real failure. When the resolved
         // target is a `.cmd`/`.bat` shim, Rust's std applies safe cmd-quoting
         // internally (post-CVE-2024-24576), so the path argument stays inert.
+        // Name the command that could not be found, not just the field. "invalid
+        // setting: editor_command" is true and useless; the actionable fact is
+        // WHICH executable was looked for and missed, because the fix is either
+        // installing it or changing the value to something that exists.
         let resolved = resolve_executable(editor_cmd).ok_or_else(|| AppError::InvalidSetting {
-            field: "editor_command".into(),
+            field: format!("editor_command ({editor_cmd} was not found on PATH)"),
         })?;
         let mut c = Command::new(&resolved);
         c.arg(path).creation_flags(CREATE_NO_WINDOW);

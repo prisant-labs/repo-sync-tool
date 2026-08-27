@@ -356,9 +356,53 @@ pub fn run() {
             // window is created HIDDEN (`visible(false)`, exactly as the old config
             // declared); the lifecycle below shows it on a normal launch, so startup
             // still never flashes.
+            // 900x600 was too small for the Repos table: at that width the
+            // columns crowd and the density the table is designed around stops
+            // being readable. 1280x820 is the size the layout was drawn at.
+            //
+            // It is a CEILING, not a promise. `inner_size` is in LOGICAL pixels,
+            // so the number of rows it asks for depends on the display's scale
+            // factor: a 1920x1080 panel at Windows' RECOMMENDED 125% scaling
+            // exposes only 864 logical rows, and a 1366x768 laptop has roughly
+            // 728 after the taskbar. Asking for 820 on either puts the bottom of
+            // the window below the work area, and since the whole app is `h-svh`
+            // that silently cuts off the end of the sidebar's group list. So the
+            // preferred size is clamped to the primary monitor's work area and
+            // the window is centred in it.
+            //
+            // Size and position are deliberately NOT persisted across launches:
+            // that needs either a store-plugin dependency or a settings-schema
+            // change, neither of which is approved. Every launch starts here.
+            const PREFERRED_SIZE: (f64, f64) = (1280.0, 820.0);
+            let (win_w, win_h) = app
+                .primary_monitor()
+                .ok()
+                .flatten()
+                .map(|monitor| {
+                    let scale = monitor.scale_factor();
+                    let area = monitor.work_area();
+                    // `work_area` is PHYSICAL pixels; `inner_size` is logical.
+                    // Dividing by the scale factor is what makes this correct on
+                    // a scaled display, which is the case it exists for.
+                    let max_w = f64::from(area.size.width) / scale;
+                    let max_h = f64::from(area.size.height) / scale;
+                    // The margin leaves room for the title bar, which is NOT
+                    // part of `inner_size`, and keeps the window off the edges.
+                    (
+                        PREFERRED_SIZE.0.min(max_w * 0.92),
+                        PREFERRED_SIZE.1.min(max_h * 0.92),
+                    )
+                })
+                .unwrap_or(PREFERRED_SIZE);
+
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
                 .title("RepoSync")
-                .inner_size(900.0, 600.0)
+                .inner_size(win_w, win_h)
+                // 900x600 is the size RepoSync shipped at through 0.9.0, so it
+                // is known to be usable. A higher floor would refuse to shrink
+                // on exactly the small displays the clamp above exists for.
+                .min_inner_size(900.0, 600.0)
+                .center()
                 .visible(false)
                 .on_navigation(|url| {
                     allow_navigation(url.scheme(), url.host_str(), tauri::is_dev())

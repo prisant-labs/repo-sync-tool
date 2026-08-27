@@ -30,7 +30,7 @@ source: BL-V11-01 (tray popup window); audit recommendation R-INNOV-1 (the top n
 ## Context
 
 RepoSync's premise is ambient awareness of a repo library, yet today the tray is a right-click text
-menu and a left-click just opens the full 900x600 window (`src-tauri/src/tray.rs`,
+menu and a left-click just opens the full main window (`src-tauri/src/tray.rs`,
 `show_main_window`). The frameless popover was deliberately cut to V1.1 (BL-V11-01). That cut is the
 single biggest gap between what the app *is* (a glanceable resident utility) and what it *does* (a
 thing you open). On macOS especially, a left-click popover anchored to the menu bar icon is the
@@ -102,7 +102,7 @@ webview popover exists).
 ## Acceptance criteria
 
 - [ ] AC1: Left-clicking the tray icon opens the frameless, transparent, always-on-top popover
-  anchored near the icon; it does NOT open the full 900x600 window. Source: this spec, Approach A;
+  anchored near the icon; it does NOT open the full main window. Source: this spec, Approach A;
   supersedes E-13 AC5's left-click-opens-window behavior when the popover is enabled.
 - [ ] AC2: The popover header shows an overall status pill (All fresh / N need attention / Paused /
   Offline / Git missing) and a one-line summary, both derived from the shared `src/lib/status.ts`
