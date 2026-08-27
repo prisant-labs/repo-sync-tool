@@ -13,12 +13,12 @@
 
 use std::str::FromStr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use reposync_core::logging as core_logging;
 use reposync_core::paths::AppPaths;
 use tracing::level_filters::LevelFilter;
-use tracing_appender::non_blocking::{ErrorCounter, WorkerGuard};
+use tracing_appender::non_blocking::{ErrorCounter, NonBlocking, WorkerGuard};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::fmt::time::UtcTime;
 
@@ -157,11 +157,17 @@ pub struct LogHealth {
     bytes_written: AtomicU64,
     /// The non-blocking queue's own dropped-line counter, captured at init.
     ///
-    /// `Option` because it only exists once `non_blocking` has been built, and
-    /// the tests construct a bare `LogHealth` to exercise the writer half. A
-    /// `None` here means "not wired", which is why the accessor returns `Option`
-    /// rather than a confident zero.
-    dropped: Option<ErrorCounter>,
+    /// `OnceLock` rather than `Option` because it has to be set AFTER this
+    /// health is already shared with `CountingWriter`: the counter does not
+    /// exist until `non_blocking` has consumed that writer. Setting it through
+    /// `&self` is the entire point. The previous shape needed owned access and
+    /// reached for `Arc::try_unwrap`, which could never succeed while the writer
+    /// held a clone, and so aborted every startup for nineteen days (BL-NI-87).
+    ///
+    /// Unset still means "not wired", which is why the accessor reports a
+    /// deliberate 0: the tests construct a bare `LogHealth` to exercise the
+    /// writer half, and nothing is running behind it to drop anything.
+    dropped: OnceLock<ErrorCounter>,
 }
 
 impl LogHealth {
@@ -194,14 +200,29 @@ impl LogHealth {
     /// is broken.
     pub fn dropped_lines(&self) -> u64 {
         self.dropped
-            .as_ref()
+            .get()
             .map(|c| c.dropped_lines() as u64)
             .unwrap_or(0)
     }
 
-    fn with_dropped_counter(mut self, counter: ErrorCounter) -> Self {
-        self.dropped = Some(counter);
-        self
+    /// Whether the queue's dropped-line counter has been attached.
+    ///
+    /// `dropped_lines()` cannot answer this: it reports 0 both when nothing has
+    /// been dropped and when nothing is wired, which is the whole reason the
+    /// field is optional.
+    #[cfg(test)]
+    fn dropped_counter_is_wired(&self) -> bool {
+        self.dropped.get().is_some()
+    }
+
+    /// Attach the queue's dropped-line counter through a shared reference.
+    ///
+    /// Takes `&self` deliberately: by the time this counter exists, the writer
+    /// already holds a clone of the `Arc`, so any API needing ownership is
+    /// unusable here. Ignores a second call rather than panicking; `init` is the
+    /// only caller and calls once.
+    fn set_dropped_counter(&self, counter: ErrorCounter) {
+        let _ = self.dropped.set(counter);
     }
 
     fn record_success(&self, bytes: usize) {
@@ -329,6 +350,35 @@ fn retention_from_env(days: Option<&str>, max_mb: Option<&str>) -> Retention {
     }
 }
 
+/// Build the non-blocking writer and the [`LogHealth`] it reports into.
+///
+/// Extracted from [`init`] so it can be tested. `init` installs a GLOBAL
+/// subscriber, which a test cannot do without fighting every other test in the
+/// same process, so the one seam joining the writer half to the diagnostics half
+/// had no coverage at all. That is precisely where this broke.
+fn wire_health<W>(inner: W) -> (Arc<LogHealth>, NonBlocking, WorkerGuard)
+where
+    W: std::io::Write + Send + 'static,
+{
+    // Wrap the writer BEFORE `non_blocking` takes it. This is the only layer
+    // that can see an io error: `non_blocking` consumes the writer and returns an
+    // opaque handle, and the subscriber above it never sees one at all (BL-NI-63).
+    let health = Arc::new(LogHealth::default());
+    let counting = CountingWriter {
+        inner,
+        health: Arc::clone(&health),
+    };
+    let (writer, worker) = tracing_appender::non_blocking(counting);
+    // Capture the queue's own dropped-line counter. This is the ONLY view of
+    // events discarded upstream of the CountingWriter, which never sees them at
+    // all. It is set THROUGH the shared Arc: the clone above is inside
+    // `counting`, which `non_blocking` has just moved into its worker thread for
+    // the life of the process, so the strong count here is 2 and any attempt to
+    // take ownership fails by construction (BL-NI-87).
+    health.set_dropped_counter(writer.error_counter());
+    (health, writer, worker)
+}
+
 /// Install the global subscriber and return the guard that keeps it running,
 /// together with the configuration it was built with.
 ///
@@ -369,23 +419,7 @@ pub fn init(paths: &AppPaths) -> Result<(LogGuard, LogConfig), String> {
             )
         })?;
 
-    // Wrap the appender BEFORE `non_blocking` takes it. This is the only layer
-    // that can see an io error: `non_blocking` consumes the writer and returns an
-    // opaque handle, and the subscriber above it never sees one at all (BL-NI-63).
-    let health = Arc::new(LogHealth::default());
-    let counting = CountingWriter {
-        inner: appender,
-        health: Arc::clone(&health),
-    };
-    let (writer, worker) = tracing_appender::non_blocking(counting);
-    // Capture the queue's own dropped-line counter before the writer is moved
-    // into the subscriber. This is the ONLY view of events discarded upstream of
-    // the CountingWriter, which never sees them at all.
-    let health = Arc::new(
-        Arc::try_unwrap(health)
-            .unwrap_or_else(|_| unreachable!("health is not shared until after this point"))
-            .with_dropped_counter(writer.error_counter()),
-    );
+    let (health, writer, worker) = wire_health(appender);
 
     let level = level_from_env(std::env::var(LOG_LEVEL_ENV).ok().as_deref());
 
@@ -697,5 +731,35 @@ mod tests {
     fn dropped_lines_defaults_to_zero_without_a_queue() {
         let health = LogHealth::default();
         assert_eq!(health.dropped_lines(), 0);
+    }
+    /// The seam that aborted every startup for nineteen days (BL-NI-87).
+    ///
+    /// `wire_health` must hand back the SAME `LogHealth` the writer reports
+    /// into, with the queue's dropped-line counter attached. The original
+    /// implementation tried to `Arc::try_unwrap` that health to take ownership,
+    /// which can never succeed: the clone it hands to `CountingWriter` is moved
+    /// into `non_blocking`'s worker thread and held for the life of the process,
+    /// so the strong count is always 2 and the `unreachable!` fired on every
+    /// launch.
+    ///
+    /// The `strong_count` assertion is the point rather than an incidental
+    /// detail. Had `try_unwrap` ever succeeded it would have severed the exact
+    /// sharing this type exists to provide, so "the counter is wired" and "the
+    /// writer and diagnostics still share one object" are one property stated
+    /// twice.
+    #[test]
+    fn wire_health_returns_a_health_still_shared_with_the_writer() {
+        let (health, writer, _worker) = wire_health(std::io::sink());
+
+        assert!(
+            health.dropped_counter_is_wired(),
+            "the dropped-line counter must be attached to the health diagnostics reads"
+        );
+        assert!(
+            Arc::strong_count(&health) >= 2,
+            "the returned health must be the same object the writer records into"
+        );
+        assert_eq!(health.dropped_lines(), 0, "nothing has been dropped yet");
+        drop(writer);
     }
 }
