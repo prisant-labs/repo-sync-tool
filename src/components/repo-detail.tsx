@@ -83,6 +83,10 @@ export function RepoDetailPanel({
   const groupsState = useGroups();
   const memberships = useGroupsForRepo(id);
   const settings = useSettings();
+  // Trimmed, because a whitespace-only command is as unusable as an empty one
+  // and the Settings field accepts free text.
+  const hasEditorCommand = (settings.data?.editorCommand ?? "code").trim().length > 0;
+  const hasTerminalCommand = (settings.data?.terminalCommand ?? "wt").trim().length > 0;
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [groupBusyId, setGroupBusyId] = useState<number | null>(null);
@@ -191,6 +195,8 @@ export function RepoDetailPanel({
               run={run}
               onCheckNow={checkNow}
               globalMinutes={settings.data?.globalCheckMinutes ?? null}
+              hasEditorCommand={hasEditorCommand}
+              hasTerminalCommand={hasTerminalCommand}
               groups={groupsState.data ?? []}
               memberIds={memberships.data ?? []}
               groupBusyId={groupBusyId}
@@ -209,6 +215,8 @@ function DetailBody({
   run,
   onCheckNow,
   globalMinutes,
+  hasEditorCommand,
+  hasTerminalCommand,
   groups,
   memberIds,
   groupBusyId,
@@ -219,6 +227,10 @@ function DetailBody({
   run: RunFn;
   onCheckNow: () => void;
   globalMinutes: number | null;
+  /** Whether `settings.editorCommand` is set, so "Open in -> Editor" can succeed. */
+  hasEditorCommand: boolean;
+  /** Whether `settings.terminalCommand` is set, so "Open in -> Terminal" can succeed. */
+  hasTerminalCommand: boolean;
   groups: GroupSummary[];
   memberIds: number[];
   groupBusyId: number | null;
@@ -296,16 +308,29 @@ function DetailBody({
             disabled={isBusy}
             onClick={() => run("folder", () => unwrap(commands.repoOpenFolder(r.id)), "Opened folder")}
           />
+          {/*
+            Terminal and Editor are gated on their settings being set at all.
+            Both commands return `InvalidSetting` when the column is NULL, so
+            before 0009 backfilled them these buttons looked live and failed on
+            click, with a Settings field whose placeholder ("code", "default")
+            read like a configured value. A button that cannot succeed should
+            say so before it is pressed rather than after.
+
+            `?? true` while settings are loading: assume available rather than
+            flashing a disabled control that enables a moment later.
+          */}
           <OpenButton
             label="Terminal"
             icon={Terminal}
-            disabled={isBusy}
+            disabled={isBusy || !hasTerminalCommand}
+            title={hasTerminalCommand ? undefined : "Set a terminal command in Settings"}
             onClick={() => run("terminal", () => unwrap(commands.repoOpenTerminal(r.id)), "Opened terminal")}
           />
           <OpenButton
             label="Editor"
             icon={Pencil}
-            disabled={isBusy}
+            disabled={isBusy || !hasEditorCommand}
+            title={hasEditorCommand ? undefined : "Set an editor command in Settings"}
             onClick={() => run("editor", () => unwrap(commands.repoOpenEditor(r.id)), "Opened editor")}
           />
           {r.remoteOriginUrl && (
@@ -730,15 +755,18 @@ function OpenButton({
   label,
   icon: Icon,
   disabled,
+  title,
   onClick,
 }: {
   label: string;
   icon: typeof FolderOpen;
   disabled: boolean;
+  /** Why the button is disabled, when it is. Omitted when it is not. */
+  title?: string;
   onClick: () => void;
 }) {
   return (
-    <Button variant="secondary" size="sm" disabled={disabled} onClick={onClick}>
+    <Button variant="secondary" size="sm" disabled={disabled} title={title} onClick={onClick}>
       <Icon /> {label}
     </Button>
   );

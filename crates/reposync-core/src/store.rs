@@ -344,10 +344,17 @@ fn update_mode_str(mode: &UpdateMode) -> &'static str {
 /// first `settings_get` returns the defaults instead of an error.
 pub async fn settings_get(pool: &SqlitePool) -> Result<Settings, AppError> {
     // Seed the singleton on first read. INSERT OR IGNORE is a no-op once the row
-    // exists, so this is idempotent and cheap. All defaults come from the schema.
-    sqlx::query("INSERT OR IGNORE INTO settings (id) VALUES (1)")
-        .execute(pool)
-        .await?;
+    // exists, so this is idempotent and cheap. Defaults come from the schema with
+    // two exceptions, `editor_command` and `terminal_command`: 0002 declared them
+    // with no DEFAULT, and SQLite cannot add one to an existing column without
+    // rebuilding the table. Migration 0009 backfills existing installs; this
+    // INSERT covers fresh ones, where the row does not exist when 0009 runs.
+    sqlx::query(
+        "INSERT OR IGNORE INTO settings (id, editor_command, terminal_command) \
+         VALUES (1, 'code', 'wt')",
+    )
+    .execute(pool)
+    .await?;
 
     let r = sqlx::query(
         "SELECT global_check_minutes, quiet_hours_start, quiet_hours_end, \
@@ -1497,6 +1504,109 @@ mod tests {
             .try_get("c")
             .unwrap();
         assert_eq!(count, 1, "settings must remain a singleton across set");
+    }
+
+    /// The editor and terminal commands arrive SET, on a database nothing has
+    /// touched.
+    ///
+    /// 0002 declared both columns with no DEFAULT, so they were NULL on every
+    /// install, and `repo_open_editor` / `repo_open_terminal` return
+    /// `InvalidSetting` on NULL. "Open in -> Editor" and "-> Terminal" therefore
+    /// never worked out of the box, while the Settings placeholders ("code",
+    /// "default") read like configured values.
+    ///
+    /// This asserts the FRESH-INSTALL path specifically, which migration 0009
+    /// cannot cover and which is the easy half to get wrong: 0009 runs before
+    /// the singleton row exists, so its UPDATE matches zero rows and the seeding
+    /// INSERT in `settings_get` is the only thing that can supply the value. A
+    /// test that seeded a row itself would pass against a broken INSERT.
+    #[tokio::test]
+    async fn a_fresh_install_arrives_with_an_editor_and_terminal_command() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        // First read of the singleton on a brand new database. Nothing has
+        // written settings before this call.
+        let s = settings_get(&pool).await.unwrap();
+
+        assert_eq!(
+            s.editor_command.as_deref(),
+            Some("code"),
+            "a fresh install must arrive with an editor command, or Open in -> Editor fails on first click"
+        );
+        assert_eq!(
+            s.terminal_command.as_deref(),
+            Some("wt"),
+            "a fresh install must arrive with a terminal command, or Open in -> Terminal fails on first click"
+        );
+
+        // The seeding INSERT must not have broken the singleton invariant.
+        let count: i64 = sqlx::query("SELECT COUNT(*) AS c FROM settings")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .try_get("c")
+            .unwrap();
+        assert_eq!(count, 1, "settings must remain a singleton");
+    }
+
+    /// 0009 backfills an install that predates it, and leaves a deliberate
+    /// choice alone.
+    ///
+    /// Simulated by writing the pre-0009 state (NULL and blank) and running the
+    /// migration's own statements, because `run_migrations` is idempotent and
+    /// will not re-apply 0009 on a pool that already has it.
+    #[tokio::test]
+    async fn the_backfill_fills_blanks_and_preserves_a_deliberate_choice() {
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+        settings_get(&pool).await.unwrap();
+
+        // Pre-0009 shapes: NULL (never set) and blank (cleared), plus a real
+        // choice that must survive.
+        sqlx::query("UPDATE settings SET editor_command = NULL, terminal_command = '   '")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for stmt in [
+            "UPDATE settings SET editor_command = 'code' WHERE editor_command IS NULL OR trim(editor_command) = ''",
+            "UPDATE settings SET terminal_command = 'wt' WHERE terminal_command IS NULL OR trim(terminal_command) = ''",
+        ] {
+            sqlx::query(stmt).execute(&pool).await.unwrap();
+        }
+
+        let filled = settings_get(&pool).await.unwrap();
+        assert_eq!(
+            filled.editor_command.as_deref(),
+            Some("code"),
+            "NULL is backfilled"
+        );
+        assert_eq!(
+            filled.terminal_command.as_deref(),
+            Some("wt"),
+            "blank is backfilled"
+        );
+
+        // A real choice is never overwritten: re-running the same statements
+        // must leave it exactly as the user set it.
+        sqlx::query("UPDATE settings SET editor_command = 'nvim'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE settings SET editor_command = 'code' WHERE editor_command IS NULL OR trim(editor_command) = ''",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let kept = settings_get(&pool).await.unwrap();
+        assert_eq!(
+            kept.editor_command.as_deref(),
+            Some("nvim"),
+            "a deliberate editor choice must survive the backfill"
+        );
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CheckCircle2, History, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronRight, History, XCircle } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Drawer } from "@/components/ui/drawer";
 import { AsyncPanel } from "@/components/async-panel";
@@ -176,6 +176,20 @@ export function ActivityScreen() {
                 <span className="truncate text-xs text-muted-foreground">
                   {repoNames.get(row.repoId) ?? ""}
                 </span>
+                {/*
+                  The row opens the receipt drawer, and until this chevron it
+                  said so nowhere: the page byline that used to read "Select a
+                  row for the full receipt" was removed with the other three,
+                  and a hover background is not an affordance a keyboard or
+                  first-time user can see. DESIGN.md asks that destination and
+                  open actions stay discoverable, so the cue is a permanent part
+                  of the row rather than something hover reveals.
+
+                  `aria-hidden` because the row's own `aria-haspopup="dialog"`
+                  already tells a screen reader what activating it does; the
+                  glyph would only repeat it as noise.
+                */}
+                <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground/70" />
               </button>
             ))}
           </Card>
