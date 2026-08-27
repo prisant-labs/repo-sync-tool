@@ -48,6 +48,79 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/* Geometry lives in a PLAIN @theme, not the `@theme inline` block above.
+   `inline` compiles the value straight into the utility and emits no custom
+   property at all, so an inlined token reads back as an empty string from
+   `getComputedStyle` and never appears in devtools. The colour block wants
+   exactly that, because each of its values is itself a `var(--background)`
+   indirection. These are literals, so plain `@theme` is the better shape.
+
+   What that buys is narrower than it sounds, and worth stating precisely rather
+   than assuming: Tailwind emits a theme custom property only where a GENERATED
+   utility references it through `var()`. So `--spacing-page` and `--text-page`
+   ship as inspectable properties because something uses them; the table
+   registers below do not, because nothing uses them yet; and `--shadow-float`
+   does not either, because the shadow utility writes `--tw-shadow` rather than
+   reading the theme variable. Unused tokens are tree-shaken either way, which
+   is the behaviour we want - it just means "it is in this file" is never
+   evidence that it reached the stylesheet. Check the built CSS. */
+@theme {
+  /* ---------------------------------------------------------------------
+     GEOMETRY. Everything above this line is colour, and until 2026-08-26 the
+     file stopped there: DESIGN.md specified a type ramp, three elevation
+     levels and named layout rules, and none of it was tokenized. So every
+     screen re-derived its own padding, inset, type size and alignment by hand
+     and they drifted, which is the whole of "the design language is
+     inconsistent". A document cannot hold two screens to the same number.
+
+     The rule these exist to enforce: a SCREEN never hand-rolls a spacing or
+     type value. If a screen needs one, it becomes a token here first.
+     --------------------------------------------------------------------- */
+
+  /* Page rhythm. `--spacing-page` is deliberately 1.5rem, the value `p-6`
+     already used, so adopting the token is a STRUCTURAL change and not a
+     visual one. The bug was never the number; it was that each screen chose
+     its own (Settings sat at a different left inset than Dashboard because
+     nothing said what the inset was). */
+  --spacing-page: 1.5rem;
+  --spacing-section: 1.25rem;
+  --spacing-card: 1rem;
+
+  /* Type ramp, the six registers DESIGN.md section 3 already documents. Sizes
+     carry their line-height and weight together, because a size adopted
+     without its leading is how a "tight, dense ramp" becomes six unrelated
+     numbers. Mono vs sans stays a per-use decision: the Two-Register Rule is
+     about which PLANE the text belongs to, which a size token cannot know.
+
+     `page` and `label` are in use now. `identity`, `cell` and `meta` are the
+     table registers and get adopted when the row standard lands; they are
+     defined here so that work inherits a decision instead of making one. */
+  --text-page: 1.5rem;
+  --text-page--line-height: 1.2;
+  --text-page--font-weight: 700;
+
+  --text-identity: 0.8125rem;
+  --text-identity--line-height: 1.35;
+  --text-identity--font-weight: 600;
+
+  --text-cell: 0.75rem;
+  --text-cell--line-height: 1.4;
+
+  --text-meta: 0.6875rem;
+  --text-meta--line-height: 1.35;
+
+  --text-label: 0.625rem;
+  --text-label--line-height: 1;
+  --text-label--font-weight: 600;
+
+  /* Elevation. Exactly ONE shadow, because DESIGN.md's Earned-Depth Rule
+     prohibits resting shadows on flat data planes: a shadow must mean "this
+     floats". Drawer, dialog, dropdown and toast use it; nothing else may. The
+     other two levels in that rule are the absence of this token and a status
+     tint, neither of which needs a shadow value. */
+  --shadow-float: 0 8px 24px oklch(0 0 0 / 12%), 0 2px 6px oklch(0 0 0 / 8%);
+}
+
 :root {
   --radius: 0.625rem;
   --background: oklch(1 0 0);
@@ -61,7 +134,17 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  /* Darkened from 0.556 on 2026-08-26. At 0.556 this cleared AA on --card
+     (4.73:1) and the sidebar (4.53:1) but measured 4.34:1 on --muted, which is
+     the table-header band and every well, and is a real failure at the 10 and
+     11px sizes the ramp above uses. That single value being reused across
+     three surfaces is what "grays on top of grays on top of grays" actually
+     was. 0.53 measures 4.84:1 on --muted, the worst surface, so it clears the
+     floor everywhere. DESIGN.md already required this ("push muted text toward
+     ink until it clears 4.5:1"); nothing enforced it.
+
+     Dark mode needs no change: 0.708 measures 5.83:1 on its own worst surface. */
+  --muted-foreground: oklch(0.53 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);

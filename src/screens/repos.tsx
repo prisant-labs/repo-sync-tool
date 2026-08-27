@@ -14,6 +14,7 @@ import { IntelSignals } from "@/components/intel-signals";
 import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
+import { PageShell } from "@/components/page-shell";
 import { useBackendEvents, useRepoGroupMemberships, useRepoList } from "@/hooks/queries";
 import {
   deriveStatus,
@@ -127,16 +128,52 @@ export function ReposScreen({
     });
   }, [list, query, chip, activeGroupId, membershipMap]);
 
+  // Search and the status chips ride in PageShell's sticky header rather than
+  // scrolling away with the table. Filters that leave the screen force a scroll
+  // back up to change what you are looking at, which is the opposite of what a
+  // filter is for. Behaviour is unchanged; only where it renders moved.
+  const toolbar =
+    list.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="relative w-full max-w-xs">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Filter by name"
+                className="pl-8"
+                spellCheck={false}
+              />
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
+              {STATUS_ORDER.map(
+                (s) =>
+                  counts[s] > 0 && (
+                    <FilterChip
+                      key={s}
+                      label={STATUS_STYLE[s].label}
+                      count={counts[s]}
+                      active={chip === s}
+                      tone={STATUS_STYLE[s].text}
+                      onClick={() => setChip(s)}
+                    />
+                  ),
+              )}
+            </div>
+          </div>
+    ) : undefined;
+
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-5">
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Repos</h2>
-        </div>
-        <Button size="sm" className="ml-auto" onClick={() => setAddOpen(true)}>
+    <PageShell
+      title="Repos"
+      actions={
+        <Button size="sm" onClick={() => setAddOpen(true)}>
           <Plus /> Add repos
         </Button>
-      </div>
+      }
+      toolbar={toolbar}
+    >
 
       {activeGroup && (
         <div className="flex items-center gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2">
@@ -156,37 +193,6 @@ export function ReposScreen({
           <Button variant="ghost" size="sm" className="ml-auto" onClick={onClearGroup}>
             <X /> Clear filter
           </Button>
-        </div>
-      )}
-
-      {list.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative w-full max-w-xs">
-            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter by name"
-              className="pl-8"
-              spellCheck={false}
-            />
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
-            {STATUS_ORDER.map(
-              (s) =>
-                counts[s] > 0 && (
-                  <FilterChip
-                    key={s}
-                    label={STATUS_STYLE[s].label}
-                    count={counts[s]}
-                    active={chip === s}
-                    tone={STATUS_STYLE[s].text}
-                    onClick={() => setChip(s)}
-                  />
-                ),
-            )}
-          </div>
         </div>
       )}
 
@@ -272,7 +278,7 @@ export function ReposScreen({
       </Drawer>
 
       <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
-    </div>
+    </PageShell>
   );
 }
 

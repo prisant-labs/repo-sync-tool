@@ -9,6 +9,7 @@ import { EmptyState, AllClearState } from "@/components/empty-state";
 import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
+import { PageShell } from "@/components/page-shell";
 import { useBackendEvents, useRepoList, useSummaryToday } from "@/hooks/queries";
 import { deriveStatus, STATUS_ICON, STATUS_STYLE } from "@/lib/status";
 
@@ -43,20 +44,19 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
   }, [repos.data]);
 
   return (
-    <div className="mx-auto flex max-w-6xl flex-col gap-5">
-      <div className="flex flex-wrap items-end gap-4">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Dashboard</h2>
-        </div>
-        <div className="ml-auto flex gap-2">
+    <PageShell
+      title="Dashboard"
+      actions={
+        <>
           <Button variant="outline" size="sm" onClick={refetch}>
             <RefreshCw /> Refresh
           </Button>
           <Button size="sm" onClick={() => setAddOpen(true)}>
             <Plus /> Add repos
           </Button>
-        </div>
-      </div>
+        </>
+      }
+    >
 
       {noRepos ? (
         <EmptyState
@@ -163,7 +163,7 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
       </Drawer>
 
       <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
-    </div>
+    </PageShell>
   );
 }
 

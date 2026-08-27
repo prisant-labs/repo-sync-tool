@@ -44,7 +44,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           return (
             <div
               key={t.id}
-              className="flex items-start gap-3 rounded-md border border-border bg-popover p-3 shadow-lg"
+              className="flex items-start gap-3 rounded-md border border-border bg-popover p-3 shadow-float"
             >
               <Icon className={cn("mt-0.5 size-4 shrink-0", TONE[t.kind])} />
               <div className="min-w-0 flex-1">
