@@ -41,7 +41,7 @@ export function Dialog({
     >
       <div
         className={cn(
-          "flex max-h-[86vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl transition-transform duration-200",
+          "flex max-h-[86vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-border bg-card shadow-float transition-transform duration-200",
           open ? "scale-100" : "scale-95",
         )}
       >

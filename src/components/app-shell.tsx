@@ -181,7 +181,14 @@ export function AppShell() {
             </Button>
           </div>
         )}
-        <div className="min-h-0 flex-1 overflow-auto p-6">
+        {/*
+          The page inset lives in `PageShell`, not here. It used to be `p-6` on
+          this scroller, which meant a screen wanting a sticky header had nowhere
+          to stick to: `top-0` would pin to the padding box and content would
+          scroll through the gap above it. This element now owns scrolling and
+          nothing else.
+        */}
+        <div className="min-h-0 flex-1 overflow-auto">
           {view === "dashboard" && <DashboardScreen onOpenRepos={() => setView("repos")} />}
           {view === "repos" && (
             <ReposScreen

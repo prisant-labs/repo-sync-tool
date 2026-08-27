@@ -6,6 +6,7 @@ import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
 import { FilterChip } from "@/components/filter-chip";
 import { ActivityReceipt } from "@/components/activity-receipt";
+import { PageShell } from "@/components/page-shell";
 import { useActivity, useRepoList } from "@/hooks/queries";
 import { ACTIVITY_PAGE_LIMIT, paginate, toActivityFilter } from "@/lib/activity";
 import type { ActionTypeFilter, StatusFilter } from "@/lib/activity";
@@ -61,68 +62,70 @@ export function ActivityScreen() {
   // never done anything" when it actually means "nothing has ever gone wrong".
   const filtered = actionType !== "all" || status !== "all";
 
+  /*
+   * The two chip groups are independent axes that AND together, and as one
+   * undifferentiated row of six pills they read as a single either/or set -
+   * "Failed" looks like a sibling of "Updates" rather than a second question
+   * being asked about the same rows. The axis labels and the rule between the
+   * groups are the whole fix; the filter state, the chips and the server-side
+   * query are untouched.
+   *
+   * The labels use the mono/uppercase/tracked field-label register from
+   * DESIGN.md rather than plain muted body text, and `text-foreground/70`
+   * rather than `text-muted-foreground`, so an 11px label still clears AA.
+   *
+   * It rides in PageShell's sticky header so the filters do not scroll away
+   * from the rows they filter.
+   */
+  const toolbar = (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <div
+            role="group"
+            aria-labelledby="activity-filter-action-label"
+            className="flex flex-wrap items-center gap-1.5"
+          >
+            <span
+              id="activity-filter-action-label"
+              className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
+            >
+              Actions:
+            </span>
+            {ACTION_CHIPS.map((c) => (
+              <FilterChip
+                key={c.value}
+                label={c.label}
+                active={actionType === c.value}
+                onClick={() => setActionType(c.value)}
+              />
+            ))}
+          </div>
+          <span aria-hidden="true" className="h-5 w-px shrink-0 bg-border" />
+          <div
+            role="group"
+            aria-labelledby="activity-filter-outcome-label"
+            className="flex flex-wrap items-center gap-1.5"
+          >
+            <span
+              id="activity-filter-outcome-label"
+              className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
+            >
+              Outcome:
+            </span>
+            {STATUS_CHIPS.map((c) => (
+              <FilterChip
+                key={c.value}
+                label={c.label}
+                tone={c.tone}
+                active={status === c.value}
+                onClick={() => setStatus(c.value)}
+              />
+            ))}
+          </div>
+        </div>
+  );
+
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-5">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">Activity</h2>
-      </div>
-
-      {/*
-        The two chip groups are independent axes that AND together, and as one
-        undifferentiated row of six pills they read as a single either/or set -
-        "Failed" looks like a sibling of "Updates" rather than a second
-        question being asked about the same rows. The axis labels and the rule
-        between the groups are the whole fix; the filter state, the chips, and
-        the server-side query are untouched.
-
-        The labels use the mono/uppercase/tracked field-label register from
-        DESIGN.md rather than plain muted body text, and `text-foreground/70`
-        rather than `text-muted-foreground`, so an 11px label still clears AA.
-      */}
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-        <div
-          role="group"
-          aria-labelledby="activity-filter-action-label"
-          className="flex flex-wrap items-center gap-1.5"
-        >
-          <span
-            id="activity-filter-action-label"
-            className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
-          >
-            Actions:
-          </span>
-          {ACTION_CHIPS.map((c) => (
-            <FilterChip
-              key={c.value}
-              label={c.label}
-              active={actionType === c.value}
-              onClick={() => setActionType(c.value)}
-            />
-          ))}
-        </div>
-        <span aria-hidden="true" className="h-5 w-px shrink-0 bg-border" />
-        <div
-          role="group"
-          aria-labelledby="activity-filter-outcome-label"
-          className="flex flex-wrap items-center gap-1.5"
-        >
-          <span
-            id="activity-filter-outcome-label"
-            className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
-          >
-            Outcome:
-          </span>
-          {STATUS_CHIPS.map((c) => (
-            <FilterChip
-              key={c.value}
-              label={c.label}
-              tone={c.tone}
-              active={status === c.value}
-              onClick={() => setStatus(c.value)}
-            />
-          ))}
-        </div>
-      </div>
+    <PageShell title="Activity" toolbar={toolbar}>
 
       <AsyncPanel
         state={activity}
@@ -226,7 +229,7 @@ export function ActivityScreen() {
           />
         )}
       </Drawer>
-    </div>
+    </PageShell>
   );
 }
 

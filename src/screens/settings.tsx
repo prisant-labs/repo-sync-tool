@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { AsyncPanel } from "@/components/async-panel";
 import { DiagnosticsCard } from "@/components/diagnostics-card";
+import { PageShell } from "@/components/page-shell";
 import { useSettings } from "@/hooks/queries";
 import { hhMmToMinutes, minutesToHhMm } from "@/lib/time";
 import { useToast } from "@/hooks/use-toast";
@@ -19,10 +20,7 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
   const settings = useSettings();
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-5">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">Settings</h2>
-      </div>
+    <PageShell title="Settings" width="narrow">
 
       {/*
         Appearance sits OUTSIDE the AsyncPanel on purpose. Theme is not a
@@ -54,7 +52,7 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
       <AsyncPanel state={settings}>
         {(s) => <SettingsForm initial={s} onSaved={settings.refetch} />}
       </AsyncPanel>
-    </div>
+    </PageShell>
   );
 }
 
