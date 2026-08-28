@@ -42,6 +42,25 @@
   --color-status-paused: var(--status-paused);
   --color-status-no-upstream: var(--status-no-upstream);
   --color-status-release: var(--status-release);
+  /* Chip pairs. A status chip is a FILLED rectangle (ratified 4B), so it needs
+     its own background and its own ink: the taxonomy colour above is tuned to
+     sit on a NEUTRAL surface and is far too dark to use as a fill. Each pair is
+     solved so ink-on-tint clears 6.7:1, close to AAA and deliberately above the
+     4.5:1 floor, because chip text is 11-12px. */
+  --color-status-sync-tint: var(--status-sync-tint);
+  --color-status-sync-ink: var(--status-sync-ink);
+  --color-status-ahead-tint: var(--status-ahead-tint);
+  --color-status-ahead-ink: var(--status-ahead-ink);
+  --color-status-behind-tint: var(--status-behind-tint);
+  --color-status-behind-ink: var(--status-behind-ink);
+  --color-status-dirty-tint: var(--status-dirty-tint);
+  --color-status-dirty-ink: var(--status-dirty-ink);
+  --color-status-failed-tint: var(--status-failed-tint);
+  --color-status-failed-ink: var(--status-failed-ink);
+  --color-status-paused-tint: var(--status-paused-tint);
+  --color-status-paused-ink: var(--status-paused-ink);
+  --color-status-no-upstream-tint: var(--status-no-upstream-tint);
+  --color-status-no-upstream-ink: var(--status-no-upstream-ink);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -240,6 +259,29 @@
      lying, not to escalate the repo. */
   --status-no-upstream: oklch(0.5 0.07 200);
   --status-release: oklch(0.51 0.19 349);
+
+  /* Chip tint and ink, light. Solved against the S1 surface ramp rather than
+     carried over: every pair clears 6.7:1, worst 6.71.
+
+     The tint's chroma TRACKS the status's own rather than taking a flat cap.
+     A flat 0.055 turned `paused` (chroma 0.02, deliberately near-grey) into a
+     pale blue at hue 258, which collides with the interaction accent at 264 and
+     made the app's quietest state read as its most interactive. Caught by
+     looking at a rendered chip, not by a ratio. */
+  --status-sync-tint: oklch(0.915 0.055 150);
+  --status-sync-ink: oklch(0.404 0.120 150);
+  --status-ahead-tint: oklch(0.915 0.055 150);
+  --status-ahead-ink: oklch(0.404 0.120 150);
+  --status-behind-tint: oklch(0.915 0.055 293);
+  --status-behind-ink: oklch(0.432 0.190 293);
+  --status-dirty-tint: oklch(0.915 0.055 79);
+  --status-dirty-ink: oklch(0.416 0.100 79);
+  --status-failed-tint: oklch(0.915 0.055 27);
+  --status-failed-ink: oklch(0.414 0.190 27);
+  --status-paused-tint: oklch(0.915 0.022 258);
+  --status-paused-ink: oklch(0.414 0.020 258);
+  --status-no-upstream-tint: oklch(0.915 0.055 200);
+  --status-no-upstream-ink: oklch(0.412 0.070 200);
 }
 
 .dark {
@@ -283,6 +325,25 @@
      every other status token makes for AA on the dark surface. */
   --status-no-upstream: oklch(0.73 0.06 200);
   --status-release: oklch(0.75 0.17 349);
+
+  /* Chip tint and ink, dark. Same solve against the dark surfaces; worst 6.70.
+     `failed` ink lands lighter than its text counterpart (0.822 against 0.70)
+     because it sits on its own dark red tint rather than on the near-black
+     page, and needs the extra lightness to clear the same bar. */
+  --status-sync-tint: oklch(0.285 0.055 152);
+  --status-sync-ink: oklch(0.748 0.170 152);
+  --status-ahead-tint: oklch(0.285 0.055 152);
+  --status-ahead-ink: oklch(0.748 0.170 152);
+  --status-behind-tint: oklch(0.285 0.055 300);
+  --status-behind-ink: oklch(0.770 0.140 300);
+  --status-dirty-tint: oklch(0.285 0.055 85);
+  --status-dirty-ink: oklch(0.762 0.130 85);
+  --status-failed-tint: oklch(0.285 0.055 24);
+  --status-failed-ink: oklch(0.822 0.180 24);
+  --status-paused-tint: oklch(0.285 0.022 258);
+  --status-paused-ink: oklch(0.762 0.020 258);
+  --status-no-upstream-tint: oklch(0.285 0.055 200);
+  --status-no-upstream-ink: oklch(0.762 0.060 200);
 }
 
 @layer base {
