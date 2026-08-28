@@ -92,9 +92,14 @@
      numbers. Mono vs sans stays a per-use decision: the Two-Register Rule is
      about which PLANE the text belongs to, which a size token cannot know.
 
-     `page` and `label` are in use now. `identity`, `cell` and `meta` are the
-     table registers and get adopted when the row standard lands; they are
-     defined here so that work inherits a decision instead of making one. */
+     ADOPTION, checked 2026-08-28 rather than assumed. Only `--text-page` is
+     consumed by a component (`page-shell.tsx:66`). `identity`, `cell`, `meta`
+     and `label` are defined and used by nothing yet; they get adopted when the
+     row standard lands, and are defined here so that work inherits a decision
+     instead of making one. This comment previously claimed `label` was in use.
+     It was not, and the correction matters: it means changing these four
+     values is currently INVISIBLE, so a change here must be verified in the
+     built CSS rather than by looking at the app. */
   --text-page: 1.5rem;
   --text-page--line-height: 1.2;
   --text-page--font-weight: 700;
@@ -108,8 +113,19 @@
 
   --text-meta: 0.6875rem;
   --text-meta--line-height: 1.35;
+  /* The meta register carries 500, not 400. This is the load-bearing half of
+     the raised type floor: at 11px the weight step buys more legibility than
+     a size step does, and it costs no vertical space at all. */
+  --text-meta--font-weight: 500;
 
-  --text-label: 0.625rem;
+  /* Raised from 0.625rem (10px) on 2026-08-28. 11px is the floor: nothing in
+     this app renders body text below it. 10px was chosen when `label` meant
+     only all-caps column heads, where the letterforms are simple and the
+     strings are short; it is too small the moment a label carries a real word.
+     Same rem value as `meta` on purpose - they differ by weight and casing,
+     not by size, which is what keeps the ramp readable as four steps rather
+     than six near-identical ones. */
+  --text-label: 0.6875rem;
   --text-label--line-height: 1;
   --text-label--font-weight: 600;
 
@@ -122,51 +138,99 @@
 }
 
 :root {
+  /* ---------------------------------------------------------------------
+     LIGHT SURFACE RAMP, 2026-08-28.
+
+     Light mode had no elevation ramp at all: `--background` and `--card` were
+     the identical `oklch(1 0 0)`, so a card sat on the page with nothing but
+     a hairline border to say it was a separate plane. Dark mode always had
+     the separation (0.145 page under 0.205 card, a ratio of 1.41); light had
+     a ratio of exactly 1.00. That is the whole of "light mode looks flat".
+
+     The page now steps DOWN and the card stays at white, rather than the page
+     staying white and the card lifting, because there is nowhere above white
+     to go. Four planes, darkest to lightest:
+
+       well / muted   0.935   table header bands, insets, code blocks
+       sidebar        0.945   the nav rail
+       page           0.968   the scrolling background
+       card           1.000   anything that reads as a raised surface
+
+     The card-to-page separation is now 1.10. Deliberately smaller than dark's
+     1.41: on a light ground the same ratio reads as dirty rather than layered.
+
+     THE COST, measured rather than assumed. Deepening the well from 0.970 to
+     0.935 pushed three inks under the 4.5:1 AA floor on that surface:
+     muted-foreground to 4.36, sync green to 4.13, dirty amber to 4.24. All
+     three are darkened below to clear 4.7:1 on the worst surface, which is a
+     margin rather than a bare pass so the next half-step down does not
+     silently break them. Ratios computed oklch -> linear sRGB -> WCAG; the
+     full before/after matrix is in the PR body.
+
+     Dark mode is UNCHANGED and its surfaces are untouched, so none of its
+     ratios move. Verified rather than assumed: its worst case is paused grey
+     at 4.86:1 on the 0.269 well.
+     --------------------------------------------------------------------- */
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
+  --background: oklch(0.968 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
+  /* Stays at white with the card. A popover FLOATS above the page, so it
+     belongs on the top plane; stepping it down with the page would make a
+     floating surface read as recessed. */
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.52 0.19 264); /* Graphite accent blue */
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
+  /* These three remain one value under three names, which is its own defect
+     (a "secondary button" and a "muted well" cannot both be tuned while they
+     share a variable). Splitting them is a separate decision nobody has made,
+     so this change moves all three together rather than quietly forking them. */
+  --secondary: oklch(0.935 0 0);
   --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  /* Darkened from 0.556 on 2026-08-26. At 0.556 this cleared AA on --card
-     (4.73:1) and the sidebar (4.53:1) but measured 4.34:1 on --muted, which is
-     the table-header band and every well, and is a real failure at the 10 and
-     11px sizes the ramp above uses. That single value being reused across
-     three surfaces is what "grays on top of grays on top of grays" actually
-     was. 0.53 measures 4.84:1 on --muted, the worst surface, so it clears the
-     floor everywhere. DESIGN.md already required this ("push muted text toward
-     ink until it clears 4.5:1"); nothing enforced it.
+  --muted: oklch(0.935 0 0);
+  /* Darkened from 0.556 on 2026-08-26, then from 0.53 on 2026-08-28. The
+     first move fixed a 4.34:1 failure on the old 0.970 well. The second is
+     forced by the surface ramp above: on the new 0.935 well, 0.53 measures
+     4.36:1 and fails the same floor again. 0.512 measures 4.71:1 there and
+     5.70:1 on card.
+
+     Worth stating because it will recur: every time the well gets darker,
+     this value has to follow it. The two are coupled and nothing in the
+     build enforces the coupling.
 
      Dark mode needs no change: 0.708 measures 5.83:1 on its own worst surface. */
-  --muted-foreground: oklch(0.53 0 0);
-  --accent: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.512 0 0);
+  --accent: oklch(0.935 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
+  /* 0.922 -> 0.895. A border has to stay visible against the well it now
+     separates; at 0.922 against a 0.935 surface it had almost nothing left. */
+  --border: oklch(0.895 0 0);
+  --input: oklch(0.895 0 0);
   --ring: oklch(0.62 0.15 264);
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
+  --sidebar: oklch(0.945 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
   --sidebar-primary: oklch(0.205 0 0);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent: oklch(0.935 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-border: oklch(0.895 0 0);
   --sidebar-ring: oklch(0.708 0 0);
-  --status-sync: oklch(0.53 0.12 150);
+  /* 0.53 -> 0.499, forced by the 0.935 well: 0.53 measured 4.13:1 there.
+     0.499 measures 4.71:1 on the well and 5.70:1 on card. */
+  --status-sync: oklch(0.499 0.12 150);
   --status-behind: oklch(0.47 0.19 293);
-  --status-dirty: oklch(0.54 0.1 79);
+  /* 0.54 -> 0.515, same reason: 4.24:1 on the new well, now 4.71:1. Amber is
+     the hardest hue to keep above the floor without turning brown, which is
+     why it moves least of the three. */
+  --status-dirty: oklch(0.515 0.1 79);
   --status-failed: oklch(0.53 0.19 27);
   --status-paused: oklch(0.51 0.02 258);
   /* Teal, hue 200: the only sizeable gap left between sync green (150) and the
