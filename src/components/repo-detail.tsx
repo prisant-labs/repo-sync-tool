@@ -11,6 +11,7 @@ import {
   Play,
   RefreshCw,
   Terminal,
+  Trash2,
   X,
 } from "lucide-react";
 import { commands } from "@/lib/bindings";
@@ -153,6 +154,29 @@ export function RepoDetailPanel({
       .finally(() => setBusy(null));
   }, [id, repoName, toast, refetch, onChanged]);
 
+  /**
+   * Removal cannot use `run` either: `run` refetches this repo's detail on
+   * success, and after a remove the id no longer exists, so the refetch would
+   * flash NotFound inside a drawer that is about to close. Success closes the
+   * drawer and lets the parent refresh its list; failure leaves the drawer
+   * open so the repo is still there to look at.
+   */
+  const removeRepo = useCallback(() => {
+    setBusy("remove");
+    unwrap(commands.repoRemove(id))
+      .then(
+        () => {
+          toast("ok", `Removed ${repoName}`, "The folder on disk was not touched.");
+          onClose();
+          onChanged();
+        },
+        (e: unknown) => {
+          toast("error", "Could not remove", e instanceof IpcError ? e.message : String(e));
+        },
+      )
+      .finally(() => setBusy(null));
+  }, [id, repoName, toast, onClose, onChanged]);
+
   const toggleGroup = useCallback(
     async (group: GroupSummary, isMember: boolean) => {
       setGroupBusyId(group.id);
@@ -201,6 +225,7 @@ export function RepoDetailPanel({
               memberIds={memberships.data ?? []}
               groupBusyId={groupBusyId}
               onToggleGroup={toggleGroup}
+              onRemove={removeRepo}
             />
           )}
         </AsyncPanel>
@@ -221,6 +246,7 @@ function DetailBody({
   memberIds,
   groupBusyId,
   onToggleGroup,
+  onRemove,
 }: {
   r: RepoDetailData;
   busy: string | null;
@@ -235,6 +261,7 @@ function DetailBody({
   memberIds: number[];
   groupBusyId: number | null;
   onToggleGroup: (group: GroupSummary, isMember: boolean) => void;
+  onRemove: () => void;
 }) {
   const status = deriveStatus(r);
   const style = STATUS_STYLE[status];
@@ -400,6 +427,8 @@ function DetailBody({
           <KvRow label="Consecutive failures" value={String(r.consecutiveFailures)} />
         </dl>
       </section>
+
+      <RemoveSection key={r.id} name={r.localName} busy={busy} onRemove={onRemove} />
     </div>
   );
 }
@@ -808,5 +837,68 @@ function PolicyOption({
         <span className="block text-xs text-muted-foreground">{opt.blurb}</span>
       </span>
     </button>
+  );
+}
+
+/**
+ * Removal (BL-NI-85). Two-step inline confirm in the same idiom as the group
+ * delete in `groups-nav.tsx`: the first click only arms the confirm, so a stray
+ * click can never clear history. The consequence copy stays visible BEFORE the
+ * first click, not behind it, because this is the one action in the drawer that
+ * cannot be undone. Keyed on the repo id at the call site so switching repos
+ * disarms a half-armed confirm.
+ */
+function RemoveSection({
+  name,
+  busy,
+  onRemove,
+}: {
+  name: string;
+  busy: string | null;
+  onRemove: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const removing = busy === "remove";
+  const isBusy = busy !== null;
+
+  return (
+    <section>
+      <SectionLabel>Remove</SectionLabel>
+      <div className="rounded-md border border-border px-3 py-2.5">
+        <p className="text-xs text-foreground/80">
+          Stops tracking <span className="font-semibold">{name}</span> and clears its check history
+          in RepoSync. The folder and its git repo on disk are not touched.
+        </p>
+        {confirming ? (
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-status-failed">
+              Remove {name}? Its history cannot be recovered.
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-status-failed/40 text-status-failed hover:bg-status-failed/15"
+              disabled={isBusy}
+              onClick={onRemove}
+            >
+              <Trash2 className={removing ? "animate-pulse" : undefined} /> Remove
+            </Button>
+            <Button variant="ghost" size="sm" disabled={isBusy} onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-2.5 text-status-failed hover:bg-status-failed/15"
+            disabled={isBusy}
+            onClick={() => setConfirming(true)}
+          >
+            <Trash2 /> Remove from RepoSync
+          </Button>
+        )}
+      </div>
+    </section>
   );
 }
