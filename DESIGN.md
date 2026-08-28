@@ -74,13 +74,37 @@ the dark surface). Rendered always as color **plus** a lucide icon **plus** a wo
 
 | State | Hue family | Light oklch | Dark oklch | Icon |
 |---|---|---|---|---|
-| **sync / ahead** | green | `0.53 0.12 150` | `0.75 0.17 152` | check / arrow-up |
+| **sync / ahead** | green | `0.499 0.12 150` | `0.75 0.17 152` | check / arrow-up |
 | **behind** | violet | `0.47 0.19 293` | `0.72 0.14 300` | arrow-down |
-| **dirty** | amber | `0.54 0.1 79` | `0.8 0.13 85` | alert-triangle |
+| **dirty** | amber | `0.515 0.1 79` | `0.8 0.13 85` | alert-triangle |
 | **failed** | red | `0.53 0.19 27` | `0.7 0.18 24` | x-circle |
 | **paused** | neutral | `0.51 0.02 258` | `0.66 0.02 258` | pause-circle |
 | **no upstream** | teal | `0.5 0.07 200` | `0.73 0.06 200` | unlink |
 | **release** | magenta | `0.51 0.19 349` | `0.75 0.17 349` | package |
+
+`sync` and `dirty` were darkened on 2026-08-28 (from `0.53` and `0.54`) and the reason is
+worth keeping, because it will recur: the light surface ramp deepened the well from `0.970`
+to `0.935`, and on that surface the old values measured 4.13:1 and 4.24:1, under the AA
+floor. **Every time a surface darkens, the inks that sit on it have to follow**, and
+nothing in the build enforces that coupling.
+
+#### Status chips (the rendered form)
+Status renders as a **filled chip**, not colored text: a tint background, ink text, a
+monochrome glyph, weight 600. The chip needs its OWN pair of tokens
+(`--status-<state>-tint` / `--status-<state>-ink`) because the taxonomy color above is
+tuned to sit on a neutral surface and is far too dark to use as a fill. Each pair is solved
+so ink-on-tint clears **6.7:1**, close to AAA and deliberately above the 4.5:1 floor,
+because chip text is 11-12px.
+
+A chip's tint chroma **tracks the state's own chroma** rather than taking a flat value. A
+flat cap turned `paused` (chroma `0.02`, deliberately near-grey) into a pale blue at hue
+258, which collides with the interaction accent at 264 and made the app's quietest state
+read as its most interactive. That was caught by looking at a rendered chip, not by a
+ratio, and it is the reason the rule is written down here.
+
+The chip form is also what separates a status from a **group**: three properties differ
+(filled vs outlined, glyph vs user-colored dot, weight 600 vs 500), so the distinction
+survives a group that happens to be named "Behind" and colored purple.
 
 `behind` is deliberately **violet** (hue ~293), not blue, so it never reads as the
 interaction accent (hue 264) and so it stays distinct from `failed` red and `sync` green.
@@ -100,10 +124,30 @@ for a repo whose upstream branch had been deleted, which is the strongest possib
 of the wrong thing to say.
 
 ### Neutrals (shadcn neutral scale, oklch)
-Cool, near-hueless grays. `--background` white (`oklch(1 0 0)`) / near-black in dark;
-layered surfaces `--card`, `--sidebar` (recessed), `--muted`, `--popover`; `--border` /
-`--input` hairlines; `--muted-foreground` for secondary text. Radius scale from
-`--radius: 0.625rem`.
+Cool, near-hueless grays. `--border` / `--input` hairlines; `--muted-foreground` for
+secondary text. Radius scale from `--radius: 0.625rem`.
+
+**The surface ramp, four planes.** Until 2026-08-28 light mode had no ramp at all:
+`--background` and `--card` were both `oklch(1 0 0)`, so a card sat on the page separated by
+nothing but a hairline. Dark mode always had the separation; light had a card-to-page ratio
+of exactly 1.00. That was the whole of "light mode looks flat", and it was found by
+measuring the palette rather than by looking at it.
+
+| Plane | Light | Dark | What sits here |
+|---|---|---|---|
+| well (`--muted`) | `0.935` | `0.269` | table header bands, insets, code blocks |
+| sidebar | `0.945` | `0.205` | the nav rail |
+| page (`--background`) | `0.968` | `0.145` | the scrolling background |
+| card / popover | `1.000` | `0.205` | anything that reads as raised |
+
+In light the **page steps down and the card stays white**, because there is nowhere above
+white to go. Card-to-page is 1.10, deliberately smaller than dark's 1.41: on a light ground
+the same ratio reads as dirty rather than layered. `--popover` stays with the card, since a
+floating surface must not read as recessed.
+
+`--muted`, `--secondary` and `--accent` remain one value under three names. That is a known
+defect (a secondary button and a muted well cannot both be tuned while they share a
+variable) and splitting them is an open decision, so they move together for now.
 
 ### Named rules
 **The Status-Owns-Saturation Rule.** Saturated color belongs to repo status and nothing
