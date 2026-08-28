@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ArrowDownToLine,
@@ -160,18 +160,45 @@ export function RepoDetailPanel({
    * flash NotFound inside a drawer that is about to close. Success closes the
    * drawer and lets the parent refresh its list; failure leaves the drawer
    * open so the repo is still there to look at.
+   *
+   * `alive` guards the close. The backend holds the per-repo lock across the
+   * delete, so a removal can resolve after this panel is gone (the user closed
+   * the drawer, or opened a different repo, while a scheduled check held the
+   * lock). `onClose` closes WHATEVER drawer is open at that moment, so a stale
+   * resolve must refresh the list without touching it.
    */
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const removeRepo = useCallback(() => {
     setBusy("remove");
+    const finish = (message: string) => {
+      toast("ok", `Removed ${repoName}`, message);
+      if (alive.current) onClose();
+      onChanged();
+    };
     unwrap(commands.repoRemove(id))
       .then(
-        () => {
-          toast("ok", `Removed ${repoName}`, "The folder on disk was not touched.");
-          onClose();
-          onChanged();
-        },
+        () => finish("The folder on disk was not touched."),
         (e: unknown) => {
-          toast("error", "Could not remove", e instanceof IpcError ? e.message : String(e));
+          // An already-gone repo IS the requested end state, not a failure:
+          // another instance sharing the database (BL-NI-73) may have removed
+          // it first. Converge instead of stranding a drawer on a dead id.
+          if (e instanceof IpcError && e.code === "db.not_found") {
+            finish("It was already gone; the folder on disk was not touched.");
+            return;
+          }
+          toast(
+            "error",
+            "Could not remove",
+            e instanceof IpcError
+              ? [e.message, e.remediation].filter(Boolean).join(" ")
+              : String(e),
+          );
         },
       )
       .finally(() => setBusy(null));
@@ -860,21 +887,39 @@ function RemoveSection({
   const [confirming, setConfirming] = useState(false);
   const removing = busy === "remove";
   const isBusy = busy !== null;
+  const armButton = useRef<HTMLButtonElement>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
+  // Arming swaps the focused trigger out of the DOM, which would drop keyboard
+  // focus to the body and out of the drawer's focus trap; follow the swap in
+  // both directions. `armed` keeps mount from stealing focus when the drawer
+  // opens with the section in its resting state.
+  const armed = useRef(false);
+  useEffect(() => {
+    if (confirming) {
+      armed.current = true;
+      confirmButton.current?.focus();
+    } else if (armed.current) {
+      armed.current = false;
+      armButton.current?.focus();
+    }
+  }, [confirming]);
 
   return (
     <section>
       <SectionLabel>Remove</SectionLabel>
       <div className="rounded-md border border-border px-3 py-2.5">
         <p className="text-xs text-foreground/80">
-          Stops tracking <span className="font-semibold">{name}</span> and clears its check history
-          in RepoSync. The folder and its git repo on disk are not touched.
+          Stops tracking <span className="font-semibold">{name}</span> and deletes its RepoSync
+          data: check history, group assignments, notes, and its policy and cadence settings. The
+          folder and its git repo on disk are not touched.
         </p>
         {confirming ? (
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
-            <span className="text-xs font-medium text-status-failed">
-              Remove {name}? Its history cannot be recovered.
+            <span role="alert" className="text-xs font-medium text-status-failed">
+              Remove {name}? This cannot be undone.
             </span>
             <Button
+              ref={confirmButton}
               variant="outline"
               size="sm"
               className="border-status-failed/40 text-status-failed hover:bg-status-failed/15"
@@ -889,6 +934,7 @@ function RemoveSection({
           </div>
         ) : (
           <Button
+            ref={armButton}
             variant="outline"
             size="sm"
             className="mt-2.5 text-status-failed hover:bg-status-failed/15"

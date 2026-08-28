@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ComponentProps } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
@@ -23,8 +23,9 @@ const buttonVariants = cva(
   },
 );
 
-export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
-  VariantProps<typeof buttonVariants>;
+// ComponentProps rather than ButtonHTMLAttributes so `ref` passes through as a
+// regular prop (React 19), reaching the native <button> via the spread.
+export type ButtonProps = ComponentProps<"button"> & VariantProps<typeof buttonVariants>;
 
 /**
  * shadcn/ui new-york Button, simplified to a plain <button> (no Radix Slot /
