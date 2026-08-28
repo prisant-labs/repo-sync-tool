@@ -31,10 +31,10 @@ export function ok<T>(data: T) {
  * (for example "fetch_failed"); the UI branches on it, so tests should too
  * rather than matching on message text.
  */
-export function err(code: string, message = code) {
+export function err(code: string, message = code, remediation = "") {
   return {
     status: "error",
-    error: { code, message, context: null },
+    error: { code, message, remediation, context: null },
   } as const;
 }
 

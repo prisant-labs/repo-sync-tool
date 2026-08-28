@@ -1,6 +1,6 @@
 # v0.9.0 Feature Inventory (scope at a glance)
 
-- **Date:** 2026-06-23 (last updated 2026-07-05, post-ship)
+- **Date:** 2026-06-23 (last updated 2026-08-28)
 - **Purpose:** The user-facing feature/function view of the v0.9.0 scope, by readiness. The efforts ([program-roadmap.md](../../program-roadmap.md)) are implementation units; this is the feature view across them.
 - **Companion:** [plan_v0.9.0.md](plan_v0.9.0.md) (the release plan), [execution-plan.md](execution-plan.md) (the phased path to the tag), [program-roadmap.md](../../program-roadmap.md) (per-effort spec/plan/issue links), [features-and-outcomes.md](features-and-outcomes.md) (the product-facing view: features + the user problem each solves). Keep this file's Status column in step with the release plan as efforts land.
 - **Status legend:** **Done** = the backend command/function is implemented + tested (no GUI rendering yet); **Built** = implemented end to end, backend and GUI, and may still carry open defects tracked in the backlog; **Specced** = spec + plan exist, not built; **Stub** = a typed stub command exists but is unbuilt; **Gap** = no effort owns it.
@@ -17,7 +17,7 @@ The 12 original efforts deliberately build the **backend behind the IPC seam** (
 | Add repos (scan a folder) | `repo_scan_parent` | MUST | E-02 | **Done** |
 | List repos | `repo_list` | MUST | E-02 | **Done** |
 | Repo detail | `repo_get` | MUST | E-02 | **Done** |
-| Remove repo | `repo_remove` | MUST | E-02 | **Done** |
+| Remove repo | `repo_remove` | MUST | E-02 | **Built** (GUI affordance 2026-08-28: a confirmed two-step Remove in the repo detail drawer, closing BL-NI-85) |
 | Enable/disable per repo | `repo_set_enabled` | MUST | E-02 | **Done** |
 | Groups (repo tags) | `groups` / `repo_groups` (store + IPC + GUI) | MUST (promoted 2026-06-30) | [E-16](E-16-groups/spec.md) | **Built** (a85e0fc backend, 51daaa7 frontend, both 2026-07-03; spec written retroactively at E-16; all six Known defects fixed 2026-07-05 - the group-filter false-empty state and five others in commit 4ab54bf, and BL-NI-22 (the O(N) per-repo group query) resolved via a single bulk `repo_group_memberships` IPC call, verified in the working tree, not yet committed). **Extended 2026-07-30:** group color is now editable after creation via an additive `group_update(id, name, color)` command that writes name and color in one atomic statement, so a rejected duplicate name leaves both unchanged; `group_rename` is retained unchanged for E-06 contract compatibility. This resolves the E-16 "color cannot be changed after creation" limitation |
 | Check now | `repo_check_now` | MUST | E-12/E-03/E-07 | **Done** |
