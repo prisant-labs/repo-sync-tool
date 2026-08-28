@@ -6,8 +6,8 @@ first. This file only adds what is Claude-specific and does not repeat AGENTS.md
 
 ## Claude-specific notes
 
-- **Session logs** go in `_LOCAL/session-logs/` (gitignored), not in the tracked doc tree. Use
-  the `jp-wrap-session` skill to close a session; `jp-continue-session` to resume one.
+- **Session logs** go in `_local/_session-logs/` (gitignored), not in the tracked doc tree. Use
+  the `plab-wrap-session` skill to close a session; `plab-continue-session` to resume one.
 - **Adversarial review:** each substantive effort gets a Claude self-review plus a Codex
   second-opinion review, per the cadence in `docs/README.md`. Confirmed findings are fixed in
   place; deferred findings go to `docs/backlog.md` with a status.
