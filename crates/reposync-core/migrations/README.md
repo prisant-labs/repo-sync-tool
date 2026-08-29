@@ -61,6 +61,14 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   rebuilding the table, so fresh installs get the same values from the seeding
   INSERT in `store::settings_get` instead: the singleton row does not exist yet
   when this migration runs.
+- `0010_remote_metadata.sql` - additive GitHub repo-resource columns on
+  `repo_remote_meta`: `stars`, `forks`, `license`, `size`, `visibility`,
+  `homepage`. All six already arrive on every GitHub repo-resource response
+  that `github.rs` fetches and were discarded rather than persisted; they
+  unblock the gated Repos table columns and the "open homepage" link glyph in
+  the UI finalization roadmap's DataTable slice. Every column is NULLable with
+  no default (unknown or absent is NULL, never a fabricated zero or empty
+  string), so a plain `ALTER TABLE ADD COLUMN`, no rebuild.
 
 ## Migration policy
 

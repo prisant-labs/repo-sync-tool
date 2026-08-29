@@ -79,6 +79,12 @@ const DETAIL: RepoDetail = {
   openPrCount: null,
   defaultBranchPrCount: null,
   prLastCheckedAt: null,
+  stars: null,
+  forks: null,
+  license: null,
+  size: null,
+  visibility: null,
+  homepage: null,
 };
 
 const SETTINGS: Settings = {

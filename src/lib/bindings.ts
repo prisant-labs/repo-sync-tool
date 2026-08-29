@@ -682,6 +682,27 @@ export type RepoDetail = {
 	 *  "as of <time>" staleness marker when offline / rate-limited (E-17 AC8).
 	 */
 	prLastCheckedAt: number | null,
+	/**
+	 *  Star count (`stargazers_count`). `None` = un-refreshed / non-GitHub /
+	 *  absent from the response, never a fabricated zero.
+	 */
+	stars: number | null,
+	/**  Fork count (`forks_count`). Same `None` meaning as `stars`. */
+	forks: number | null,
+	/**
+	 *  The license's SPDX id (e.g. `"MIT"`), or `None` when GitHub reports no
+	 *  license (or the repo has never been refreshed).
+	 */
+	license: string | null,
+	/**  Repo size in kilobytes, as GitHub reports it. */
+	size: number | null,
+	/**  GitHub's own visibility string (`"public"` / `"private"` / `"internal"`). */
+	visibility: string | null,
+	/**
+	 *  The repo's homepage URL. `None` when GitHub returns null, an empty
+	 *  string, or the repo has never been refreshed - never a fabricated value.
+	 */
+	homepage: string | null,
 };
 
 /**  Filter for `repo_list`. All fields optional; absent means "no constraint". */
@@ -746,6 +767,27 @@ export type RepoSummary = {
 	 *  fix. It resolves itself the first time the repo is checked.
 	 */
 	upstreamState: UpstreamState | null,
+	/**
+	 *  Star count (`stargazers_count`). `None` = un-refreshed / non-GitHub /
+	 *  absent from the response, never a fabricated zero.
+	 */
+	stars: number | null,
+	/**  Fork count (`forks_count`). Same `None` meaning as `stars`. */
+	forks: number | null,
+	/**
+	 *  The license's SPDX id (e.g. `"MIT"`), or `None` when GitHub reports no
+	 *  license (or the repo has never been refreshed).
+	 */
+	license: string | null,
+	/**  Repo size in kilobytes, as GitHub reports it. */
+	size: number | null,
+	/**  GitHub's own visibility string (`"public"` / `"private"` / `"internal"`). */
+	visibility: string | null,
+	/**
+	 *  The repo's homepage URL. `None` when GitHub returns null, an empty
+	 *  string, or the repo has never been refreshed - never a fabricated value.
+	 */
+	homepage: string | null,
 };
 
 /**  A candidate repository found while scanning a parent folder. */
