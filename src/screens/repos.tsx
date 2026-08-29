@@ -1,33 +1,26 @@
 import { useCallback, useMemo, useState } from "react";
-import { FolderGit2, Plus, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, Clock, FolderGit2, Plus, RefreshCw, Search, X } from "lucide-react";
 import { commands } from "@/lib/bindings";
 import type { GroupSummary, RepoSummary } from "@/lib/bindings";
-import { unwrap } from "@/lib/ipc";
+import { IpcError, unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DataTable, type DataTableColumn } from "@/components/ui/data-table";
 import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
 import { FilterChip } from "@/components/filter-chip";
 import { StatusBadge } from "@/components/status-badge";
-import { LagSignal } from "@/components/lag-signal";
 import { IntelSignals } from "@/components/intel-signals";
 import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
 import { PageShell } from "@/components/page-shell";
+import { useToast } from "@/hooks/use-toast";
 import { useBackendEvents, useRepoGroupMemberships, useRepoList } from "@/hooks/queries";
-import {
-  deriveStatus,
-  lagLabel,
-  lagMagnitude,
-  relativeTime,
-  STATUS_STYLE,
-  type RepoStatus,
-} from "@/lib/status";
+import { deriveStatus, relativeTime, STATUS_STYLE, type RepoStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
-const GRID = "grid grid-cols-[1.8fr_130px_150px_112px_auto] items-center gap-4";
 const STATUS_ORDER: RepoStatus[] = ["behind", "dirty", "failed", "paused", "ahead", "sync"];
 
 type Chip = RepoStatus | "all";
@@ -46,8 +39,10 @@ export function ReposScreen({
   const repos = useRepoList(ALL_FILTER);
   const refetch = repos.refetch;
   useBackendEvents(refetch);
+  const toast = useToast();
 
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [checkAllBusy, setCheckAllBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -67,6 +62,14 @@ export function ReposScreen({
     for (const g of groups) m.set(g.id, g);
     return m;
   }, [groups]);
+
+  const groupsForRepo = useCallback(
+    (repoId: number): GroupSummary[] =>
+      (membershipMap?.get(repoId) ?? [])
+        .map((gid) => groupById.get(gid))
+        .filter((g): g is GroupSummary => g !== undefined),
+    [membershipMap, groupById],
+  );
 
   const activeGroup = activeGroupId === null ? null : (groupById.get(activeGroupId) ?? null);
 
@@ -93,6 +96,33 @@ export function ReposScreen({
     },
     [refetch],
   );
+
+  // "Check all" (BL-NI-86, repo_check_all has no consumer), provisional per the
+  // N2 PR. `repoCheckAll` returns a COUNT ATTEMPTED, not succeeded - per-repo
+  // outcomes (including failures) arrive later via `repo:check-completed`,
+  // which `useBackendEvents` above already refetches on. Following the
+  // `checkNow` honesty idiom: a call that only tells us "N repos were asked
+  // to check" can never be reported with the "ok" (success-styled) toast, so
+  // this uses "info" even when the call itself resolves cleanly.
+  const checkAll = useCallback(async () => {
+    setCheckAllBusy(true);
+    try {
+      const count = await unwrap(commands.repoCheckAll());
+      if (count === 0) {
+        toast("info", "No enabled repos to check");
+      } else {
+        toast(
+          "info",
+          `Checking ${count} ${count === 1 ? "repo" : "repos"}`,
+          "Results will appear on each row as checks complete.",
+        );
+      }
+    } catch (e) {
+      toast("error", "Could not check all", e instanceof IpcError ? e.message : String(e));
+    } finally {
+      setCheckAllBusy(false);
+    }
+  }, [toast]);
 
   const counts = useMemo(() => {
     const c: Record<RepoStatus, number> = {
@@ -128,6 +158,89 @@ export function ReposScreen({
     });
   }, [list, query, chip, activeGroupId, membershipMap]);
 
+  // Columns, in the ratified order (README settled list + ui-delivery-plan.md
+  // ledger B5): Repository (first, frozen, the only flexible width), Status,
+  // Ahead, Behind, Groups, Checked, then the unlabeled actions column.
+  //
+  // Branch and Folder are OMITTED. `RepoSummary` in `src/lib/bindings.ts` (this
+  // branch, off origin/main) carries neither `branch`/`activeBranch` nor
+  // `localPath` - only `RepoDetail` has them. Per the hard constraint, this
+  // change does not touch `src-tauri`/`crates` to add them; see the N2 PR body
+  // and the new backlog row for the follow-up.
+  const columns: DataTableColumn<RepoSummary>[] = useMemo(
+    () => [
+      {
+        id: "repo",
+        header: "Repository",
+        width: "minmax(180px,240px)",
+        frozen: true,
+        cell: (r) => (
+          <div className="min-w-0 py-2">
+            <div className="truncate font-mono text-sm font-semibold">{r.localName}</div>
+            <div className="truncate font-mono text-[11px] text-muted-foreground">{r.hostType}</div>
+            <IntelSignals
+              latestReleaseTag={r.latestReleaseTag}
+              openPrCount={r.openPrCount}
+              className="mt-1"
+            />
+          </div>
+        ),
+      },
+      {
+        id: "status",
+        header: "Status",
+        width: "124px",
+        cell: (r) => {
+          const status = deriveStatus(r);
+          const count =
+            status === "behind" ? (r.behindCount ?? 0) : status === "ahead" ? (r.aheadCount ?? 0) : undefined;
+          return <StatusBadge status={status} count={count} />;
+        },
+      },
+      {
+        id: "ahead",
+        header: "Ahead",
+        width: "64px",
+        align: "right",
+        icon: ArrowUp,
+        cell: (r) => ((r.aheadCount ?? 0) > 0 ? <span className="font-mono text-xs tabular-nums">{r.aheadCount}</span> : null),
+      },
+      {
+        id: "behind",
+        header: "Behind",
+        width: "64px",
+        align: "right",
+        icon: ArrowDown,
+        cell: (r) =>
+          (r.behindCount ?? 0) > 0 ? <span className="font-mono text-xs tabular-nums">{r.behindCount}</span> : null,
+      },
+      {
+        id: "groups",
+        header: "Groups",
+        width: "160px",
+        cell: (r) => {
+          const gs = groupsForRepo(r.id);
+          if (gs.length === 0) return null;
+          return (
+            <div className="flex min-w-0 flex-nowrap gap-1 overflow-hidden">
+              {gs.map((g) => (
+                <GroupChip key={g.id} group={g} />
+              ))}
+            </div>
+          );
+        },
+      },
+      {
+        id: "checked",
+        header: "Checked",
+        width: "96px",
+        icon: Clock,
+        cell: (r) => <span className="font-mono text-xs text-muted-foreground">{relativeTime(r.lastCheckedAt)}</span>,
+      },
+    ],
+    [groupsForRepo],
+  );
+
   // Search and the status chips ride in PageShell's sticky header rather than
   // scrolling away with the table. Filters that leave the screen force a scroll
   // back up to change what you are looking at, which is the opposite of what a
@@ -161,6 +274,18 @@ export function ReposScreen({
                   ),
               )}
             </div>
+            {/* Provisional (N2 PR, veto invited): closes BL-NI-86, repo_check_all
+                has no consumer. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              disabled={checkAllBusy}
+              onClick={checkAll}
+            >
+              <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
+              Check all
+            </Button>
           </div>
     ) : undefined;
 
@@ -234,35 +359,27 @@ export function ReposScreen({
               No repositories match this filter.
             </div>
           ) : (
-            <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
-              <div
-                className={cn(
-                  GRID,
-                  "border-b border-border bg-muted/40 px-4 py-2.5 font-mono text-[10px] font-bold uppercase tracking-wider text-muted-foreground",
-                )}
-              >
-                <div>Repository</div>
-                <div>Status</div>
-                <div>Lag signal</div>
-                <div>Checked</div>
-                <div />
-              </div>
-              {filtered.map((repo) => {
-                const repoGroups = (membershipMap?.get(repo.id) ?? [])
-                  .map((gid) => groupById.get(gid))
-                  .filter((g): g is GroupSummary => g !== undefined);
-                return (
-                  <RepoRow
-                    key={repo.id}
-                    repo={repo}
-                    repoGroups={repoGroups}
-                    busy={busyId === repo.id}
-                    onOpen={() => setSelectedId(repo.id)}
-                    onCheck={() => checkNow(repo.id)}
-                  />
-                );
-              })}
-            </div>
+            <DataTable
+              aria-label="Tracked repositories"
+              columns={columns}
+              rows={filtered}
+              rowKey={(r) => r.id}
+              onRowClick={(r) => setSelectedId(r.id)}
+              actions={(r) => (
+                <>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    disabled={busyId === r.id}
+                    title="Check now"
+                    onClick={() => checkNow(r.id)}
+                  >
+                    <RefreshCw className={busyId === r.id ? "animate-spin" : undefined} />
+                  </Button>
+                  <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
+                </>
+              )}
+            />
           );
         }}
       </AsyncPanel>
@@ -282,87 +399,11 @@ export function ReposScreen({
   );
 }
 
-function RepoRow({
-  repo,
-  repoGroups,
-  busy,
-  onOpen,
-  onCheck,
-}: {
-  repo: RepoSummary;
-  repoGroups: GroupSummary[];
-  busy: boolean;
-  onOpen: () => void;
-  onCheck: () => void;
-}) {
-  const status = deriveStatus(repo);
-  const count =
-    status === "behind"
-      ? (repo.behindCount ?? 0)
-      : status === "ahead"
-        ? (repo.aheadCount ?? 0)
-        : undefined;
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          onOpen();
-        } else if (e.key === " ") {
-          e.preventDefault();
-          onOpen();
-        }
-      }}
-      className={cn(
-        GRID,
-        "cursor-pointer border-b border-border px-4 py-3 last:border-b-0 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-      )}
-    >
-      <div className="min-w-0">
-        <div className="truncate font-mono text-sm font-semibold">{repo.localName}</div>
-        <div className="truncate font-mono text-[11px] text-muted-foreground">{repo.hostType}</div>
-        <IntelSignals
-          latestReleaseTag={repo.latestReleaseTag}
-          openPrCount={repo.openPrCount}
-          className="mt-1"
-        />
-        {repoGroups.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1">
-            {repoGroups.map((g) => (
-              <GroupChip key={g.id} group={g} />
-            ))}
-          </div>
-        )}
-      </div>
-      <StatusBadge status={status} count={count} />
-      <LagSignal status={status} magnitude={lagMagnitude(repo)} label={lagLabel(repo)} />
-      <div className="font-mono text-[11px] text-muted-foreground">{relativeTime(repo.lastCheckedAt)}</div>
-      <div className="flex justify-end">
-        <Button
-          variant="ghost"
-          size="icon"
-          disabled={busy}
-          title="Check now"
-          onClick={(e) => {
-            e.stopPropagation();
-            onCheck();
-          }}
-        >
-          <RefreshCw className={busy ? "animate-spin" : undefined} />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 function GroupChip({ group }: { group: GroupSummary }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+    <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-muted-foreground">
       <span
-        className={cn("size-1.5 rounded-full", group.color === null && "bg-muted-foreground/50")}
+        className={cn("size-1.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
         style={group.color ? { backgroundColor: group.color } : undefined}
       />
       {group.name}
