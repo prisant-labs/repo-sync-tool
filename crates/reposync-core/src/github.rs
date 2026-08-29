@@ -2438,6 +2438,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_with_no_stored_etag_sends_no_if_none_match_and_backfills_all_columns() {
+        // Regression for the Codex adversarial review of migration 0010: a row
+        // shaped exactly like what 0010's own `UPDATE ... SET etag = NULL`
+        // produces on an upgraded database - a stale last_fetched_at, no etag,
+        // and the six new columns still NULL because they predate the migration
+        // - must send NO If-None-Match on its next due pass, get a full 200
+        // body, and backfill every column. This is the self-heal migration 0010
+        // relies on instead of a second code change: proving it here pins that
+        // an absent etag really does produce an unconditional request, not just
+        // that the migration clears the column (see db.rs's
+        // `upgrading_a_pre_0010_database_clears_the_repo_resource_etag`, which
+        // proves the other half).
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta (repo_id, description, last_fetched_at) \
+             VALUES (?, 'old desc', 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::repo_only(RepoFetch::Modified {
+            metadata: Box::new(sample_metadata()),
+            etag: Some("\"fresh\"".into()),
+            observed_sha: Some("deadbeef".into()),
+            rate_limit: healthy_budget(),
+        });
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
+        assert_eq!(
+            t.last_repo_etag.borrow().as_deref(),
+            None,
+            "no stored etag means no If-None-Match is sent - the request must be \
+             unconditional, or the upgraded row would 304 forever and never backfill"
+        );
+        assert_eq!(read_meta::<Option<i64>>(&pool, id, "stars").await, Some(42));
+        assert_eq!(read_meta::<Option<i64>>(&pool, id, "forks").await, Some(7));
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "license")
+                .await
+                .as_deref(),
+            Some("MIT")
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "size").await,
+            Some(1234)
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "visibility")
+                .await
+                .as_deref(),
+            Some("public")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "homepage")
+                .await
+                .as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "etag")
+                .await
+                .as_deref(),
+            Some("\"fresh\""),
+            "a fresh ETag is stored after the unconditional fetch, so the very next \
+             pass goes back to conditional requests"
+        );
+    }
+
+    #[tokio::test]
     async fn refresh_inside_window_serves_cache_without_network() {
         let tmp = TempDir::new().unwrap();
         let pool = fresh_pool(tmp.path()).await;

@@ -38,3 +38,23 @@ ALTER TABLE repo_remote_meta ADD COLUMN license TEXT;
 ALTER TABLE repo_remote_meta ADD COLUMN size INTEGER;
 ALTER TABLE repo_remote_meta ADD COLUMN visibility TEXT;
 ALTER TABLE repo_remote_meta ADD COLUMN homepage TEXT;
+
+-- One-time cache invalidation for an UPGRADED database (Codex adversarial
+-- review of this migration, confirmed 2026-08-28): a row that already had a
+-- repo-resource `etag` before this migration keeps answering 304 Not
+-- Modified forever, and refresh_one's 304 path bumps only `last_fetched_at`
+-- - it never rewrites the six columns just added. Left alone, an unchanged
+-- repo on an upgraded install would carry NULL stars/forks/license/size/
+-- visibility/homepage indefinitely, even though the repo has been refreshed
+-- many times; a fresh install has no such stale ETag and is unaffected.
+-- Clearing `etag` here means the NEXT due refresh pass sends no
+-- If-None-Match, so the repo resource fetch gets a full 200 body once,
+-- populates the six new columns from it, and stores a fresh ETag - this
+-- self-heals in exactly one pass per repo, with no code change needed
+-- beyond the schema. `release_etag` and `pr_etag` are deliberately left
+-- untouched: the six fields added by this migration come from the repo
+-- resource only, and the release/PR sub-resources already keep their own
+-- independently-cached ETags by design (BL-NI-15b, the ETag decoupling
+-- migration 0005_branch_intel.sql introduced) - clearing them here would
+-- force a needless re-fetch of data this migration has no bearing on.
+UPDATE repo_remote_meta SET etag = NULL;
