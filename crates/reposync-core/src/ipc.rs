@@ -286,6 +286,23 @@ pub struct RepoSummary {
     /// `Tracking` - assuming the reassuring value is the bug this field exists to
     /// fix. It resolves itself the first time the repo is checked.
     pub upstream_state: Option<crate::policy::UpstreamState>,
+    // --- repo_remote_meta: GitHub repo-resource fields (migration
+    //     0010_remote_metadata.sql) ---
+    /// Star count (`stargazers_count`). `None` = un-refreshed / non-GitHub /
+    /// absent from the response, never a fabricated zero.
+    pub stars: Option<i64>,
+    /// Fork count (`forks_count`). Same `None` meaning as `stars`.
+    pub forks: Option<i64>,
+    /// The license's SPDX id (e.g. `"MIT"`), or `None` when GitHub reports no
+    /// license (or the repo has never been refreshed).
+    pub license: Option<String>,
+    /// Repo size in kilobytes, as GitHub reports it.
+    pub size: Option<i64>,
+    /// GitHub's own visibility string (`"public"` / `"private"` / `"internal"`).
+    pub visibility: Option<String>,
+    /// The repo's homepage URL. `None` when GitHub returns null, an empty
+    /// string, or the repo has never been refreshed - never a fabricated value.
+    pub homepage: Option<String>,
 }
 
 /// The full detail of a tracked repo (detail view). Repeats every
@@ -347,6 +364,23 @@ pub struct RepoDetail {
     /// When the PR counts were last confirmed against GitHub, for the drawer's
     /// "as of <time>" staleness marker when offline / rate-limited (E-17 AC8).
     pub pr_last_checked_at: Option<i64>,
+    // --- repo_remote_meta: GitHub repo-resource fields (migration
+    //     0010_remote_metadata.sql) ---
+    /// Star count (`stargazers_count`). `None` = un-refreshed / non-GitHub /
+    /// absent from the response, never a fabricated zero.
+    pub stars: Option<i64>,
+    /// Fork count (`forks_count`). Same `None` meaning as `stars`.
+    pub forks: Option<i64>,
+    /// The license's SPDX id (e.g. `"MIT"`), or `None` when GitHub reports no
+    /// license (or the repo has never been refreshed).
+    pub license: Option<String>,
+    /// Repo size in kilobytes, as GitHub reports it.
+    pub size: Option<i64>,
+    /// GitHub's own visibility string (`"public"` / `"private"` / `"internal"`).
+    pub visibility: Option<String>,
+    /// The repo's homepage URL. `None` when GitHub returns null, an empty
+    /// string, or the repo has never been refreshed - never a fabricated value.
+    pub homepage: Option<String>,
 }
 
 // =============================================================================
@@ -698,6 +732,12 @@ mod tests {
             // has to prove a non-default variant survives, and Deleted is the one
             // the UI branches on (BL-NI-77).
             upstream_state: Some(crate::policy::UpstreamState::Deleted),
+            stars: Some(42),
+            forks: Some(7),
+            license: Some("MIT".into()),
+            size: Some(1234),
+            visibility: Some("public".into()),
+            homepage: Some("https://example.com".into()),
         };
         assert_round_trip(&summary);
 
@@ -740,6 +780,12 @@ mod tests {
             open_pr_count: Some(3),
             default_branch_pr_count: Some(1),
             pr_last_checked_at: Some(1_700_000_500),
+            stars: Some(42),
+            forks: Some(7),
+            license: Some("MIT".into()),
+            size: Some(1234),
+            visibility: Some("public".into()),
+            homepage: Some("https://example.com".into()),
         };
         assert_round_trip(&detail);
 

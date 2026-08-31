@@ -61,6 +61,25 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   rebuilding the table, so fresh installs get the same values from the seeding
   INSERT in `store::settings_get` instead: the singleton row does not exist yet
   when this migration runs.
+- `0010_remote_metadata.sql` - additive GitHub repo-resource columns on
+  `repo_remote_meta`: `stars`, `forks`, `license`, `size`, `visibility`,
+  `homepage`. All six already arrive on every GitHub repo-resource response
+  that `github.rs` fetches and were discarded rather than persisted; they
+  unblock the gated Repos table columns and the "open homepage" link glyph in
+  the UI finalization roadmap's DataTable slice. Every column is NULLable with
+  no default (unknown or absent is NULL, never a fabricated zero or empty
+  string), so a plain `ALTER TABLE ADD COLUMN`, no rebuild. Also includes a
+  data-migration statement, `UPDATE repo_remote_meta SET etag = NULL`, found
+  necessary by a Codex adversarial review of this PR: the repo-resource ETag
+  cached before this migration would otherwise keep answering 304 Not
+  Modified forever on an upgraded database, and the 304 path only bumps
+  `last_fetched_at` - it never rewrites the six columns just added - so an
+  unchanged repo's new columns would stay NULL indefinitely. Clearing the
+  ETag forces exactly one full 200 fetch per repo on its next due pass, which
+  self-heals every column with no further code change. `release_etag` and
+  `pr_etag` are deliberately left alone; they are the release and
+  pull-request sub-resources' own independently-cached ETags (BL-NI-15b) and
+  have no bearing on the six repo-resource columns this migration adds.
 
 ## Migration policy
 

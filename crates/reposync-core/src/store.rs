@@ -53,7 +53,9 @@ pub async fn repo_list(
             s.upstream_state AS upstream_state, \
             s.last_local_commit_at AS last_local_commit_at, \
             m.latest_release_tag AS latest_release_tag, \
-            m.open_pr_count AS open_pr_count \
+            m.open_pr_count AS open_pr_count, \
+            m.stars AS stars, m.forks AS forks, m.license AS license, \
+            m.size AS size, m.visibility AS visibility, m.homepage AS homepage \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
@@ -104,6 +106,12 @@ pub async fn repo_list(
             open_pr_count: r.try_get("open_pr_count")?,
             last_local_commit_at: r.try_get("last_local_commit_at")?,
             upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
+            stars: r.try_get("stars")?,
+            forks: r.try_get("forks")?,
+            license: r.try_get("license")?,
+            size: r.try_get("size")?,
+            visibility: r.try_get("visibility")?,
+            homepage: r.try_get("homepage")?,
         });
     }
     Ok(out)
@@ -146,7 +154,9 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
             m.last_remote_sha AS last_remote_sha, m.last_fetched_at AS last_fetched_at, \
             m.open_pr_count AS open_pr_count, \
             m.default_branch_pr_count AS default_branch_pr_count, \
-            m.pr_last_checked_at AS pr_last_checked_at \
+            m.pr_last_checked_at AS pr_last_checked_at, \
+            m.stars AS stars, m.forks AS forks, m.license AS license, \
+            m.size AS size, m.visibility AS visibility, m.homepage AS homepage \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
@@ -203,6 +213,12 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
         open_pr_count: r.try_get("open_pr_count")?,
         default_branch_pr_count: r.try_get("default_branch_pr_count")?,
         pr_last_checked_at: r.try_get("pr_last_checked_at")?,
+        stars: r.try_get("stars")?,
+        forks: r.try_get("forks")?,
+        license: r.try_get("license")?,
+        size: r.try_get("size")?,
+        visibility: r.try_get("visibility")?,
+        homepage: r.try_get("homepage")?,
     })
 }
 
@@ -1164,6 +1180,69 @@ mod tests {
         // get of an unknown id is NotFound.
         let missing = repo_get(&pool, RepoId(9999)).await;
         assert!(matches!(missing, Err(AppError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn remote_metadata_fields_surface_on_get_and_list() {
+        // Migration 0010_remote_metadata.sql: stars / forks / license / size /
+        // visibility / homepage must thread through both the detail and list read
+        // paths exactly like the pre-existing repo_remote_meta fields do.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping remote_metadata_fields_surface_on_get_and_list: git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        init_repo_with_commit(repotmp.path());
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        // Before any GitHub refresh, no repo_remote_meta row exists at all: every
+        // new field must read as None, not a fabricated default.
+        let before = repo_get(&pool, id).await.expect("get before refresh");
+        assert_eq!(before.stars, None);
+        assert_eq!(before.forks, None);
+        assert_eq!(before.license, None);
+        assert_eq!(before.size, None);
+        assert_eq!(before.visibility, None);
+        assert_eq!(before.homepage, None);
+
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, stars, forks, license, size, visibility, homepage) \
+             VALUES (?, 42, 7, 'MIT', 1234, 'public', 'https://example.com')",
+        )
+        .bind(id.0)
+        .execute(&pool)
+        .await
+        .expect("seed repo_remote_meta");
+
+        let detail = repo_get(&pool, id).await.expect("get after refresh");
+        assert_eq!(detail.stars, Some(42));
+        assert_eq!(detail.forks, Some(7));
+        assert_eq!(detail.license.as_deref(), Some("MIT"));
+        assert_eq!(detail.size, Some(1234));
+        assert_eq!(detail.visibility.as_deref(), Some("public"));
+        assert_eq!(detail.homepage.as_deref(), Some("https://example.com"));
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert_eq!(summary.stars, Some(42));
+        assert_eq!(summary.forks, Some(7));
+        assert_eq!(summary.license.as_deref(), Some("MIT"));
+        assert_eq!(summary.size, Some(1234));
+        assert_eq!(summary.visibility.as_deref(), Some("public"));
+        assert_eq!(summary.homepage.as_deref(), Some("https://example.com"));
     }
 
     #[tokio::test]
