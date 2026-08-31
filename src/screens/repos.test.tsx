@@ -355,9 +355,9 @@ describe("ReposScreen table", () => {
     expect(dataRow.hasAttribute("tabindex")).toBe(false);
   });
 
-  it("Enter on Check now only checks; the chevron is the keyboard path into the drawer", async () => {
-    const CHECK_RESULT: CheckResult = {
-      repoId: 9,
+  it("Enter/Space on Check now only checks; the chevron is the keyboard path into the drawer", async () => {
+    const checkResult = (repoId: number): CheckResult => ({
+      repoId,
       decision: "up-to-date",
       reason: null,
       ahead: 0,
@@ -366,8 +366,8 @@ describe("ReposScreen table", () => {
       isDetached: false,
       checkedAt: 1_700_000_100,
       failed: false,
-    };
-    const checkNow = mockCommand(commands, "repoCheckNow", async () => ok(CHECK_RESULT));
+    });
+    const checkNow = mockCommand(commands, "repoCheckNow", async (id: number) => ok(checkResult(id)));
     const repoGet = mockCommand(commands, "repoGet", async () => ok(MINIMAL_DETAIL));
     mockCommand(commands, "groupList", async () => ok([]));
     mockCommand(commands, "groupsForRepo", async () => ok([]));
@@ -375,17 +375,36 @@ describe("ReposScreen table", () => {
     for (const ev of [events.repoStateChanged]) {
       vi.spyOn(ev, "listen").mockResolvedValue(() => {});
     }
-    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    // Two rows, not one: pressing the SAME chevron twice for an already-open
+    // repo is a no-op by design (React bails on re-setting an unchanged
+    // `selectedId`, and `useModalA11y` moves focus into the drawer on open
+    // anyway), so isolating what Space does on its own needs a second,
+    // never-yet-selected row.
+    renderScreen([repo({ id: 9, localName: "repo-nine" }), repo({ id: 10, localName: "repo-ten" })]);
     await screen.findByText("repo-nine");
     const user = userEvent.setup();
+    const rowFor = (name: string) => screen.getByText(name).closest('[role="row"]') as HTMLElement;
 
-    screen.getByRole("button", { name: "Check now" }).focus();
+    within(rowFor("repo-nine")).getByRole("button", { name: "Check now" }).focus();
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(checkNow).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(checkNow).toHaveBeenCalledTimes(1));
+    expect(checkNow).toHaveBeenLastCalledWith(9);
     expect(repoGet).not.toHaveBeenCalled();
 
-    screen.getByRole("button", { name: "Open details" }).focus();
+    within(rowFor("repo-ten")).getByRole("button", { name: "Check now" }).focus();
+    await user.keyboard(" ");
+    await waitFor(() => expect(checkNow).toHaveBeenCalledTimes(2));
+    expect(checkNow).toHaveBeenLastCalledWith(10);
+    expect(repoGet).not.toHaveBeenCalled();
+
+    within(rowFor("repo-nine")).getByRole("button", { name: "Open details" }).focus();
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(repoGet).toHaveBeenCalledWith(9));
+    await waitFor(() => expect(repoGet).toHaveBeenCalledTimes(1));
+    expect(repoGet).toHaveBeenLastCalledWith(9);
+
+    within(rowFor("repo-ten")).getByRole("button", { name: "Open details" }).focus();
+    await user.keyboard(" ");
+    await waitFor(() => expect(repoGet).toHaveBeenCalledTimes(2));
+    expect(repoGet).toHaveBeenLastCalledWith(10);
   });
 });
