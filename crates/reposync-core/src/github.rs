@@ -89,6 +89,11 @@ pub struct RepoCoords {
 /// `repo_remote_meta` shape (E-02). The latest-release and pull-request fields are
 /// modeled as their OWN sub-resource fetches ([`ReleaseFetch`] / [`PrFetch`]),
 /// because each can fail independently of the repo fetch (BL-NI-15a/b).
+///
+/// `stars` / `forks` / `license` / `size` / `visibility` / `homepage` (migration
+/// `0010_remote_metadata.sql`) all follow the same rule as every other field here:
+/// absent or null in the response means `None`, never a fabricated zero or empty
+/// string.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GhMetadata {
     pub description: Option<String>,
@@ -96,6 +101,23 @@ pub struct GhMetadata {
     /// Topics, serialized to a JSON-array string for `topics_json`.
     pub topics_json: Option<String>,
     pub is_archived: bool,
+    /// `stargazers_count`, verbatim.
+    pub stars: Option<i64>,
+    /// `forks_count`, verbatim.
+    pub forks: Option<i64>,
+    /// The license's SPDX id (`license.spdx_id`) when the response nests `license`
+    /// as an object; `None` when `license` is null or absent. GitHub returns
+    /// `"NOASSERTION"` (a real string, not absent) for a license it detects but
+    /// cannot classify.
+    pub license: Option<String>,
+    /// The repo size in kilobytes, as GitHub reports it.
+    pub size: Option<i64>,
+    /// GitHub's own `visibility` string (`"public"` / `"private"` / `"internal"`),
+    /// stored verbatim.
+    pub visibility: Option<String>,
+    /// `None` when GitHub returns `homepage` as null OR an empty string - an
+    /// empty string is not a real value and must never be stored as one.
+    pub homepage: Option<String>,
 }
 
 /// The rate-limit budget read from a response's `X-RateLimit-*` headers.
@@ -166,8 +188,14 @@ pub(crate) fn classify_repo_status(status: u16, rate_limit: RateLimit) -> Option
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepoFetch {
     /// 200: fresh metadata, the new ETag, the observed commit SHA, and the budget.
+    ///
+    /// `metadata` is boxed: migration `0010_remote_metadata.sql`'s six added
+    /// fields grew [`GhMetadata`] enough that clippy's `large_enum_variant`
+    /// flags this variant against the much smaller others ([`RepoFetch::NotFound`]
+    /// is a unit variant), so boxing keeps `size_of::<RepoFetch>()` small instead
+    /// of every variant paying for the largest one's stack space.
     Modified {
-        metadata: GhMetadata,
+        metadata: Box<GhMetadata>,
         etag: Option<String>,
         observed_sha: Option<String>,
         rate_limit: RateLimit,
@@ -584,11 +612,15 @@ fn is_utc_zone(tz: &str) -> bool {
 
 /// Map a GitHub REPO JSON into the [`GhMetadata`] / `repo_remote_meta` shape (AC1):
 /// `topics` -> `topics_json` (a JSON-array string), plus description / default_branch /
-/// archived. The latest release is mapped separately by [`map_release`].
+/// archived, and (migration `0010_remote_metadata.sql`) stars / forks / license /
+/// size / visibility / homepage. The latest release is mapped separately by
+/// [`map_release`].
 pub fn map_metadata(repo_json: &serde_json::Value) -> GhMetadata {
     let str_field = |v: &serde_json::Value, key: &str| -> Option<String> {
         v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
     };
+    let i64_field =
+        |v: &serde_json::Value, key: &str| -> Option<i64> { v.get(key).and_then(|x| x.as_i64()) };
     let is_archived = repo_json
         .get("archived")
         .and_then(|v| v.as_bool())
@@ -603,11 +635,28 @@ pub fn map_metadata(repo_json: &serde_json::Value) -> GhMetadata {
                 .collect();
             serde_json::to_string(&topics).unwrap_or_else(|_| "[]".to_string())
         });
+    // `license` nests as an object ({"spdx_id": "MIT", ...}) or is null/absent. The
+    // SPDX id is the string identifier we persist; a missing key, a null license,
+    // or a license object with no spdx_id all fall through to None the same way.
+    let license = repo_json
+        .get("license")
+        .and_then(|l| l.get("spdx_id"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+    // `homepage` must never store an empty string: GitHub represents "no
+    // homepage" as either a JSON null or an empty string, and both mean None.
+    let homepage = str_field(repo_json, "homepage").filter(|s| !s.is_empty());
     GhMetadata {
         description: str_field(repo_json, "description"),
         default_branch: str_field(repo_json, "default_branch"),
         topics_json,
         is_archived,
+        stars: i64_field(repo_json, "stargazers_count"),
+        forks: i64_field(repo_json, "forks_count"),
+        license,
+        size: i64_field(repo_json, "size"),
+        visibility: str_field(repo_json, "visibility"),
+        homepage,
     }
 }
 
@@ -943,12 +992,16 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
                 sqlx::query(
                     "INSERT INTO repo_remote_meta \
                      (repo_id, description, topics_json, is_archived, last_remote_sha, \
-                      last_fetched_at, etag) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?) \
+                      last_fetched_at, etag, stars, forks, license, size, visibility, \
+                      homepage) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
                      ON CONFLICT(repo_id) DO UPDATE SET \
                       description = excluded.description, topics_json = excluded.topics_json, \
                       is_archived = excluded.is_archived, last_remote_sha = excluded.last_remote_sha, \
-                      last_fetched_at = excluded.last_fetched_at, etag = excluded.etag",
+                      last_fetched_at = excluded.last_fetched_at, etag = excluded.etag, \
+                      stars = excluded.stars, forks = excluded.forks, \
+                      license = excluded.license, size = excluded.size, \
+                      visibility = excluded.visibility, homepage = excluded.homepage",
                 )
                 .bind(repo_id)
                 .bind(&metadata.description)
@@ -957,6 +1010,12 @@ pub async fn refresh_one<T: Transport, P: TokenProvider>(
                 .bind(&observed_sha)
                 .bind(now)
                 .bind(&new_etag)
+                .bind(metadata.stars)
+                .bind(metadata.forks)
+                .bind(&metadata.license)
+                .bind(metadata.size)
+                .bind(&metadata.visibility)
+                .bind(&metadata.homepage)
                 .execute(&mut *tx)
                 .await?;
                 tx.commit().await?;
@@ -1366,7 +1425,7 @@ impl Transport for ReqwestTransport {
         // value needs a separate commits call. V1 leaves it None when not cheaply
         // available; a commits-based fill is a documented refinement (backlog).
         RepoFetch::Modified {
-            metadata,
+            metadata: Box::new(metadata),
             etag: new_etag,
             observed_sha: None,
             rate_limit,
@@ -1676,7 +1735,13 @@ mod tests {
             "description": "a repo",
             "default_branch": "main",
             "archived": true,
-            "topics": ["rust", "cli"]
+            "topics": ["rust", "cli"],
+            "stargazers_count": 42,
+            "forks_count": 7,
+            "license": { "key": "mit", "name": "MIT License", "spdx_id": "MIT" },
+            "size": 1234,
+            "visibility": "public",
+            "homepage": "https://example.com"
         });
         let m = map_metadata(&repo);
         assert_eq!(m.description.as_deref(), Some("a repo"));
@@ -1684,6 +1749,59 @@ mod tests {
         assert!(m.is_archived);
         let topics: Vec<String> = serde_json::from_str(m.topics_json.as_deref().unwrap()).unwrap();
         assert_eq!(topics, vec!["rust", "cli"]);
+        assert_eq!(m.stars, Some(42));
+        assert_eq!(m.forks, Some(7));
+        assert_eq!(m.license.as_deref(), Some("MIT"));
+        assert_eq!(m.size, Some(1234));
+        assert_eq!(m.visibility.as_deref(), Some("public"));
+        assert_eq!(m.homepage.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn map_metadata_null_license_and_homepage_preserved() {
+        // AC (this migration): an absent license and a null homepage must stay
+        // None, never a fabricated value - the project's known defect pattern is
+        // code asserting what it cannot know.
+        let repo = serde_json::json!({
+            "description": "a repo",
+            "license": null,
+            "homepage": null,
+            "stargazers_count": 0,
+            "forks_count": 0
+        });
+        let m = map_metadata(&repo);
+        assert_eq!(m.license, None, "a null license must map to None");
+        assert_eq!(m.homepage, None, "a null homepage must map to None");
+        // A genuine zero (a brand-new repo with no stars or forks) is a real,
+        // observed value and must NOT be conflated with "unknown".
+        assert_eq!(m.stars, Some(0));
+        assert_eq!(m.forks, Some(0));
+    }
+
+    #[test]
+    fn map_metadata_empty_homepage_string_is_none() {
+        // GitHub represents "no homepage" as either a JSON null or an empty
+        // string; both must map to None, never stored as an empty string.
+        let repo = serde_json::json!({ "homepage": "" });
+        let m = map_metadata(&repo);
+        assert_eq!(
+            m.homepage, None,
+            "an empty-string homepage must map to None"
+        );
+    }
+
+    #[test]
+    fn map_metadata_absent_fields_are_none() {
+        // No license key, no homepage key, no stargazers/forks/size/visibility
+        // keys at all (not even null) - every one of the six new fields must
+        // still fall through to None rather than panicking or defaulting.
+        let m = map_metadata(&serde_json::json!({}));
+        assert_eq!(m.stars, None);
+        assert_eq!(m.forks, None);
+        assert_eq!(m.license, None);
+        assert_eq!(m.size, None);
+        assert_eq!(m.visibility, None);
+        assert_eq!(m.homepage, None);
     }
 
     #[test]
@@ -2155,6 +2273,12 @@ mod tests {
             default_branch: Some("main".into()),
             topics_json: Some("[\"a\"]".into()),
             is_archived: false,
+            stars: Some(42),
+            forks: Some(7),
+            license: Some("MIT".into()),
+            size: Some(1234),
+            visibility: Some("public".into()),
+            homepage: Some("https://example.com".into()),
         }
     }
 
@@ -2206,7 +2330,7 @@ mod tests {
         let id = seed_github_repo(&pool).await;
         let t = FakeTransport::new(
             RepoFetch::Modified {
-                metadata: sample_metadata(),
+                metadata: Box::new(sample_metadata()),
                 etag: Some("\"repo\"".into()),
                 observed_sha: Some("deadbeef".into()),
                 rate_limit: healthy_budget(),
@@ -2254,6 +2378,30 @@ mod tests {
                 .as_deref(),
             Some("\"repo\"")
         );
+        assert_eq!(read_meta::<Option<i64>>(&pool, id, "stars").await, Some(42));
+        assert_eq!(read_meta::<Option<i64>>(&pool, id, "forks").await, Some(7));
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "license")
+                .await
+                .as_deref(),
+            Some("MIT")
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "size").await,
+            Some(1234)
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "visibility")
+                .await
+                .as_deref(),
+            Some("public")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "homepage")
+                .await
+                .as_deref(),
+            Some("https://example.com")
+        );
         assert_eq!(
             read_meta::<Option<String>>(&pool, id, "release_etag")
                 .await
@@ -2286,6 +2434,81 @@ mod tests {
             t.last_pr_default_branch.borrow().as_deref(),
             Some("main"),
             "the pulls fetch is told the default branch for the subset count"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_with_no_stored_etag_sends_no_if_none_match_and_backfills_all_columns() {
+        // Regression for the Codex adversarial review of migration 0010: a row
+        // shaped exactly like what 0010's own `UPDATE ... SET etag = NULL`
+        // produces on an upgraded database - a stale last_fetched_at, no etag,
+        // and the six new columns still NULL because they predate the migration
+        // - must send NO If-None-Match on its next due pass, get a full 200
+        // body, and backfill every column. This is the self-heal migration 0010
+        // relies on instead of a second code change: proving it here pins that
+        // an absent etag really does produce an unconditional request, not just
+        // that the migration clears the column (see db.rs's
+        // `upgrading_a_pre_0010_database_clears_the_repo_resource_etag`, which
+        // proves the other half).
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let id = seed_github_repo(&pool).await;
+        sqlx::query(
+            "INSERT INTO repo_remote_meta (repo_id, description, last_fetched_at) \
+             VALUES (?, 'old desc', 1)",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let t = FakeTransport::repo_only(RepoFetch::Modified {
+            metadata: Box::new(sample_metadata()),
+            etag: Some("\"fresh\"".into()),
+            observed_sha: Some("deadbeef".into()),
+            rate_limit: healthy_budget(),
+        });
+        let now = 1 + REFRESH_WINDOW_SECS + 10;
+        let out = refresh_one(&pool, &t, &NoToken, id, now, false)
+            .await
+            .unwrap();
+        assert_eq!(out.outcome, RefreshOutcome::Updated);
+        assert_eq!(
+            t.last_repo_etag.borrow().as_deref(),
+            None,
+            "no stored etag means no If-None-Match is sent - the request must be \
+             unconditional, or the upgraded row would 304 forever and never backfill"
+        );
+        assert_eq!(read_meta::<Option<i64>>(&pool, id, "stars").await, Some(42));
+        assert_eq!(read_meta::<Option<i64>>(&pool, id, "forks").await, Some(7));
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "license")
+                .await
+                .as_deref(),
+            Some("MIT")
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "size").await,
+            Some(1234)
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "visibility")
+                .await
+                .as_deref(),
+            Some("public")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "homepage")
+                .await
+                .as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            read_meta::<Option<String>>(&pool, id, "etag")
+                .await
+                .as_deref(),
+            Some("\"fresh\""),
+            "a fresh ETag is stored after the unconditional fetch, so the very next \
+             pass goes back to conditional requests"
         );
     }
 
@@ -2329,8 +2552,8 @@ mod tests {
         let id = seed_github_repo(&pool).await;
         sqlx::query(
             "INSERT INTO repo_remote_meta \
-             (repo_id, description, last_fetched_at, etag, release_etag, pr_etag) \
-             VALUES (?, 'cached desc', ?, '\"repo-e\"', '\"rel-e\"', '\"pr-e\"')",
+             (repo_id, description, last_fetched_at, etag, release_etag, pr_etag, stars) \
+             VALUES (?, 'cached desc', ?, '\"repo-e\"', '\"rel-e\"', '\"pr-e\"', 99)",
         )
         .bind(id)
         .bind(1_i64)
@@ -2371,6 +2594,11 @@ mod tests {
             read_meta::<Option<i64>>(&pool, id, "last_fetched_at").await,
             Some(now),
             "a 304 bumps only last_fetched_at"
+        );
+        assert_eq!(
+            read_meta::<Option<i64>>(&pool, id, "stars").await,
+            Some(99),
+            "a 304 leaves the migration 0010 columns intact too, not just description"
         );
     }
 
@@ -2434,7 +2662,7 @@ mod tests {
         .unwrap();
         let t = FakeTransport::new(
             RepoFetch::Modified {
-                metadata: sample_metadata(),
+                metadata: Box::new(sample_metadata()),
                 etag: Some("\"repo\"".into()),
                 observed_sha: None,
                 rate_limit: healthy_budget(),
@@ -2559,12 +2787,13 @@ mod tests {
         .unwrap();
         let t = FakeTransport::new(
             RepoFetch::Modified {
-                metadata: GhMetadata {
+                metadata: Box::new(GhMetadata {
                     description: Some("fresh desc".into()),
                     default_branch: Some("main".into()),
                     topics_json: Some("[]".into()),
                     is_archived: false,
-                },
+                    ..Default::default()
+                }),
                 etag: Some("\"new\"".into()),
                 observed_sha: None,
                 rate_limit: healthy_budget(),
@@ -2617,7 +2846,7 @@ mod tests {
         .unwrap();
         let t = FakeTransport::new(
             RepoFetch::Modified {
-                metadata: sample_metadata(),
+                metadata: Box::new(sample_metadata()),
                 etag: None,
                 observed_sha: None,
                 rate_limit: healthy_budget(),
@@ -2678,7 +2907,7 @@ mod tests {
         let id = seed_github_repo(&pool).await;
         let t = FakeTransport::new(
             RepoFetch::Modified {
-                metadata: sample_metadata(),
+                metadata: Box::new(sample_metadata()),
                 etag: None,
                 observed_sha: None,
                 rate_limit: healthy_budget(),
@@ -2746,10 +2975,10 @@ mod tests {
             _t: Option<&str>,
         ) -> RepoFetch {
             RepoFetch::Modified {
-                metadata: GhMetadata {
+                metadata: Box::new(GhMetadata {
                     default_branch: Some("main".into()),
                     ..Default::default()
-                },
+                }),
                 etag: Some("\"e\"".into()),
                 observed_sha: None,
                 rate_limit: RateLimit {

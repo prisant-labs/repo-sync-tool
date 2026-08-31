@@ -473,6 +473,108 @@ mod tests {
         );
     }
 
+    /// Upgrade proof for migration 0010 (Codex adversarial review, confirmed
+    /// 2026-08-28): a database that already has a cached repo-resource `etag`
+    /// keeps sending it as `If-None-Match`, so an unchanged repo would 304
+    /// forever and the six columns 0010 adds would stay NULL indefinitely on an
+    /// upgraded install, even though the repo has been refreshed many times.
+    /// This builds the pre-0010 schema, seeds a `repo_remote_meta` row shaped
+    /// like a real, already-refreshed repo (a cached etag, a real
+    /// `last_fetched_at`, a populated `description`), and asserts 0010 clears
+    /// ONLY the etag - forcing exactly one full re-fetch on the repo's next due
+    /// pass - while leaving everything else, including cadence-relevant
+    /// `last_fetched_at`, untouched.
+    #[tokio::test]
+    async fn upgrading_a_pre_0010_database_clears_the_repo_resource_etag() {
+        use sqlx::migrate::Migrator;
+
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("upgrade-0010.db");
+        let pool = open_pool(&db).await.expect("open_pool");
+
+        // Build the prior-release schema: 0001-0009 only (0010 is the migration
+        // under test). Filtering the embedded set keeps this fixture honest - it
+        // is the same SQL that shipped, not a hand-copied snapshot that can
+        // silently drift from the real migrations.
+        let released = Migrator::with_migrations(
+            sqlx::migrate!("./migrations")
+                .iter()
+                .filter(|m| m.version <= 9)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        released.run(&pool).await.expect("apply 0001-0009");
+
+        // Guard the fixture's own premise. If this fires, the filter above is
+        // wrong and the rest of the test would be proving nothing.
+        assert!(
+            !column_exists(&pool, "repo_remote_meta", "stars").await,
+            "fixture is not at the pre-0010 schema: 0010 appears to have been applied already"
+        );
+
+        // A real install has already refreshed this repo many times: a cached
+        // ETag, a real last_fetched_at, and a description populated from a
+        // prior 200/304.
+        let repo_id = sqlx::query(
+            "INSERT INTO repos (local_name, local_path, host_type, created_at) \
+             VALUES ('r', 'C:/r', 'github', 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed a repos row")
+        .last_insert_rowid();
+        sqlx::query(
+            "INSERT INTO repo_remote_meta (repo_id, description, etag, last_fetched_at) \
+             VALUES (?, 'an existing repo', '\"cached-etag\"', 123456)",
+        )
+        .bind(repo_id)
+        .execute(&pool)
+        .await
+        .expect("seed a pre-0010 repo_remote_meta row");
+
+        // Now upgrade.
+        run_migrations(&pool).await.expect("upgrade to current");
+
+        assert!(
+            column_exists(&pool, "repo_remote_meta", "stars").await,
+            "0010 did not add the new columns on upgrade"
+        );
+
+        let row = sqlx::query(
+            "SELECT etag, last_fetched_at, description, stars \
+             FROM repo_remote_meta WHERE repo_id = ?",
+        )
+        .bind(repo_id)
+        .fetch_one(&pool)
+        .await
+        .expect("repo_remote_meta row survives the upgrade");
+
+        let etag: Option<String> = row.try_get("etag").expect("etag column");
+        assert_eq!(
+            etag, None,
+            "0010 must clear a pre-existing repo-resource etag, or an upgraded \
+             install answers 304 forever and the new columns never backfill"
+        );
+
+        // The upgrade must not disturb anything else that was already cached.
+        let last_fetched_at: i64 = row.try_get("last_fetched_at").expect("existing column");
+        let description: String = row.try_get("description").expect("existing column");
+        assert_eq!(
+            last_fetched_at, 123_456,
+            "clearing the etag must not also reset last_fetched_at - that would \
+             thunder-herd every repo as newly due instead of on its normal cadence"
+        );
+        assert_eq!(
+            description, "an existing repo",
+            "upgrade must not reset description"
+        );
+
+        // A genuinely un-backfilled column stays NULL until the next refresh;
+        // the migration itself never fabricates a value for it.
+        let stars: Option<i64> = row.try_get("stars").expect("new column");
+        assert_eq!(stars, None);
+    }
+
     #[tokio::test]
     async fn migrations_create_all_v1_tables() {
         let (_dir, pool) = fresh_pool().await;

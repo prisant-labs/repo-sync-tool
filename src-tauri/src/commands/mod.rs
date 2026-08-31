@@ -10,9 +10,10 @@
 
 use reposync_core::error::AppError;
 use reposync_core::ipc::{
-    ActivityFilter, ActivityRecord, CheckResult, DailySummary, DbRecoveryNotice, Diagnostics,
-    GroupSummary, RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanResult,
-    Settings, UpdateAvailability, UpdateMode, UpdatePolicy, UpdateResult, WeeklySummary,
+    ActivityFilter, ActivityRecord, CheckAllSummary, CheckResult, DailySummary, DbRecoveryNotice,
+    Diagnostics, GroupSummary, RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary,
+    ScanResult, Settings, UpdateAvailability, UpdateMode, UpdatePolicy, UpdateResult,
+    WeeklySummary,
 };
 use reposync_core::notify::{NoteKind, NotifiableEvent};
 use reposync_core::scheduler::{RepoLocks, SharedGitEngine};
@@ -85,19 +86,25 @@ pub async fn repo_check_now(
 /// repos (the pure
 /// [`reposync_core::store::select_check_all_targets`]) and runs each through the
 /// SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
-/// never launch two `git` processes in one working tree. Returns the number of repos
-/// checked. Per-repo events fire like a manual check (`check-started` /
-/// `check-completed`); a per-repo failure is surfaced via `error:raised` (the tray
-/// action is fire-and-forget, so there is no synchronous caller to receive it) and
-/// does not abort the run.
+/// never launch two `git` processes in one working tree. Returns a structured
+/// [`CheckAllSummary`] rather than a bare count. Per-repo events fire like a manual
+/// check (`check-started` / `check-completed`); a per-repo `check_now` call that
+/// returned `Err` with no `CheckResult` (see [`CheckAllSummary::no_result`] for why
+/// that is not always "could not run at all") is surfaced via `error:raised` (the
+/// tray action is fire-and-forget, so there is no synchronous caller to receive it)
+/// and does not abort the run.
 ///
-/// Since BL-NI-04 the returned count means "attempted", not "succeeded". A check
-/// whose fetch failed now returns `Ok` with `failed: true`, so it emits its
-/// completion event and counts here. That widening is deliberate and it is the
-/// honest reading of a tray item labelled "Check All Now": the user asked for N
-/// repos to be checked, N were checked, and some of them came back with bad news
-/// that the per-repo event now carries. The `error:raised` arm is left for the
-/// checks that could not RUN at all.
+/// Since BL-NI-04 a check whose fetch failed returns `Ok` with `failed: true`, so it
+/// emits its completion event and counts as `completed` (with `failedCheck`
+/// incremented), not as a thrown error. That is the honest reading of a tray item
+/// labelled "Check All Now": the user asked for N repos to be checked, N were
+/// targeted, and some of them came back with bad news that the per-repo event
+/// carries. Before this summary type existed the command returned a single `u32`
+/// that ALSO meant "completed," so a caller reading a zero return could not tell "no
+/// enabled repos" apart from "every targeted repo failed before producing a
+/// result" - a Codex adversarial review finding on PR #73 (`feat/shared-data-table`).
+/// `targeted` is the field that answers that question honestly; see
+/// [`CheckAllSummary`]'s own doc for the full field-by-field breakdown.
 //
 // BL-NI-86: this command currently has NO CALLER. Its doc used to say it was
 // "behind the tray Check All Now item (also callable from the frontend)", and
@@ -115,7 +122,7 @@ pub async fn repo_check_now(
 pub async fn repo_check_all(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<u32, AppError> {
+) -> Result<CheckAllSummary, AppError> {
     check_all_enabled(
         &app,
         &state.pool,
@@ -138,13 +145,18 @@ pub(crate) async fn check_all_enabled(
     git: &SharedGitEngine,
     locks: &RepoLocks,
     semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
-) -> Result<u32, AppError> {
+) -> Result<CheckAllSummary, AppError> {
     // Resolve the live engine once (cloned out of the read lock, guard dropped
     // immediately, per BL-NI-19); a check-all with no git is one clear error.
     let git = { git.read().await.clone() }.ok_or(AppError::GitNotFound)?;
 
     let flags = reposync_core::store::repo_enabled_flags(pool).await?;
     let targets = reposync_core::store::select_check_all_targets(&flags);
+    // Captured before `targets` is consumed by the spawn loop below, so this is
+    // "how many repos this burst meant to check," independent of how any of them
+    // turned out. See `CheckAllSummary::targeted`'s doc for why this is the field
+    // that answers "no enabled repos" honestly.
+    let targeted = targets.len();
 
     // Fan out under the scheduler's OWN semaphore, rather than one repo at a time
     // (BL-NI-41).
@@ -215,6 +227,17 @@ pub(crate) async fn check_all_enabled(
     // Failures that COMPLETED (a non-zero fetch), collected rather than announced
     // one at a time. See the coalescing note below.
     let mut soft_failures: Vec<Option<String>> = Vec::new();
+    // Repos whose `check_now` call returned `Err` (the `Ok(Err(_))` arm below):
+    // distinct from `soft_failures`, which ran and came back with bad news as a
+    // COMPLETED `CheckResult`. Feeds `CheckAllSummary::no_result`.
+    //
+    // NOT purely "could not run at all," despite the arm's own comment below:
+    // `check_now_inner` (`repo.rs`) can also `Err` from its persistence
+    // transaction, which runs AFTER inspection and any real network fetch. A
+    // check that fetched successfully but then hit a DB error writing the
+    // outcome lands here too, indistinguishable from one that never ran. See
+    // `CheckAllSummary::no_result`'s doc for the full accounting.
+    let mut no_result = 0u32;
 
     while let Some(joined) = tasks.join_next().await {
         // Refill as each finishes, so the burst keeps `max_in_flight` moving
@@ -231,10 +254,15 @@ pub(crate) async fn check_all_enabled(
                     soft_failures.push(result.reason.clone());
                 }
             }
-            // A check that could not RUN at all (git vanished mid-burst, the path
-            // is gone). Still surfaced immediately and individually: it is rare,
-            // and it usually means the next repo will fail the same way.
-            Ok(Err(e)) => emit_error_raised(app, &e),
+            // `check_now` returned `Err`: no `CheckResult` was produced. Usually a
+            // preflight failure (git vanished mid-burst, the path is gone), but
+            // NOT always - see the `no_result` comment above. Still surfaced
+            // immediately and individually: it is rare, and a preflight failure
+            // usually means the next repo will fail the same way.
+            Ok(Err(e)) => {
+                no_result += 1;
+                emit_error_raised(app, &e);
+            }
             // The task did not return a value: it panicked or was cancelled. Under
             // the release profile's `panic = "abort"` a panicking task takes the
             // process with it, so this arm is unreachable in a shipped build and is
@@ -278,7 +306,32 @@ pub(crate) async fn check_all_enabled(
     // once per repo (BL-NI-40). A no-op when the order did not actually change.
     crate::tray::refresh_recent_menu(app).await;
 
-    Ok(checked)
+    Ok(summarize_check_all(
+        targeted,
+        checked,
+        no_result,
+        soft_failures.len() as u32,
+    ))
+}
+
+/// Assemble a [`CheckAllSummary`] from the burst's raw counters. Pure, so the
+/// arithmetic is asserted by a test rather than by reading the async
+/// orchestration above - the same reason [`check_all_failure_signal`] is pure.
+/// `succeeded` is derived here (`completed - failed_check`) rather than tracked
+/// as a fifth counter during the loop, so it can never drift from the other two.
+fn summarize_check_all(
+    targeted: usize,
+    completed: u32,
+    no_result: u32,
+    failed_check: u32,
+) -> CheckAllSummary {
+    CheckAllSummary {
+        targeted: targeted as i64,
+        completed: completed as i64,
+        succeeded: (completed as i64) - (failed_check as i64),
+        no_result: no_result as i64,
+        failed_check: failed_check as i64,
+    }
 }
 
 /// Choose the ONE error to report for a check-all burst, or `None` when nothing
@@ -1543,6 +1596,71 @@ mod tests {
     fn an_unknown_reason_code_still_produces_a_signal() {
         let reasons = vec![r("git.something_invented_later")];
         assert!(check_all_failure_signal(&reasons, 1).is_some());
+    }
+
+    // --- check-all summary tally (a Codex review finding on PR #73) ----------
+
+    /// A clean burst: everything targeted, everything completed, nothing failed.
+    #[test]
+    fn a_clean_summary_has_completed_equal_targeted_and_succeeded() {
+        let s = summarize_check_all(5, 5, 0, 0);
+        assert_eq!(s.targeted, 5);
+        assert_eq!(s.completed, 5);
+        assert_eq!(s.succeeded, 5);
+        assert_eq!(s.no_result, 0);
+        assert_eq!(s.failed_check, 0);
+    }
+
+    /// The exact ambiguity the review finding named: a bare zero return could
+    /// mean "no enabled repos" or "every targeted repo produced no result."
+    /// The structured summary tells them apart - `targeted` stays honest even
+    /// when nothing completed. Named `no_result`, not `failed_to_run`: a second
+    /// review finding on this same PR established that `check_now` can also
+    /// `Err` from a post-run persistence failure (`repo.rs`'s `check_now_inner`
+    /// transaction), after a real fetch already happened, so this count is not
+    /// proof the check never ran.
+    #[test]
+    fn every_targeted_repo_producing_no_result_leaves_targeted_nonzero_but_completed_zero() {
+        let s = summarize_check_all(3, 0, 3, 0);
+        assert_eq!(
+            s.targeted, 3,
+            "the honest count of what this burst meant to do"
+        );
+        assert_eq!(s.completed, 0);
+        assert_eq!(s.succeeded, 0);
+        assert_eq!(s.no_result, 3);
+        assert_eq!(s.failed_check, 0);
+    }
+
+    /// Zero `targeted` is the ONLY case that means "no enabled repos": the field
+    /// a caller should read for that message, never `completed`.
+    #[test]
+    fn zero_targeted_means_no_enabled_repos() {
+        let s = summarize_check_all(0, 0, 0, 0);
+        assert_eq!(s.targeted, 0);
+        assert_eq!(s.completed, 0);
+        assert_eq!(s.succeeded, 0);
+        assert_eq!(s.no_result, 0);
+        assert_eq!(s.failed_check, 0);
+    }
+
+    /// `succeeded` and `failed_check` partition `completed` exactly, and
+    /// `no_result` is counted separately from both - a repo with no recorded
+    /// outcome never contributes to `completed` at all, whether it never ran
+    /// or ran and then lost its outcome to a persistence failure.
+    #[test]
+    fn succeeded_and_failed_check_partition_completed() {
+        let s = summarize_check_all(10, 7, 1, 2);
+        assert_eq!(s.targeted, 10);
+        assert_eq!(s.completed, 7);
+        assert_eq!(s.failed_check, 2);
+        assert_eq!(s.succeeded, 5);
+        assert_eq!(s.no_result, 1);
+        assert_eq!(
+            s.succeeded + s.failed_check,
+            s.completed,
+            "succeeded + failedCheck must equal completed, always"
+        );
     }
 
     use reposync_core::github::{RateLimit, RefreshOutcome, RefreshReport};

@@ -29,21 +29,27 @@ export const commands = {
 	 *  repos (the pure
 	 *  [`reposync_core::store::select_check_all_targets`]) and runs each through the
 	 *  SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
-	 *  never launch two `git` processes in one working tree. Returns the number of repos
-	 *  checked. Per-repo events fire like a manual check (`check-started` /
-	 *  `check-completed`); a per-repo failure is surfaced via `error:raised` (the tray
-	 *  action is fire-and-forget, so there is no synchronous caller to receive it) and
-	 *  does not abort the run.
+	 *  never launch two `git` processes in one working tree. Returns a structured
+	 *  [`CheckAllSummary`] rather than a bare count. Per-repo events fire like a manual
+	 *  check (`check-started` / `check-completed`); a per-repo `check_now` call that
+	 *  returned `Err` with no `CheckResult` (see [`CheckAllSummary::no_result`] for why
+	 *  that is not always "could not run at all") is surfaced via `error:raised` (the
+	 *  tray action is fire-and-forget, so there is no synchronous caller to receive it)
+	 *  and does not abort the run.
 	 * 
-	 *  Since BL-NI-04 the returned count means "attempted", not "succeeded". A check
-	 *  whose fetch failed now returns `Ok` with `failed: true`, so it emits its
-	 *  completion event and counts here. That widening is deliberate and it is the
-	 *  honest reading of a tray item labelled "Check All Now": the user asked for N
-	 *  repos to be checked, N were checked, and some of them came back with bad news
-	 *  that the per-repo event now carries. The `error:raised` arm is left for the
-	 *  checks that could not RUN at all.
+	 *  Since BL-NI-04 a check whose fetch failed returns `Ok` with `failed: true`, so it
+	 *  emits its completion event and counts as `completed` (with `failedCheck`
+	 *  incremented), not as a thrown error. That is the honest reading of a tray item
+	 *  labelled "Check All Now": the user asked for N repos to be checked, N were
+	 *  targeted, and some of them came back with bad news that the per-repo event
+	 *  carries. Before this summary type existed the command returned a single `u32`
+	 *  that ALSO meant "completed," so a caller reading a zero return could not tell "no
+	 *  enabled repos" apart from "every targeted repo failed before producing a
+	 *  result" - a Codex adversarial review finding on PR #73 (`feat/shared-data-table`).
+	 *  `targeted` is the field that answers that question honestly; see
+	 *  [`CheckAllSummary`]'s own doc for the full field-by-field breakdown.
 	 */
-	repoCheckAll: () => typedError<number, AppErrorPayload>(__TAURI_INVOKE("repo_check_all")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	repoCheckAll: () => typedError<CheckAllSummary, AppErrorPayload>(__TAURI_INVOKE("repo_check_all")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  List tracked repos (summary view), filtered. */
 	repoList: (filter: RepoFilter) => typedError<RepoSummary[], AppErrorPayload>(__TAURI_INVOKE("repo_list", { filter })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Get the full detail of a single tracked repo. */
@@ -264,6 +270,83 @@ export type AppErrorPayload = {
 
 /**  Which branches a repo is allowed to update. */
 export type BranchPolicy = "default_branch_only" | "tracked_upstream_only" | "approved_branches" | "any_branch";
+
+/**
+ *  A structured tally of a "check all enabled repos" burst (`repo_check_all`,
+ *  E-13's tray "Check All Now"), replacing a bare `u32` count.
+ * 
+ *  A Codex adversarial review of the `feat/shared-data-table` DataTable slice
+ *  (PR #73) found the bare count could not be toasted honestly: a caller
+ *  reading a zero return cannot tell "no enabled repos" apart from "every
+ *  targeted repo failed before producing a result," because the old count only
+ *  ever meant "repos whose check completed" and dropped to zero in both cases.
+ * 
+ *  Every field here is a count `check_all_enabled` accumulates directly while
+ *  the burst runs; nothing is inferred after the fact. `targeted` is the one
+ *  fact that is NEVER zero for "everything failed" - it is read from
+ *  `select_check_all_targets`'s output before any task is spawned, so it
+ *  answers "how many repos did this burst mean to check" independent of how
+ *  any of them turned out.
+ * 
+ *  One count the review's suggested shape implied is deliberately NOT here:
+ *  there is no separate "started" field. `select_check_all_targets` is computed
+ *  once, up front, and nothing removes an entry from it before that repo's task
+ *  is spawned, so "started" and `targeted` are always the same number and a
+ *  distinct field would just repeat `targeted` under another name.
+ */
+export type CheckAllSummary = {
+	/**
+	 *  Repos selected for this burst (`select_check_all_targets`'s output,
+	 *  counted before any task runs). The honest answer to "how many repos did
+	 *  this burst mean to check" - zero here, and only here, means "no enabled
+	 *  repos."
+	 */
+	targeted: number,
+	/**
+	 *  Repos whose check task ran to completion and produced a [`CheckResult`],
+	 *  whether that result reported success or an operational failure. Excludes
+	 *  a repo whose task produced no result at all (`no_result`) and a repo
+	 *  whose task panicked or was cancelled - unreachable in a release build
+	 *  (`panic = "abort"` takes the whole process down first) and deliberately
+	 *  not counted anywhere in this struct, for the same reason
+	 *  `check_all_enabled`'s own doc gives for not counting it as "checked":
+	 *  doing so would be a different and misleading claim about what happened.
+	 *  `targeted` can therefore exceed `completed + no_result` in that
+	 *  unreachable-in-release case; it never does in a shipped build.
+	 */
+	completed: number,
+	/**
+	 *  Completed checks whose result reported success (`CheckResult.failed ==
+	 *  false`). Includes a deliberate policy skip - a skip is not a failure,
+	 *  see [`CheckResult::failed`].
+	 */
+	succeeded: number,
+	/**
+	 *  Repos whose check task produced NO recorded [`CheckResult`] at all: the
+	 *  `check_now` call itself returned `Err`. This is NOT proof the check
+	 *  never ran - `check_now` can fail at two different points, and this
+	 *  field cannot currently tell them apart:
+	 *    - a PREFLIGHT failure, before any network activity (the repo's row
+	 *      vanished, `git.inspect` found the path gone or not a repo);
+	 *    - a POST-RUN failure, after inspection and possibly a real network
+	 *      fetch already happened, in the persistence transaction that writes
+	 *      the outcome (`repo.rs`'s `check_now_inner`, the `tx.begin` /
+	 *      `UPDATE repo_local_state` / activity-record / `tx.commit` sequence).
+	 *      A DB error there discards a check that may have genuinely fetched.
+	 * 
+	 *  Distinguishing the two needs a typed per-repo outcome or fault-injection
+	 *  test plumbing that this struct deliberately does not build; see the
+	 *  owning PR's body for the deeper fix if it is wanted later.
+	 */
+	noResult: number,
+	/**
+	 *  Completed checks whose result reported an operational failure
+	 *  (`CheckResult.failed == true`): the check ran, but the fetch itself
+	 *  failed (auth, network, or otherwise non-zero exit). `succeeded +
+	 *  failed_check == completed`, always.
+	 */
+	failedCheck: number,
+};
 
 /**
  *  Typed "check completed" event, broadcast after every `repo_check_now`.
@@ -648,6 +731,10 @@ export type RepoDetail = {
 	checkFrequencyMin: number,
 	createdAt: number,
 	notes: string | null,
+	/**
+	 *  See [`RepoSummary::active_branch`] for the full three-way `None`
+	 *  contract (never inspected / detached HEAD / unborn HEAD).
+	 */
 	activeBranch: string | null,
 	headSha: string | null,
 	upstreamBranch: string | null,
@@ -682,6 +769,27 @@ export type RepoDetail = {
 	 *  "as of <time>" staleness marker when offline / rate-limited (E-17 AC8).
 	 */
 	prLastCheckedAt: number | null,
+	/**
+	 *  Star count (`stargazers_count`). `None` = un-refreshed / non-GitHub /
+	 *  absent from the response, never a fabricated zero.
+	 */
+	stars: number | null,
+	/**  Fork count (`forks_count`). Same `None` meaning as `stars`. */
+	forks: number | null,
+	/**
+	 *  The license's SPDX id (e.g. `"MIT"`), or `None` when GitHub reports no
+	 *  license (or the repo has never been refreshed).
+	 */
+	license: string | null,
+	/**  Repo size in kilobytes, as GitHub reports it. */
+	size: number | null,
+	/**  GitHub's own visibility string (`"public"` / `"private"` / `"internal"`). */
+	visibility: string | null,
+	/**
+	 *  The repo's homepage URL. `None` when GitHub returns null, an empty
+	 *  string, or the repo has never been refreshed - never a fabricated value.
+	 */
+	homepage: string | null,
 };
 
 /**  Filter for `repo_list`. All fields optional; absent means "no constraint". */
@@ -714,6 +822,14 @@ export type RepoId = number;
 export type RepoSummary = {
 	id: number,
 	localName: string,
+	/**
+	 *  The repo's filesystem path (`repos.local_path`). Mirrors
+	 *  [`RepoDetail::local_path`] exactly, same column and same non-nullable
+	 *  read, so the list and detail views can never disagree about where a
+	 *  repo lives (BL-NI-91: the ratified table lab's Folder column needs this
+	 *  on the bulk list read, not just the single-repo detail read).
+	 */
+	localPath: string,
 	hostType: string,
 	aheadCount: number | null,
 	behindCount: number | null,
@@ -735,6 +851,28 @@ export type RepoSummary = {
 	 */
 	lastLocalCommitAt: number | null,
 	/**
+	 *  The repo's current branch (`repo_local_state.active_branch`). Mirrors
+	 *  [`RepoDetail::active_branch`] exactly, same column and same nullability,
+	 *  so list and detail can never disagree (BL-NI-91: the ratified table
+	 *  lab's Branch column). Rides the existing `repo_list` join on
+	 *  `repo_local_state`; no per-repo git call.
+	 * 
+	 *  `None` on any of three distinct conditions, not one:
+	 *    - no `repo_local_state` row yet (never inspected);
+	 *    - a detached HEAD (`git/inspect.rs`'s `inspect` sets `active_branch` to
+	 *      `None` whenever `head.is_branch()` is false, which detached HEAD is).
+	 *      Distinguishable from the other two cases via the sibling
+	 *      [`RepoSummary::is_detached`] field, which reads `true` only here;
+	 *    - an unborn HEAD (a repo with no commits yet: `repo.head()` errors, so
+	 *      `inspect` reports `None`). `is_detached` reads `false` here too, the
+	 *      same as "never inspected," so this case is NOT distinguishable from
+	 *      that one using `active_branch` and `is_detached` alone.
+	 * 
+	 *  A fully, successfully inspected repo can therefore honestly report
+	 *  `None` here; it is never a fabricated "no branch."
+	 */
+	activeBranch: string | null,
+	/**
 	 *  The upstream relationship as the policy engine last classified it
 	 *  (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync
 	 *  from one whose upstream was deleted and therefore cannot sync at all.
@@ -746,6 +884,27 @@ export type RepoSummary = {
 	 *  fix. It resolves itself the first time the repo is checked.
 	 */
 	upstreamState: UpstreamState | null,
+	/**
+	 *  Star count (`stargazers_count`). `None` = un-refreshed / non-GitHub /
+	 *  absent from the response, never a fabricated zero.
+	 */
+	stars: number | null,
+	/**  Fork count (`forks_count`). Same `None` meaning as `stars`. */
+	forks: number | null,
+	/**
+	 *  The license's SPDX id (e.g. `"MIT"`), or `None` when GitHub reports no
+	 *  license (or the repo has never been refreshed).
+	 */
+	license: string | null,
+	/**  Repo size in kilobytes, as GitHub reports it. */
+	size: number | null,
+	/**  GitHub's own visibility string (`"public"` / `"private"` / `"internal"`). */
+	visibility: string | null,
+	/**
+	 *  The repo's homepage URL. `None` when GitHub returns null, an empty
+	 *  string, or the repo has never been refreshed - never a fabricated value.
+	 */
+	homepage: string | null,
 };
 
 /**  A candidate repository found while scanning a parent folder. */

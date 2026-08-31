@@ -50,10 +50,13 @@ pub async fn repo_list(
             s.is_dirty AS is_dirty, s.is_detached AS is_detached, \
             s.auto_paused AS auto_paused, s.last_checked_at AS last_checked_at, \
             s.last_error_code AS last_error_code, \
+            s.active_branch AS active_branch, \
             s.upstream_state AS upstream_state, \
             s.last_local_commit_at AS last_local_commit_at, \
             m.latest_release_tag AS latest_release_tag, \
-            m.open_pr_count AS open_pr_count \
+            m.open_pr_count AS open_pr_count, \
+            m.stars AS stars, m.forks AS forks, m.license AS license, \
+            m.size AS size, m.visibility AS visibility, m.homepage AS homepage \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
@@ -91,6 +94,7 @@ pub async fn repo_list(
         out.push(RepoSummary {
             id: r.try_get("id")?,
             local_name,
+            local_path,
             host_type,
             ahead_count: r.try_get("ahead_count")?,
             behind_count: r.try_get("behind_count")?,
@@ -103,7 +107,14 @@ pub async fn repo_list(
             latest_release_tag: r.try_get("latest_release_tag")?,
             open_pr_count: r.try_get("open_pr_count")?,
             last_local_commit_at: r.try_get("last_local_commit_at")?,
+            active_branch: r.try_get("active_branch")?,
             upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
+            stars: r.try_get("stars")?,
+            forks: r.try_get("forks")?,
+            license: r.try_get("license")?,
+            size: r.try_get("size")?,
+            visibility: r.try_get("visibility")?,
+            homepage: r.try_get("homepage")?,
         });
     }
     Ok(out)
@@ -146,7 +157,9 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
             m.last_remote_sha AS last_remote_sha, m.last_fetched_at AS last_fetched_at, \
             m.open_pr_count AS open_pr_count, \
             m.default_branch_pr_count AS default_branch_pr_count, \
-            m.pr_last_checked_at AS pr_last_checked_at \
+            m.pr_last_checked_at AS pr_last_checked_at, \
+            m.stars AS stars, m.forks AS forks, m.license AS license, \
+            m.size AS size, m.visibility AS visibility, m.homepage AS homepage \
          FROM repos r \
          LEFT JOIN repo_local_state s ON s.repo_id = r.id \
          LEFT JOIN repo_remote_meta m ON m.repo_id = r.id \
@@ -203,6 +216,12 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
         open_pr_count: r.try_get("open_pr_count")?,
         default_branch_pr_count: r.try_get("default_branch_pr_count")?,
         pr_last_checked_at: r.try_get("pr_last_checked_at")?,
+        stars: r.try_get("stars")?,
+        forks: r.try_get("forks")?,
+        license: r.try_get("license")?,
+        size: r.try_get("size")?,
+        visibility: r.try_get("visibility")?,
+        homepage: r.try_get("homepage")?,
     })
 }
 
@@ -1164,6 +1183,225 @@ mod tests {
         // get of an unknown id is NotFound.
         let missing = repo_get(&pool, RepoId(9999)).await;
         assert!(matches!(missing, Err(AppError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn remote_metadata_fields_surface_on_get_and_list() {
+        // Migration 0010_remote_metadata.sql: stars / forks / license / size /
+        // visibility / homepage must thread through both the detail and list read
+        // paths exactly like the pre-existing repo_remote_meta fields do.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping remote_metadata_fields_surface_on_get_and_list: git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        init_repo_with_commit(repotmp.path());
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        // Before any GitHub refresh, no repo_remote_meta row exists at all: every
+        // new field must read as None, not a fabricated default.
+        let before = repo_get(&pool, id).await.expect("get before refresh");
+        assert_eq!(before.stars, None);
+        assert_eq!(before.forks, None);
+        assert_eq!(before.license, None);
+        assert_eq!(before.size, None);
+        assert_eq!(before.visibility, None);
+        assert_eq!(before.homepage, None);
+
+        sqlx::query(
+            "INSERT INTO repo_remote_meta \
+             (repo_id, stars, forks, license, size, visibility, homepage) \
+             VALUES (?, 42, 7, 'MIT', 1234, 'public', 'https://example.com')",
+        )
+        .bind(id.0)
+        .execute(&pool)
+        .await
+        .expect("seed repo_remote_meta");
+
+        let detail = repo_get(&pool, id).await.expect("get after refresh");
+        assert_eq!(detail.stars, Some(42));
+        assert_eq!(detail.forks, Some(7));
+        assert_eq!(detail.license.as_deref(), Some("MIT"));
+        assert_eq!(detail.size, Some(1234));
+        assert_eq!(detail.visibility.as_deref(), Some("public"));
+        assert_eq!(detail.homepage.as_deref(), Some("https://example.com"));
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert_eq!(summary.stars, Some(42));
+        assert_eq!(summary.forks, Some(7));
+        assert_eq!(summary.license.as_deref(), Some("MIT"));
+        assert_eq!(summary.size, Some(1234));
+        assert_eq!(summary.visibility.as_deref(), Some("public"));
+        assert_eq!(summary.homepage.as_deref(), Some("https://example.com"));
+    }
+
+    #[tokio::test]
+    async fn branch_and_path_agree_between_list_and_get() {
+        // BL-NI-91: RepoSummary carries local_path and active_branch so the
+        // ratified Branch/Folder table columns can render from the bulk list
+        // read, not just the single-repo detail read. Both must be the SAME
+        // column read the same way in both queries, or the list and the detail
+        // drawer could disagree about where a repo lives or what branch it is
+        // on.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping branch_and_path_agree_between_list_and_get: git not resolvable");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        init_repo_with_commit(repotmp.path());
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert!(
+            !detail.local_path.is_empty(),
+            "local_path must be populated"
+        );
+        assert!(
+            detail.active_branch.is_some(),
+            "add() inspects the repo immediately, so a freshly-added repo has a branch"
+        );
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert_eq!(
+            summary.local_path, detail.local_path,
+            "list and detail must never disagree about where a repo lives"
+        );
+        assert_eq!(
+            summary.active_branch, detail.active_branch,
+            "list and detail must never disagree about the current branch"
+        );
+    }
+
+    /// A Codex adversarial review of PR #74 found `active_branch`'s doc claimed
+    /// `None` meant only "never inspected," when a detached HEAD ALSO inspects
+    /// cleanly to `None` (`git/inspect.rs`: `active_branch` is `None` whenever
+    /// `head.is_branch()` is false, which a detached HEAD is). This pins that a
+    /// detached repo is fully, successfully inspected - `is_detached` reads
+    /// `true`, distinguishing it from "never inspected" - and reports the same
+    /// `None` on both read paths.
+    #[tokio::test]
+    async fn active_branch_is_none_for_a_detached_repo_on_both_read_paths() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping active_branch_is_none_for_a_detached_repo_on_both_read_paths: \
+                 git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        let commit_oid = {
+            let repo = git2::Repository::init(repotmp.path()).expect("init repo");
+            std::fs::write(repotmp.path().join("README.md"), "hello\n").expect("write file");
+            let mut index = repo.index().expect("index");
+            index.add_path(Path::new("README.md")).expect("add path");
+            index.write().expect("write index");
+            let tree_id = index.write_tree().expect("write tree");
+            let tree = repo.find_tree(tree_id).expect("find tree");
+            let sig = git2::Signature::now("Store Test", "store@example.com").expect("sig");
+            let oid = repo
+                .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+            repo.set_head_detached(oid).expect("detach HEAD");
+            oid
+        };
+        assert_ne!(commit_oid.to_string(), "", "sanity: a real commit exists");
+
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert!(
+            detail.is_detached,
+            "a detached HEAD must be reported as detached"
+        );
+        assert_eq!(
+            detail.active_branch, None,
+            "a detached HEAD has no branch, not a fabricated one"
+        );
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert!(summary.is_detached);
+        assert_eq!(summary.active_branch, None);
+    }
+
+    /// The second half of the same review finding: an UNBORN HEAD (a repo with
+    /// no commits yet) also inspects cleanly to `active_branch: None`, and here
+    /// `is_detached` reads `false` - the SAME signature as "never inspected."
+    /// This pins that `repo::add` succeeds on a commit-less repo at all (so the
+    /// case is reachable), and that both read paths agree on it.
+    #[tokio::test]
+    async fn active_branch_is_none_for_an_unborn_repo_on_both_read_paths() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping active_branch_is_none_for_an_unborn_repo_on_both_read_paths: \
+                 git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        git2::Repository::init(repotmp.path()).expect("init repo with no commits");
+
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok on a commit-less repo");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert!(
+            !detail.is_detached,
+            "an unborn HEAD is not detached; this is the ambiguous case"
+        );
+        assert_eq!(
+            detail.active_branch, None,
+            "an unborn HEAD has no branch yet, not a fabricated one"
+        );
+        assert_eq!(detail.head_sha, None, "no commit exists to have a SHA");
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert!(!summary.is_detached);
+        assert_eq!(summary.active_branch, None);
     }
 
     #[tokio::test]
