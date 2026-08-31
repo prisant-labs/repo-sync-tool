@@ -22,6 +22,7 @@ export function PageShell({
   actions,
   toolbar,
   width = "wide",
+  fill = false,
   children,
 }: {
   /** The screen title. Rendered as the page's h1, see the note below. */
@@ -44,10 +45,30 @@ export function PageShell({
    * comfortable measure and keeps the left edge where the eye expects it.
    */
   width?: "wide" | "narrow";
+  /**
+   * Additive, opt-in (default `false`, every existing screen unaffected).
+   *
+   * `false` (the default): the root grows with its content (`min-h-full`),
+   * so a tall screen scrolls at the PAGE level, against `AppShell`'s own
+   * `overflow-auto` element - the normal case for Dashboard, Activity, and
+   * Settings.
+   *
+   * `true`: the root is capped at exactly its allotted height (`h-full
+   * min-h-0`) instead of growing past it, and the content region below the
+   * sticky header becomes a bounded flex item (`min-h-0`) rather than a
+   * natural-height block. This does nothing by itself - a plain child still
+   * grows to its content height and the box simply ends early - but it lets
+   * a child that WANTS to own its own internal scrolling (the `DataTable`
+   * primitive's Repos usage; see its scroll-ownership doc comment) actually
+   * receive a bounded height to scroll within, instead of the page itself
+   * absorbing all available height and leaving the child nothing to be
+   * "internal" against.
+   */
+  fill?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-full flex-col">
+    <div className={cn("flex flex-col", fill ? "h-full min-h-0" : "min-h-full")}>
       {/*
         `sticky top-0` works against AppShell's scroll container. It needs an
         opaque background or the content scrolling underneath shows through, and
@@ -78,6 +99,7 @@ export function PageShell({
       <div
         className={cn(
           "flex flex-1 flex-col gap-section px-page pb-page",
+          fill && "min-h-0",
           width === "narrow" && "max-w-3xl",
         )}
       >

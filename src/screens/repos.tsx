@@ -1,5 +1,17 @@
 import { useCallback, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, ChevronRight, Clock, FolderGit2, Plus, RefreshCw, Search, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronRight,
+  Clock,
+  Folder,
+  FolderGit2,
+  GitBranch,
+  Plus,
+  RefreshCw,
+  Search,
+  X,
+} from "lucide-react";
 import { commands } from "@/lib/bindings";
 import type { GroupSummary, RepoSummary } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
@@ -98,23 +110,41 @@ export function ReposScreen({
   );
 
   // "Check all" (BL-NI-86, repo_check_all has no consumer), provisional per the
-  // N2 PR. `repoCheckAll` returns a COUNT ATTEMPTED, not succeeded - per-repo
-  // outcomes (including failures) arrive later via `repo:check-completed`,
-  // which `useBackendEvents` above already refetches on. Following the
-  // `checkNow` honesty idiom: a call that only tells us "N repos were asked
-  // to check" can never be reported with the "ok" (success-styled) toast, so
-  // this uses "info" even when the call itself resolves cleanly.
+  // N2 PR. `repoCheckAll` now resolves a structured `CheckAllSummary`
+  // (`targeted`, `completed`, `succeeded`, `noResult`, `failedCheck`; PR #74)
+  // rather than a bare count, specifically so this toast can report what
+  // actually happened instead of inferring it (fix round after the Codex
+  // review of PR #73, finding 3: a bare zero could mean "no enabled repos" OR
+  // "every targeted repo failed," and the old wording ("Checking N repos...")
+  // read as in-progress when the awaited call had already completed by the
+  // time the toast fires).
+  //
+  // `targeted` is read from `select_check_all_targets`'s output before any
+  // task is spawned (its own doc comment), so a zero THERE - and only there -
+  // honestly means "no enabled repos." Every other branch below reports from
+  // the completion counts, points a failure at Activity (the house idiom;
+  // compare `lib/status.ts`'s `checkFailureMessage`), and never uses the
+  // "ok" (success-styled) tone when `failedCheck` or `noResult` is nonzero.
   const checkAll = useCallback(async () => {
     setCheckAllBusy(true);
     try {
-      const count = await unwrap(commands.repoCheckAll());
-      if (count === 0) {
+      const summary = await unwrap(commands.repoCheckAll());
+      if (summary.targeted === 0) {
         toast("info", "No enabled repos to check");
+      } else if (summary.failedCheck === 0 && summary.noResult === 0) {
+        // completed === targeted and every completed check succeeded.
+        toast("ok", `All ${summary.targeted} ${summary.targeted === 1 ? "repo" : "repos"} checked`);
+      } else if (summary.completed === 0) {
+        // Nothing produced a CheckResult at all - every targeted repo failed
+        // before or during persistence (`noResult`'s doc comment), not an
+        // operational fetch failure.
+        toast("error", "Nothing produced a result", "See Activity for details.");
       } else {
+        const problems = summary.failedCheck + summary.noResult;
         toast(
-          "info",
-          `Checking ${count} ${count === 1 ? "repo" : "repos"}`,
-          "Results will appear on each row as checks complete.",
+          "error",
+          `${problems} of ${summary.targeted} ${problems === 1 ? "repo" : "repos"} failed`,
+          "See Activity for details.",
         );
       }
     } catch (e) {
@@ -160,13 +190,16 @@ export function ReposScreen({
 
   // Columns, in the ratified order (README settled list + ui-delivery-plan.md
   // ledger B5): Repository (first, frozen, the only flexible width), Status,
-  // Ahead, Behind, Groups, Checked, then the unlabeled actions column.
+  // Branch, Ahead, Behind, Groups, Folder, Checked, then the unlabeled actions
+  // column.
   //
-  // Branch and Folder are OMITTED. `RepoSummary` in `src/lib/bindings.ts` (this
-  // branch, off origin/main) carries neither `branch`/`activeBranch` nor
-  // `localPath` - only `RepoDetail` has them. Per the hard constraint, this
-  // change does not touch `src-tauri`/`crates` to add them; see the N2 PR body
-  // and the new backlog row for the follow-up.
+  // Branch and Folder shipped in this fix round: `RepoSummary` gained
+  // `activeBranch` and `localPath` in PR #74 (`feat/summary-fields-and-check-
+  // summary`), closing the gap BL-NI-91 recorded when N2 first shipped without
+  // them. The five metadata fields PR #72 (N1) added to `RepoSummary`
+  // (stars/forks/license/size/visibility, plus `homepage`) are now ALSO
+  // available on the wire type, but adding those columns is explicitly out of
+  // scope for this fix round (jp's scope ruling: only Branch and Folder).
   const columns: DataTableColumn<RepoSummary>[] = useMemo(
     () => [
       {
@@ -195,6 +228,25 @@ export function ReposScreen({
           const count =
             status === "behind" ? (r.behindCount ?? 0) : status === "ahead" ? (r.aheadCount ?? 0) : undefined;
           return <StatusBadge status={status} count={count} />;
+        },
+      },
+      {
+        id: "branch",
+        header: "Branch",
+        width: "104px",
+        icon: GitBranch,
+        cell: (r) => {
+          // `activeBranch` is `null` on three distinct conditions (its own doc
+          // comment on `RepoSummary`): never inspected, a detached HEAD, and an
+          // unborn HEAD. `isDetached` distinguishes only the detached case.
+          // Rendering "detached" (rather than the empty dash) for that one case
+          // is the honest middle ground: a repo checked out to a commit really
+          // is on no branch, which is a fact worth a word, not silence: this is
+          // color (muted ink) + icon (the column's own GitBranch glyph, which
+          // only appears when this returns non-null) + word.
+          if (r.activeBranch !== null) return r.activeBranch;
+          if (r.isDetached) return <span className="text-muted-foreground">detached</span>;
+          return null;
         },
       },
       {
@@ -229,6 +281,31 @@ export function ReposScreen({
             </div>
           );
         },
+      },
+      {
+        id: "folder",
+        header: "Folder",
+        // The lab's own Folder width, `minmax(150px,240px)` - a range, not a
+        // single fixed value, despite the README's "fixed widths for every
+        // column except Repository" rule. Reproduced as the lab wrote it
+        // rather than silently picking one end of the range.
+        width: "minmax(150px,240px)",
+        // No `icon`: the lab's Folder cell draws its own bespoke, differently
+        // styled glyph (`.pth .fico`, muted and inline with the path text)
+        // rather than using the generic muted data-icon slot every other
+        // column uses - see the `icon` field's own doc comment on
+        // `DataTableColumn`. Presentational only: this does not call
+        // `repoOpenFolder` (that would be new interactive scope beyond what
+        // was ratified for this fix round; flagged in the PR body).
+        cell: (r) => (
+          <span
+            className="inline-flex min-w-0 items-center gap-1.5 truncate font-mono text-[11px] font-medium text-muted-foreground"
+            title="Open in File Explorer"
+          >
+            <Folder aria-hidden className="size-3 shrink-0 opacity-70" />
+            <span className="truncate">{r.localPath}</span>
+          </span>
+        ),
       },
       {
         id: "checked",
@@ -292,6 +369,13 @@ export function ReposScreen({
   return (
     <PageShell
       title="Repos"
+      // `fill`: lets the table region below claim a bounded height so
+      // `DataTable` can own its own internal scroll (both axes) instead of
+      // the whole page scrolling underneath a header that can never catch up
+      // to it. See `page-shell.tsx`'s `fill` doc comment and `data-table.tsx`'s
+      // scroll-ownership doc comment (fix round after the Codex review of
+      // PR #73, finding 1).
+      fill
       actions={
         <Button size="sm" onClick={() => setAddOpen(true)}>
           <Plus /> Add repos
@@ -321,68 +405,95 @@ export function ReposScreen({
         </div>
       )}
 
-      <AsyncPanel
-        state={repos}
-        emptyWhen={(l) => l.length === 0}
-        emptyMessage={
-          <EmptyState
-            icon={FolderGit2}
-            title="No repositories yet"
-            description="Scan a folder or add a single path to start tracking sync status."
-            action={
-              <Button onClick={() => setAddOpen(true)}>
-                <Plus /> Add repositories
-              </Button>
-            }
-          />
-        }
-      >
-        {() => {
-          // With an active group filter, `filtered` depends on `membershipMap`
-          // (from the bulk membership read). A `null` map means that read is still
-          // loading or has failed, not that zero repos match (finding 7): show the
-          // shared loading/error presentation instead of the "no matches" empty
-          // state until membership is actually known.
-          if (activeGroupId !== null && membershipMap === null) {
-            return (
-              <AsyncPanel state={memberships}>
-                {/* Unreachable: this branch only renders while membershipMap is
-                    null, and AsyncPanel only calls children once state.data is
-                    non-null (the outer condition above then takes over). */}
-                {() => null}
-              </AsyncPanel>
-            );
-          }
-
-          return filtered.length === 0 ? (
-            <div className="rounded-xl border border-border bg-card py-16 text-center text-sm text-muted-foreground shadow-sm">
-              No repositories match this filter.
-            </div>
-          ) : (
-            <DataTable
-              aria-label="Tracked repositories"
-              columns={columns}
-              rows={filtered}
-              rowKey={(r) => r.id}
-              onRowClick={(r) => setSelectedId(r.id)}
-              actions={(r) => (
-                <>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    disabled={busyId === r.id}
-                    title="Check now"
-                    onClick={() => checkNow(r.id)}
-                  >
-                    <RefreshCw className={busyId === r.id ? "animate-spin" : undefined} />
-                  </Button>
-                  <ChevronRight aria-hidden className="size-4 text-muted-foreground" />
-                </>
-              )}
+      {/*
+        `min-h-0` lets this region shrink below its content height when
+        `PageShell`'s `fill` mode gives it a bounded height to work within,
+        so `DataTable` inside can actually claim `max-h-full` and scroll
+        internally rather than growing the page. Inert (a harmless no-op) in
+        the loading/error/empty states, which size to their own content.
+      */}
+      <div className="flex min-h-0 flex-1 flex-col">
+        <AsyncPanel
+          state={repos}
+          emptyWhen={(l) => l.length === 0}
+          emptyMessage={
+            <EmptyState
+              icon={FolderGit2}
+              title="No repositories yet"
+              description="Scan a folder or add a single path to start tracking sync status."
+              action={
+                <Button onClick={() => setAddOpen(true)}>
+                  <Plus /> Add repositories
+                </Button>
+              }
             />
-          );
-        }}
-      </AsyncPanel>
+          }
+        >
+          {() => {
+            // With an active group filter, `filtered` depends on `membershipMap`
+            // (from the bulk membership read). A `null` map means that read is still
+            // loading or has failed, not that zero repos match (finding 7): show the
+            // shared loading/error presentation instead of the "no matches" empty
+            // state until membership is actually known.
+            if (activeGroupId !== null && membershipMap === null) {
+              return (
+                <AsyncPanel state={memberships}>
+                  {/* Unreachable: this branch only renders while membershipMap is
+                      null, and AsyncPanel only calls children once state.data is
+                      non-null (the outer condition above then takes over). */}
+                  {() => null}
+                </AsyncPanel>
+              );
+            }
+
+            return filtered.length === 0 ? (
+              <div className="rounded-xl border border-border bg-card py-16 text-center text-sm text-muted-foreground shadow-sm">
+                No repositories match this filter.
+              </div>
+            ) : (
+              <DataTable
+                aria-label="Tracked repositories"
+                columns={columns}
+                rows={filtered}
+                rowKey={(r) => r.id}
+                onRowClick={(r) => setSelectedId(r.id)}
+                actions={(r) => (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={busyId === r.id}
+                      title="Check now"
+                      onClick={() => checkNow(r.id)}
+                    >
+                      <RefreshCw className={busyId === r.id ? "animate-spin" : undefined} />
+                    </Button>
+                    {/*
+                      A real, focusable button, not a decorative icon (fix
+                      round after the Codex review of PR #73, finding 2). It is
+                      now THE keyboard path into the drawer: the row itself no
+                      longer carries `role="button"`/`tabIndex` (nesting a
+                      keyboard-operable row around Check now produced an
+                      invalid accessibility tree and an ambiguous Enter/Space
+                      target). A mouse click anywhere else on the row still
+                      opens the drawer via `onRowClick` above, as a
+                      convenience only.
+                    */}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Open details"
+                      onClick={() => setSelectedId(r.id)}
+                    >
+                      <ChevronRight aria-hidden />
+                    </Button>
+                  </>
+                )}
+              />
+            );
+          }}
+        </AsyncPanel>
+      </div>
 
       <Drawer open={selectedId !== null} onClose={() => setSelectedId(null)}>
         {selectedId !== null && (

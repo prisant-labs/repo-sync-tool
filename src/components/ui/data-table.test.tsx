@@ -74,7 +74,7 @@ describe("DataTable", () => {
 
   it("defaults to the full density (52px rows); compact renders 44px rows", () => {
     const { container: full } = render(<DataTable columns={columns()} rows={ROWS} rowKey={(r) => r.id} />);
-    const fullRow = full.querySelectorAll('[role="button"], [role="row"]')[1] as HTMLElement; // [0] is the header row
+    const fullRow = full.querySelectorAll('[role="row"]')[1] as HTMLElement; // [0] is the header row
     expect(fullRow.style.minHeight).toBe("52px");
 
     cleanup();
@@ -82,7 +82,7 @@ describe("DataTable", () => {
     const { container: compact } = render(
       <DataTable columns={columns()} rows={ROWS} rowKey={(r) => r.id} density="compact" />,
     );
-    const compactRow = compact.querySelectorAll('[role="button"], [role="row"]')[1] as HTMLElement;
+    const compactRow = compact.querySelectorAll('[role="row"]')[1] as HTMLElement;
     expect(compactRow.style.minHeight).toBe("44px");
   });
 
@@ -134,7 +134,7 @@ describe("DataTable", () => {
 
   it("the row grid does not center-align items (the column-rule floating-segment trap)", () => {
     const { container } = render(<DataTable columns={columns()} rows={ROWS} rowKey={(r) => r.id} />);
-    const bodyRow = container.querySelectorAll('[role="button"], [role="row"]')[1] as HTMLElement;
+    const bodyRow = container.querySelectorAll('[role="row"]')[1] as HTMLElement;
     // Deliberately absent: setting align-items: center on the ROW (grid
     // container) shrinks each cell to content height, turning a column rule
     // into a short floating segment instead of one spanning the full row.
@@ -151,7 +151,21 @@ describe("DataTable", () => {
     expect(onRowClick).toHaveBeenCalledWith(ROWS[1]);
   });
 
-  it("Enter and Space on a focused row also fire onRowClick, and actions stop propagation", async () => {
+  it("a row is role=row with no tabIndex or button role - mouse-only, no keyboard entry point of its own", () => {
+    // Fix round after the Codex review of PR #73, finding 2: a keyboard-
+    // operable row (`role="button"`, `tabIndex`) wrapped around further
+    // focusable controls (Check now, the actions chevron) is an invalid
+    // accessibility tree with an ambiguous Enter/Space target. The row is
+    // mouse-only now; the caller's own `actions` content is the keyboard path.
+    const { container } = render(
+      <DataTable columns={columns()} rows={ROWS} rowKey={(r) => r.id} onRowClick={vi.fn()} />,
+    );
+    const dataRow = container.querySelectorAll('[role="row"]')[1] as HTMLElement;
+    expect(dataRow.getAttribute("role")).toBe("row");
+    expect(dataRow.hasAttribute("tabindex")).toBe(false);
+  });
+
+  it("clicking inside the actions cell does not also fire onRowClick (stopPropagation)", async () => {
     const onRowClick = vi.fn();
     const onCheck = vi.fn();
     render(
@@ -165,16 +179,66 @@ describe("DataTable", () => {
     );
     const user = userEvent.setup();
 
-    // Row and action are both role="button"; narrow to the row for repo-a.
-    const repoARow = screen.getByText("repo-a").closest('[role="button"]') as HTMLElement;
-    repoARow.focus();
-    await user.keyboard("{Enter}");
-    expect(onRowClick).toHaveBeenCalledWith(ROWS[0]);
-
-    onRowClick.mockClear();
     await user.click(screen.getAllByRole("button", { name: "Check" })[0]);
+
     expect(onCheck).toHaveBeenCalledTimes(1);
-    // Clicking the action must not also open the row.
     expect(onRowClick).not.toHaveBeenCalled();
+  });
+
+  it("has a valid table accessibility tree: table > two rowgroups (header, body) > row > columnheader/cell", () => {
+    render(
+      <DataTable
+        columns={columns()}
+        rows={ROWS}
+        rowKey={(r) => r.id}
+        actions={() => <button>Check</button>}
+      />,
+    );
+
+    const table = screen.getByRole("table");
+    const rowgroups = screen.getAllByRole("rowgroup");
+    expect(rowgroups).toHaveLength(2);
+    expect(table.contains(rowgroups[0])).toBe(true);
+    expect(table.contains(rowgroups[1])).toBe(true);
+    // Header rowgroup holds exactly one row of columnheaders; body rowgroup
+    // holds one row per data row, each with cells (including the actions
+    // cell, also role="cell", never a bare unlabeled columnheader).
+    const [headerGroup, bodyGroup] = rowgroups;
+    expect(headerGroup.querySelectorAll('[role="row"]')).toHaveLength(1);
+    expect(headerGroup.querySelectorAll('[role="columnheader"]')).toHaveLength(columns().length);
+    expect(bodyGroup.querySelectorAll('[role="row"]')).toHaveLength(ROWS.length);
+  });
+
+  it("the table root and its scroll region are height-bounded (min-h-0/max-h-full), not forced to fill (flex-1)", () => {
+    // Scroll-ownership fix (finding 1): the table caps its OWN height against
+    // whatever bounded ancestor a caller opts into (`max-h-full`), rather than
+    // being forced to fill available space (`flex-1`), so a short table does
+    // not drag an empty border box to the floor. `min-h-0` on both the root
+    // and the inner scroller is what lets either one actually shrink below
+    // its content size when a caller's ancestor IS bounded - the flex
+    // "min-height: auto" trap on the other axis from the grid "min-width:
+    // auto" trap this file already guards against.
+    const { container } = render(<DataTable columns={columns()} rows={ROWS} rowKey={(r) => r.id} />);
+    const root = screen.getByRole("table");
+    const rootTokens = root.className.split(/\s+/);
+    expect(rootTokens).toContain("max-h-full");
+    expect(rootTokens).toContain("min-h-0");
+    expect(rootTokens).not.toContain("flex-1");
+    // Exact-token check, not a substring match: "max-h-full" legitimately
+    // contains the substring "h-full", but the root must not ALSO carry the
+    // standalone "h-full" utility (which would force it to fill its
+    // container instead of merely capping at it).
+    expect(rootTokens).not.toContain("h-full");
+
+    const scroller = container.querySelector(".overflow-auto") as HTMLElement;
+    expect(scroller).not.toBeNull();
+    expect(scroller.className).toMatch(/\bmin-h-0\b/);
+    expect(scroller.className).toMatch(/\boverflow-auto\b/);
+    // Never split per-axis: overflow-x-auto alone (the first cut's bug) makes
+    // the wrapper itself the sticky header's scrollport on BOTH axes, since
+    // any non-visible overflow value on either axis makes an element a
+    // scroll container - there is no such thing as scrolling horizontally
+    // against one ancestor and vertically against another.
+    expect(scroller.className).not.toMatch(/\boverflow-x-auto\b/);
   });
 });
