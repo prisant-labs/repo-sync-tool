@@ -50,6 +50,7 @@ pub async fn repo_list(
             s.is_dirty AS is_dirty, s.is_detached AS is_detached, \
             s.auto_paused AS auto_paused, s.last_checked_at AS last_checked_at, \
             s.last_error_code AS last_error_code, \
+            s.active_branch AS active_branch, \
             s.upstream_state AS upstream_state, \
             s.last_local_commit_at AS last_local_commit_at, \
             m.latest_release_tag AS latest_release_tag, \
@@ -93,6 +94,7 @@ pub async fn repo_list(
         out.push(RepoSummary {
             id: r.try_get("id")?,
             local_name,
+            local_path,
             host_type,
             ahead_count: r.try_get("ahead_count")?,
             behind_count: r.try_get("behind_count")?,
@@ -105,6 +107,7 @@ pub async fn repo_list(
             latest_release_tag: r.try_get("latest_release_tag")?,
             open_pr_count: r.try_get("open_pr_count")?,
             last_local_commit_at: r.try_get("last_local_commit_at")?,
+            active_branch: r.try_get("active_branch")?,
             upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
             stars: r.try_get("stars")?,
             forks: r.try_get("forks")?,
@@ -1243,6 +1246,162 @@ mod tests {
         assert_eq!(summary.size, Some(1234));
         assert_eq!(summary.visibility.as_deref(), Some("public"));
         assert_eq!(summary.homepage.as_deref(), Some("https://example.com"));
+    }
+
+    #[tokio::test]
+    async fn branch_and_path_agree_between_list_and_get() {
+        // BL-NI-91: RepoSummary carries local_path and active_branch so the
+        // ratified Branch/Folder table columns can render from the bulk list
+        // read, not just the single-repo detail read. Both must be the SAME
+        // column read the same way in both queries, or the list and the detail
+        // drawer could disagree about where a repo lives or what branch it is
+        // on.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping branch_and_path_agree_between_list_and_get: git not resolvable");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        init_repo_with_commit(repotmp.path());
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert!(
+            !detail.local_path.is_empty(),
+            "local_path must be populated"
+        );
+        assert!(
+            detail.active_branch.is_some(),
+            "add() inspects the repo immediately, so a freshly-added repo has a branch"
+        );
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert_eq!(
+            summary.local_path, detail.local_path,
+            "list and detail must never disagree about where a repo lives"
+        );
+        assert_eq!(
+            summary.active_branch, detail.active_branch,
+            "list and detail must never disagree about the current branch"
+        );
+    }
+
+    /// A Codex adversarial review of PR #74 found `active_branch`'s doc claimed
+    /// `None` meant only "never inspected," when a detached HEAD ALSO inspects
+    /// cleanly to `None` (`git/inspect.rs`: `active_branch` is `None` whenever
+    /// `head.is_branch()` is false, which a detached HEAD is). This pins that a
+    /// detached repo is fully, successfully inspected - `is_detached` reads
+    /// `true`, distinguishing it from "never inspected" - and reports the same
+    /// `None` on both read paths.
+    #[tokio::test]
+    async fn active_branch_is_none_for_a_detached_repo_on_both_read_paths() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping active_branch_is_none_for_a_detached_repo_on_both_read_paths: \
+                 git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        let commit_oid = {
+            let repo = git2::Repository::init(repotmp.path()).expect("init repo");
+            std::fs::write(repotmp.path().join("README.md"), "hello\n").expect("write file");
+            let mut index = repo.index().expect("index");
+            index.add_path(Path::new("README.md")).expect("add path");
+            index.write().expect("write index");
+            let tree_id = index.write_tree().expect("write tree");
+            let tree = repo.find_tree(tree_id).expect("find tree");
+            let sig = git2::Signature::now("Store Test", "store@example.com").expect("sig");
+            let oid = repo
+                .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .expect("commit");
+            repo.set_head_detached(oid).expect("detach HEAD");
+            oid
+        };
+        assert_ne!(commit_oid.to_string(), "", "sanity: a real commit exists");
+
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert!(
+            detail.is_detached,
+            "a detached HEAD must be reported as detached"
+        );
+        assert_eq!(
+            detail.active_branch, None,
+            "a detached HEAD has no branch, not a fabricated one"
+        );
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert!(summary.is_detached);
+        assert_eq!(summary.active_branch, None);
+    }
+
+    /// The second half of the same review finding: an UNBORN HEAD (a repo with
+    /// no commits yet) also inspects cleanly to `active_branch: None`, and here
+    /// `is_detached` reads `false` - the SAME signature as "never inspected."
+    /// This pins that `repo::add` succeeds on a commit-less repo at all (so the
+    /// case is reachable), and that both read paths agree on it.
+    #[tokio::test]
+    async fn active_branch_is_none_for_an_unborn_repo_on_both_read_paths() {
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping active_branch_is_none_for_an_unborn_repo_on_both_read_paths: \
+                 git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        git2::Repository::init(repotmp.path()).expect("init repo with no commits");
+
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok on a commit-less repo");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert!(
+            !detail.is_detached,
+            "an unborn HEAD is not detached; this is the ambiguous case"
+        );
+        assert_eq!(
+            detail.active_branch, None,
+            "an unborn HEAD has no branch yet, not a fabricated one"
+        );
+        assert_eq!(detail.head_sha, None, "no commit exists to have a SHA");
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert!(!summary.is_detached);
+        assert_eq!(summary.active_branch, None);
     }
 
     #[tokio::test]
