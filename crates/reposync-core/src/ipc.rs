@@ -68,6 +68,61 @@ pub struct CheckCompletedPayload {
     pub failed: bool,
 }
 
+/// A structured tally of a "check all enabled repos" burst (`repo_check_all`,
+/// E-13's tray "Check All Now"), replacing a bare `u32` count.
+///
+/// A Codex adversarial review of the `feat/shared-data-table` DataTable slice
+/// (PR #73) found the bare count could not be toasted honestly: a caller
+/// reading a zero return cannot tell "no enabled repos" apart from "every
+/// targeted repo failed before producing a result," because the old count only
+/// ever meant "repos whose check completed" and dropped to zero in both cases.
+///
+/// Every field here is a count `check_all_enabled` accumulates directly while
+/// the burst runs; nothing is inferred after the fact. `targeted` is the one
+/// fact that is NEVER zero for "everything failed" - it is read from
+/// `select_check_all_targets`'s output before any task is spawned, so it
+/// answers "how many repos did this burst mean to check" independent of how
+/// any of them turned out.
+///
+/// One count the review's suggested shape implied is deliberately NOT here:
+/// there is no separate "started" field. `select_check_all_targets` is computed
+/// once, up front, and nothing removes an entry from it before that repo's task
+/// is spawned, so "started" and `targeted` are always the same number and a
+/// distinct field would just repeat `targeted` under another name.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckAllSummary {
+    /// Repos selected for this burst (`select_check_all_targets`'s output,
+    /// counted before any task runs). The honest answer to "how many repos did
+    /// this burst mean to check" - zero here, and only here, means "no enabled
+    /// repos."
+    pub targeted: i64,
+    /// Repos whose check task ran to completion and produced a [`CheckResult`],
+    /// whether that result reported success or an operational failure. Excludes
+    /// a repo whose task could not run at all (`failed_to_run`) and a repo whose
+    /// task panicked or was cancelled - unreachable in a release build (`panic =
+    /// "abort"` takes the whole process down first) and deliberately not counted
+    /// anywhere in this struct, for the same reason `check_all_enabled`'s own
+    /// doc gives for not counting it as "checked": doing so would be a
+    /// different and misleading claim about what happened. `targeted` can
+    /// therefore exceed `completed + failed_to_run` in that unreachable-in-
+    /// release case; it never does in a shipped build.
+    pub completed: i64,
+    /// Completed checks whose result reported success (`CheckResult.failed ==
+    /// false`). Includes a deliberate policy skip - a skip is not a failure,
+    /// see [`CheckResult::failed`].
+    pub succeeded: i64,
+    /// Repos whose check task could not RUN at all: the git engine vanished
+    /// mid-burst, or the working tree's path is gone. Distinct from
+    /// `failed_check`, which ran and came back with bad news.
+    pub failed_to_run: i64,
+    /// Completed checks whose result reported an operational failure
+    /// (`CheckResult.failed == true`): the check ran, but the fetch itself
+    /// failed (auth, network, or otherwise non-zero exit). `succeeded +
+    /// failed_check == completed`, always.
+    pub failed_check: i64,
+}
+
 // =============================================================================
 // Query / list payloads
 // =============================================================================
@@ -260,6 +315,12 @@ pub struct Settings {
 pub struct RepoSummary {
     pub id: i64,
     pub local_name: String,
+    /// The repo's filesystem path (`repos.local_path`). Mirrors
+    /// [`RepoDetail::local_path`] exactly, same column and same non-nullable
+    /// read, so the list and detail views can never disagree about where a
+    /// repo lives (BL-NI-91: the ratified table lab's Folder column needs this
+    /// on the bulk list read, not just the single-repo detail read).
+    pub local_path: String,
     pub host_type: String,
     pub ahead_count: Option<i64>,
     pub behind_count: Option<i64>,
@@ -276,6 +337,13 @@ pub struct RepoSummary {
     /// The HEAD commit's committer time (E-17), distinct from `last_checked_at`
     /// ("when RepoSync last looked"). `None` when the inspect never read it.
     pub last_local_commit_at: Option<i64>,
+    /// The repo's current branch (`repo_local_state.active_branch`). Mirrors
+    /// [`RepoDetail::active_branch`] exactly - same column, same `None` meaning
+    /// (no `repo_local_state` row yet, i.e. never inspected; NOT a fabricated
+    /// "no branch") - so list and detail can never disagree (BL-NI-91: the
+    /// ratified table lab's Branch column). Rides the existing `repo_list` join
+    /// on `repo_local_state`; no per-repo git call.
+    pub active_branch: Option<String>,
     /// The upstream relationship as the policy engine last classified it
     /// (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync
     /// from one whose upstream was deleted and therefore cannot sync at all.
@@ -716,6 +784,7 @@ mod tests {
         let summary = RepoSummary {
             id: 1,
             local_name: "repo".into(),
+            local_path: "C:/repos/repo".into(),
             host_type: "github".into(),
             ahead_count: Some(2),
             behind_count: None,
@@ -728,6 +797,7 @@ mod tests {
             latest_release_tag: Some("v1.0.0".into()),
             open_pr_count: Some(3),
             last_local_commit_at: Some(1_699_400_000),
+            active_branch: Some("main".into()),
             // Deliberately the Deleted variant rather than Tracking: the round-trip
             // has to prove a non-default variant survives, and Deleted is the one
             // the UI branches on (BL-NI-77).
@@ -863,6 +933,16 @@ mod tests {
             group_ids: vec![1, 2, 5],
         };
         assert_round_trip(&membership);
+
+        // The check-all summary, with every count non-zero so a field collapsed
+        // to a default value could not hide in the round trip.
+        assert_round_trip(&CheckAllSummary {
+            targeted: 5,
+            completed: 4,
+            succeeded: 3,
+            failed_to_run: 1,
+            failed_check: 1,
+        });
 
         // The db-recovery notice, in both its normal (no recovery) and recovered
         // shapes, so the additive BL-NI-33 payload's wire form is guarded too.
