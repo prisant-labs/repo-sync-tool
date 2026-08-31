@@ -31,9 +31,11 @@ export const commands = {
 	 *  SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
 	 *  never launch two `git` processes in one working tree. Returns a structured
 	 *  [`CheckAllSummary`] rather than a bare count. Per-repo events fire like a manual
-	 *  check (`check-started` / `check-completed`); a per-repo failure that could not
-	 *  RUN at all is surfaced via `error:raised` (the tray action is fire-and-forget, so
-	 *  there is no synchronous caller to receive it) and does not abort the run.
+	 *  check (`check-started` / `check-completed`); a per-repo `check_now` call that
+	 *  returned `Err` with no `CheckResult` (see [`CheckAllSummary::no_result`] for why
+	 *  that is not always "could not run at all") is surfaced via `error:raised` (the
+	 *  tray action is fire-and-forget, so there is no synchronous caller to receive it)
+	 *  and does not abort the run.
 	 * 
 	 *  Since BL-NI-04 a check whose fetch failed returns `Ok` with `failed: true`, so it
 	 *  emits its completion event and counts as `completed` (with `failedCheck`
@@ -303,14 +305,14 @@ export type CheckAllSummary = {
 	/**
 	 *  Repos whose check task ran to completion and produced a [`CheckResult`],
 	 *  whether that result reported success or an operational failure. Excludes
-	 *  a repo whose task could not run at all (`failed_to_run`) and a repo whose
-	 *  task panicked or was cancelled - unreachable in a release build (`panic =
-	 *  "abort"` takes the whole process down first) and deliberately not counted
-	 *  anywhere in this struct, for the same reason `check_all_enabled`'s own
-	 *  doc gives for not counting it as "checked": doing so would be a
-	 *  different and misleading claim about what happened. `targeted` can
-	 *  therefore exceed `completed + failed_to_run` in that unreachable-in-
-	 *  release case; it never does in a shipped build.
+	 *  a repo whose task produced no result at all (`no_result`) and a repo
+	 *  whose task panicked or was cancelled - unreachable in a release build
+	 *  (`panic = "abort"` takes the whole process down first) and deliberately
+	 *  not counted anywhere in this struct, for the same reason
+	 *  `check_all_enabled`'s own doc gives for not counting it as "checked":
+	 *  doing so would be a different and misleading claim about what happened.
+	 *  `targeted` can therefore exceed `completed + no_result` in that
+	 *  unreachable-in-release case; it never does in a shipped build.
 	 */
 	completed: number,
 	/**
@@ -320,11 +322,23 @@ export type CheckAllSummary = {
 	 */
 	succeeded: number,
 	/**
-	 *  Repos whose check task could not RUN at all: the git engine vanished
-	 *  mid-burst, or the working tree's path is gone. Distinct from
-	 *  `failed_check`, which ran and came back with bad news.
+	 *  Repos whose check task produced NO recorded [`CheckResult`] at all: the
+	 *  `check_now` call itself returned `Err`. This is NOT proof the check
+	 *  never ran - `check_now` can fail at two different points, and this
+	 *  field cannot currently tell them apart:
+	 *    - a PREFLIGHT failure, before any network activity (the repo's row
+	 *      vanished, `git.inspect` found the path gone or not a repo);
+	 *    - a POST-RUN failure, after inspection and possibly a real network
+	 *      fetch already happened, in the persistence transaction that writes
+	 *      the outcome (`repo.rs`'s `check_now_inner`, the `tx.begin` /
+	 *      `UPDATE repo_local_state` / activity-record / `tx.commit` sequence).
+	 *      A DB error there discards a check that may have genuinely fetched.
+	 * 
+	 *  Distinguishing the two needs a typed per-repo outcome or fault-injection
+	 *  test plumbing that this struct deliberately does not build; see the
+	 *  owning PR's body for the deeper fix if it is wanted later.
 	 */
-	failedToRun: number,
+	noResult: number,
 	/**
 	 *  Completed checks whose result reported an operational failure
 	 *  (`CheckResult.failed == true`): the check ran, but the fetch itself
@@ -717,6 +731,10 @@ export type RepoDetail = {
 	checkFrequencyMin: number,
 	createdAt: number,
 	notes: string | null,
+	/**
+	 *  See [`RepoSummary::active_branch`] for the full three-way `None`
+	 *  contract (never inspected / detached HEAD / unborn HEAD).
+	 */
 	activeBranch: string | null,
 	headSha: string | null,
 	upstreamBranch: string | null,
@@ -834,11 +852,24 @@ export type RepoSummary = {
 	lastLocalCommitAt: number | null,
 	/**
 	 *  The repo's current branch (`repo_local_state.active_branch`). Mirrors
-	 *  [`RepoDetail::active_branch`] exactly - same column, same `None` meaning
-	 *  (no `repo_local_state` row yet, i.e. never inspected; NOT a fabricated
-	 *  "no branch") - so list and detail can never disagree (BL-NI-91: the
-	 *  ratified table lab's Branch column). Rides the existing `repo_list` join
-	 *  on `repo_local_state`; no per-repo git call.
+	 *  [`RepoDetail::active_branch`] exactly, same column and same nullability,
+	 *  so list and detail can never disagree (BL-NI-91: the ratified table
+	 *  lab's Branch column). Rides the existing `repo_list` join on
+	 *  `repo_local_state`; no per-repo git call.
+	 * 
+	 *  `None` on any of three distinct conditions, not one:
+	 *    - no `repo_local_state` row yet (never inspected);
+	 *    - a detached HEAD (`git/inspect.rs`'s `inspect` sets `active_branch` to
+	 *      `None` whenever `head.is_branch()` is false, which detached HEAD is).
+	 *      Distinguishable from the other two cases via the sibling
+	 *      [`RepoSummary::is_detached`] field, which reads `true` only here;
+	 *    - an unborn HEAD (a repo with no commits yet: `repo.head()` errors, so
+	 *      `inspect` reports `None`). `is_detached` reads `false` here too, the
+	 *      same as "never inspected," so this case is NOT distinguishable from
+	 *      that one using `active_branch` and `is_detached` alone.
+	 * 
+	 *  A fully, successfully inspected repo can therefore honestly report
+	 *  `None` here; it is never a fabricated "no branch."
 	 */
 	activeBranch: string | null,
 	/**

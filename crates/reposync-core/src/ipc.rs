@@ -99,23 +99,35 @@ pub struct CheckAllSummary {
     pub targeted: i64,
     /// Repos whose check task ran to completion and produced a [`CheckResult`],
     /// whether that result reported success or an operational failure. Excludes
-    /// a repo whose task could not run at all (`failed_to_run`) and a repo whose
-    /// task panicked or was cancelled - unreachable in a release build (`panic =
-    /// "abort"` takes the whole process down first) and deliberately not counted
-    /// anywhere in this struct, for the same reason `check_all_enabled`'s own
-    /// doc gives for not counting it as "checked": doing so would be a
-    /// different and misleading claim about what happened. `targeted` can
-    /// therefore exceed `completed + failed_to_run` in that unreachable-in-
-    /// release case; it never does in a shipped build.
+    /// a repo whose task produced no result at all (`no_result`) and a repo
+    /// whose task panicked or was cancelled - unreachable in a release build
+    /// (`panic = "abort"` takes the whole process down first) and deliberately
+    /// not counted anywhere in this struct, for the same reason
+    /// `check_all_enabled`'s own doc gives for not counting it as "checked":
+    /// doing so would be a different and misleading claim about what happened.
+    /// `targeted` can therefore exceed `completed + no_result` in that
+    /// unreachable-in-release case; it never does in a shipped build.
     pub completed: i64,
     /// Completed checks whose result reported success (`CheckResult.failed ==
     /// false`). Includes a deliberate policy skip - a skip is not a failure,
     /// see [`CheckResult::failed`].
     pub succeeded: i64,
-    /// Repos whose check task could not RUN at all: the git engine vanished
-    /// mid-burst, or the working tree's path is gone. Distinct from
-    /// `failed_check`, which ran and came back with bad news.
-    pub failed_to_run: i64,
+    /// Repos whose check task produced NO recorded [`CheckResult`] at all: the
+    /// `check_now` call itself returned `Err`. This is NOT proof the check
+    /// never ran - `check_now` can fail at two different points, and this
+    /// field cannot currently tell them apart:
+    ///   - a PREFLIGHT failure, before any network activity (the repo's row
+    ///     vanished, `git.inspect` found the path gone or not a repo);
+    ///   - a POST-RUN failure, after inspection and possibly a real network
+    ///     fetch already happened, in the persistence transaction that writes
+    ///     the outcome (`repo.rs`'s `check_now_inner`, the `tx.begin` /
+    ///     `UPDATE repo_local_state` / activity-record / `tx.commit` sequence).
+    ///     A DB error there discards a check that may have genuinely fetched.
+    ///
+    /// Distinguishing the two needs a typed per-repo outcome or fault-injection
+    /// test plumbing that this struct deliberately does not build; see the
+    /// owning PR's body for the deeper fix if it is wanted later.
+    pub no_result: i64,
     /// Completed checks whose result reported an operational failure
     /// (`CheckResult.failed == true`): the check ran, but the fetch itself
     /// failed (auth, network, or otherwise non-zero exit). `succeeded +
@@ -338,11 +350,24 @@ pub struct RepoSummary {
     /// ("when RepoSync last looked"). `None` when the inspect never read it.
     pub last_local_commit_at: Option<i64>,
     /// The repo's current branch (`repo_local_state.active_branch`). Mirrors
-    /// [`RepoDetail::active_branch`] exactly - same column, same `None` meaning
-    /// (no `repo_local_state` row yet, i.e. never inspected; NOT a fabricated
-    /// "no branch") - so list and detail can never disagree (BL-NI-91: the
-    /// ratified table lab's Branch column). Rides the existing `repo_list` join
-    /// on `repo_local_state`; no per-repo git call.
+    /// [`RepoDetail::active_branch`] exactly, same column and same nullability,
+    /// so list and detail can never disagree (BL-NI-91: the ratified table
+    /// lab's Branch column). Rides the existing `repo_list` join on
+    /// `repo_local_state`; no per-repo git call.
+    ///
+    /// `None` on any of three distinct conditions, not one:
+    ///   - no `repo_local_state` row yet (never inspected);
+    ///   - a detached HEAD (`git/inspect.rs`'s `inspect` sets `active_branch` to
+    ///     `None` whenever `head.is_branch()` is false, which detached HEAD is).
+    ///     Distinguishable from the other two cases via the sibling
+    ///     [`RepoSummary::is_detached`] field, which reads `true` only here;
+    ///   - an unborn HEAD (a repo with no commits yet: `repo.head()` errors, so
+    ///     `inspect` reports `None`). `is_detached` reads `false` here too, the
+    ///     same as "never inspected," so this case is NOT distinguishable from
+    ///     that one using `active_branch` and `is_detached` alone.
+    ///
+    /// A fully, successfully inspected repo can therefore honestly report
+    /// `None` here; it is never a fabricated "no branch."
     pub active_branch: Option<String>,
     /// The upstream relationship as the policy engine last classified it
     /// (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync
@@ -402,6 +427,8 @@ pub struct RepoDetail {
     pub created_at: i64,
     pub notes: Option<String>,
     // --- repo_local_state ---
+    /// See [`RepoSummary::active_branch`] for the full three-way `None`
+    /// contract (never inspected / detached HEAD / unborn HEAD).
     pub active_branch: Option<String>,
     pub head_sha: Option<String>,
     pub upstream_branch: Option<String>,
@@ -940,7 +967,7 @@ mod tests {
             targeted: 5,
             completed: 4,
             succeeded: 3,
-            failed_to_run: 1,
+            no_result: 1,
             failed_check: 1,
         });
 

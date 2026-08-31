@@ -88,9 +88,11 @@ pub async fn repo_check_now(
 /// SAME per-repo lock the scheduler uses, so a tray check-all and a scheduled check
 /// never launch two `git` processes in one working tree. Returns a structured
 /// [`CheckAllSummary`] rather than a bare count. Per-repo events fire like a manual
-/// check (`check-started` / `check-completed`); a per-repo failure that could not
-/// RUN at all is surfaced via `error:raised` (the tray action is fire-and-forget, so
-/// there is no synchronous caller to receive it) and does not abort the run.
+/// check (`check-started` / `check-completed`); a per-repo `check_now` call that
+/// returned `Err` with no `CheckResult` (see [`CheckAllSummary::no_result`] for why
+/// that is not always "could not run at all") is surfaced via `error:raised` (the
+/// tray action is fire-and-forget, so there is no synchronous caller to receive it)
+/// and does not abort the run.
 ///
 /// Since BL-NI-04 a check whose fetch failed returns `Ok` with `failed: true`, so it
 /// emits its completion event and counts as `completed` (with `failedCheck`
@@ -225,10 +227,17 @@ pub(crate) async fn check_all_enabled(
     // Failures that COMPLETED (a non-zero fetch), collected rather than announced
     // one at a time. See the coalescing note below.
     let mut soft_failures: Vec<Option<String>> = Vec::new();
-    // Repos whose task could not RUN at all (the `Ok(Err(_))` arm below): distinct
-    // from `soft_failures`, which ran and came back with bad news. Feeds
-    // `CheckAllSummary::failed_to_run`.
-    let mut failed_to_run = 0u32;
+    // Repos whose `check_now` call returned `Err` (the `Ok(Err(_))` arm below):
+    // distinct from `soft_failures`, which ran and came back with bad news as a
+    // COMPLETED `CheckResult`. Feeds `CheckAllSummary::no_result`.
+    //
+    // NOT purely "could not run at all," despite the arm's own comment below:
+    // `check_now_inner` (`repo.rs`) can also `Err` from its persistence
+    // transaction, which runs AFTER inspection and any real network fetch. A
+    // check that fetched successfully but then hit a DB error writing the
+    // outcome lands here too, indistinguishable from one that never ran. See
+    // `CheckAllSummary::no_result`'s doc for the full accounting.
+    let mut no_result = 0u32;
 
     while let Some(joined) = tasks.join_next().await {
         // Refill as each finishes, so the burst keeps `max_in_flight` moving
@@ -245,11 +254,13 @@ pub(crate) async fn check_all_enabled(
                     soft_failures.push(result.reason.clone());
                 }
             }
-            // A check that could not RUN at all (git vanished mid-burst, the path
-            // is gone). Still surfaced immediately and individually: it is rare,
-            // and it usually means the next repo will fail the same way.
+            // `check_now` returned `Err`: no `CheckResult` was produced. Usually a
+            // preflight failure (git vanished mid-burst, the path is gone), but
+            // NOT always - see the `no_result` comment above. Still surfaced
+            // immediately and individually: it is rare, and a preflight failure
+            // usually means the next repo will fail the same way.
             Ok(Err(e)) => {
-                failed_to_run += 1;
+                no_result += 1;
                 emit_error_raised(app, &e);
             }
             // The task did not return a value: it panicked or was cancelled. Under
@@ -298,7 +309,7 @@ pub(crate) async fn check_all_enabled(
     Ok(summarize_check_all(
         targeted,
         checked,
-        failed_to_run,
+        no_result,
         soft_failures.len() as u32,
     ))
 }
@@ -311,14 +322,14 @@ pub(crate) async fn check_all_enabled(
 fn summarize_check_all(
     targeted: usize,
     completed: u32,
-    failed_to_run: u32,
+    no_result: u32,
     failed_check: u32,
 ) -> CheckAllSummary {
     CheckAllSummary {
         targeted: targeted as i64,
         completed: completed as i64,
         succeeded: (completed as i64) - (failed_check as i64),
-        failed_to_run: failed_to_run as i64,
+        no_result: no_result as i64,
         failed_check: failed_check as i64,
     }
 }
@@ -1596,16 +1607,20 @@ mod tests {
         assert_eq!(s.targeted, 5);
         assert_eq!(s.completed, 5);
         assert_eq!(s.succeeded, 5);
-        assert_eq!(s.failed_to_run, 0);
+        assert_eq!(s.no_result, 0);
         assert_eq!(s.failed_check, 0);
     }
 
     /// The exact ambiguity the review finding named: a bare zero return could
-    /// mean "no enabled repos" or "every targeted repo failed before producing a
-    /// result." The structured summary tells them apart - `targeted` stays
-    /// honest even when nothing completed.
+    /// mean "no enabled repos" or "every targeted repo produced no result."
+    /// The structured summary tells them apart - `targeted` stays honest even
+    /// when nothing completed. Named `no_result`, not `failed_to_run`: a second
+    /// review finding on this same PR established that `check_now` can also
+    /// `Err` from a post-run persistence failure (`repo.rs`'s `check_now_inner`
+    /// transaction), after a real fetch already happened, so this count is not
+    /// proof the check never ran.
     #[test]
-    fn every_targeted_repo_failing_to_run_leaves_targeted_nonzero_but_completed_zero() {
+    fn every_targeted_repo_producing_no_result_leaves_targeted_nonzero_but_completed_zero() {
         let s = summarize_check_all(3, 0, 3, 0);
         assert_eq!(
             s.targeted, 3,
@@ -1613,7 +1628,7 @@ mod tests {
         );
         assert_eq!(s.completed, 0);
         assert_eq!(s.succeeded, 0);
-        assert_eq!(s.failed_to_run, 3);
+        assert_eq!(s.no_result, 3);
         assert_eq!(s.failed_check, 0);
     }
 
@@ -1625,13 +1640,14 @@ mod tests {
         assert_eq!(s.targeted, 0);
         assert_eq!(s.completed, 0);
         assert_eq!(s.succeeded, 0);
-        assert_eq!(s.failed_to_run, 0);
+        assert_eq!(s.no_result, 0);
         assert_eq!(s.failed_check, 0);
     }
 
     /// `succeeded` and `failed_check` partition `completed` exactly, and
-    /// `failed_to_run` is counted separately from both - a repo that could not
-    /// run never contributes to `completed` at all.
+    /// `no_result` is counted separately from both - a repo with no recorded
+    /// outcome never contributes to `completed` at all, whether it never ran
+    /// or ran and then lost its outcome to a persistence failure.
     #[test]
     fn succeeded_and_failed_check_partition_completed() {
         let s = summarize_check_all(10, 7, 1, 2);
@@ -1639,7 +1655,7 @@ mod tests {
         assert_eq!(s.completed, 7);
         assert_eq!(s.failed_check, 2);
         assert_eq!(s.succeeded, 5);
-        assert_eq!(s.failed_to_run, 1);
+        assert_eq!(s.no_result, 1);
         assert_eq!(
             s.succeeded + s.failed_check,
             s.completed,
