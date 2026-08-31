@@ -149,7 +149,20 @@ export function AppShell() {
         />
       </aside>
 
-      <main className="flex min-w-0 flex-col">
+      {/*
+        `min-h-0` matters here for the same reason it matters everywhere else
+        in this chain (grid/flex items default to `min-height: auto`, which
+        refuses to shrink below CONTENT size): `main` is a grid item of the
+        `h-svh` grid above, and without this override a tall enough screen
+        (a long Repos table, pre-`fill`) grows `main` past the grid's row
+        instead of letting it stretch to fill and scroll internally. Found
+        empirically (a real browser, not jsdom) in the fix round after the
+        Codex review of PR #73, finding 1: `DataTable`'s own internal-scroll
+        fix could not work until THIS ancestor was also bounded - `overflow-
+        auto` below only ever does anything once every ancestor up to a
+        definite-height one agrees to actually stop growing.
+      */}
+      <main className="flex min-h-0 min-w-0 flex-col">
         {showRecovery && recovery.data && (
           <div className="flex items-start gap-3 border-b border-status-dirty/40 bg-status-dirty/12 px-6 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-dirty" />
