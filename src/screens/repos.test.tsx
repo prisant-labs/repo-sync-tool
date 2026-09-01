@@ -167,13 +167,50 @@ afterEach(() => {
 });
 
 describe("ReposScreen table", () => {
-  it("renders the full ratified column set, Branch and Folder included", async () => {
+  it("renders the full ratified column set, Branch/Folder/Stars/Forks included", async () => {
     renderScreen([repo()]);
 
     await screen.findByRole("columnheader", { name: "Repository" });
-    for (const name of ["Repository", "Status", "Branch", "Ahead", "Behind", "Groups", "Folder", "Checked"]) {
+    for (const name of [
+      "Repository",
+      "Status",
+      "Branch",
+      "Ahead",
+      "Behind",
+      "Groups",
+      "Folder",
+      "Checked",
+      "Stars",
+      "Forks",
+    ]) {
       expect(screen.getByRole("columnheader", { name })).toBeDefined();
     }
+    // License, Size and Visibility are lab-default-off (N3 PR body): not
+    // rendered yet, even though the fields exist on the wire type.
+    for (const name of ["License", "Size", "Visibility"]) {
+      expect(screen.queryByRole("columnheader", { name })).toBeNull();
+    }
+  });
+
+  it("Stars/Forks: a real zero renders as '0', and only null (never refreshed / non-GitHub) renders the dash", async () => {
+    renderScreen([
+      repo({ id: 1, localName: "repo-a", stars: 0, forks: 0 }),
+      repo({ id: 2, localName: "repo-b", stars: null, forks: null }),
+      repo({ id: 3, localName: "repo-c", stars: 12, forks: 3 }),
+    ]);
+    await screen.findByText("repo-a");
+
+    // Column order (repos.tsx): repo, status, branch, ahead, behind, groups,
+    // folder, checked, stars, forks, actions - stars is cell index 8, forks 9.
+    const cellsFor = (name: string) =>
+      within(screen.getByText(name).closest('[role="row"]') as HTMLElement).getAllByRole("cell");
+
+    expect(cellsFor("repo-a")[8].textContent).toBe("0");
+    expect(cellsFor("repo-a")[9].textContent).toBe("0");
+    expect(cellsFor("repo-b")[8].textContent).toBe("-");
+    expect(cellsFor("repo-b")[9].textContent).toBe("-");
+    expect(cellsFor("repo-c")[8].textContent).toBe("12");
+    expect(cellsFor("repo-c")[9].textContent).toBe("3");
   });
 
   it("renders the branch name, and 'detached' only for a real detached HEAD (not the never-inspected/unborn-HEAD null cases)", async () => {

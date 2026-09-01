@@ -50,8 +50,7 @@ export function PageShell({
    *
    * `false` (the default): the root grows with its content (`min-h-full`),
    * so a tall screen scrolls at the PAGE level, against `AppShell`'s own
-   * `overflow-auto` element - the normal case for Dashboard, Activity, and
-   * Settings.
+   * `overflow-auto` element - the normal case for Dashboard and Settings.
    *
    * `true`: the root is capped at exactly its allotted height (`h-full
    * min-h-0`) instead of growing past it, and the content region below the
@@ -59,10 +58,13 @@ export function PageShell({
    * natural-height block. This does nothing by itself - a plain child still
    * grows to its content height and the box simply ends early - but it lets
    * a child that WANTS to own its own internal scrolling (the `DataTable`
-   * primitive's Repos usage; see its scroll-ownership doc comment) actually
-   * receive a bounded height to scroll within, instead of the page itself
-   * absorbing all available height and leaving the child nothing to be
-   * "internal" against.
+   * primitive's Repos and Activity usage; see its scroll-ownership doc
+   * comment) actually receive a bounded height to scroll within, instead of
+   * the page itself absorbing all available height and leaving the child
+   * nothing to be "internal" against. A sibling that must stay visible below
+   * the scrolling region (Activity's truncation notice) is a plain,
+   * non-flex-1 child of the same flex column: it keeps its natural height and
+   * the `DataTable` above it shrinks to whatever height remains.
    */
   fill?: boolean;
   children: ReactNode;

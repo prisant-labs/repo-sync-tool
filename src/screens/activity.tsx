@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { CheckCircle2, ChevronRight, History, XCircle } from "lucide-react";
-import { Card } from "@/components/ui/card";
+import { CheckCircle2, ChevronRight, Clock, History, XCircle } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { DataTable, type DataTableColumn } from "@/components/ui/data-table";
 import { Drawer } from "@/components/ui/drawer";
 import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
@@ -10,6 +11,7 @@ import { PageShell } from "@/components/page-shell";
 import { useActivity, useRepoList } from "@/hooks/queries";
 import { ACTIVITY_PAGE_LIMIT, paginate, toActivityFilter } from "@/lib/activity";
 import type { ActionTypeFilter, StatusFilter } from "@/lib/activity";
+import type { ActivityRecord } from "@/lib/bindings";
 import { relativeTime } from "@/lib/status";
 import { cn } from "@/lib/utils";
 
@@ -41,6 +43,11 @@ export function ActivityScreen() {
   // whole log. Filtering client-side would search only the capped page, and an
   // audit trail that answers "no failures" when it means "none in the last 60
   // rows" is worse than one with no filter at all.
+  //
+  // A group filter is deliberately NOT among these fields (N3, BL-NI-93 (group
+  // filter needs a repo-set constraint)): the same "before the LIMIT" rule that
+  // justifies action/outcome going server-side rules out a repo-membership
+  // filter that only the frontend can express today. See that backlog row.
   const activity = useActivity(toActivityFilter(actionType, status));
   // The activity row carries a repoId and no name, so the names come from the
   // repo list. A repo REMOVED after its rows were written has no entry here, and
@@ -61,6 +68,75 @@ export function ActivityScreen() {
   // healthy library renders "No activity yet", which reads as "RepoSync has
   // never done anything" when it actually means "nothing has ever gone wrong".
   const filtered = actionType !== "all" || status !== "all";
+
+  // Columns, in the ratified order (N3, ui-delivery-plan.md ledger B6): Time
+  // (never wraps, a round-five correction), Repository, Action (its own column,
+  // closing part of BL-NI-89 (Activity debug rows)), Outcome (the existing
+  // `OutcomeChip`, now in its own column instead of sharing the summary cell),
+  // Summary (the flexible column - a `minmax` range like Repos' own Repository
+  // column, not a bare `1fr`, so it does not fight the primitive's own
+  // decorative filler track for leftover width).
+  //
+  // The table lab (`_local/gui/2026-08-28_iterations/`) never modeled Activity;
+  // every width and the Summary range below is this change's own judgement,
+  // flagged in the PR body for veto, not a lab-sourced value the way the Repos
+  // columns are. No column is frozen: five fixed-ish columns plus Summary fit
+  // without needing a pinned identity column the way Repos' longer row does.
+  const columns: DataTableColumn<ActivityRecord>[] = useMemo(
+    () => [
+      {
+        id: "time",
+        header: "Time",
+        width: "96px",
+        icon: Clock,
+        cell: (row) => (
+          <span className="font-mono text-xs whitespace-nowrap text-muted-foreground">
+            {relativeTime(row.timestamp)}
+          </span>
+        ),
+      },
+      {
+        id: "repo",
+        header: "Repository",
+        width: "140px",
+        cell: (row) => {
+          // A repo removed after its rows were written has no entry in
+          // `repoNames` (see the comment above `repos`). Returning `null`
+          // renders the primitive's own muted dash placeholder rather than a
+          // silently blank cell, the same honesty convention the Branch and
+          // Ahead/Behind columns already use in `repos.tsx`.
+          const name = repoNames.get(row.repoId);
+          return name === undefined ? null : <span className="truncate text-sm">{name}</span>;
+        },
+      },
+      {
+        id: "action",
+        header: "Action",
+        width: "96px",
+        cell: (row) => (
+          <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
+            {row.actionType}
+          </span>
+        ),
+      },
+      {
+        id: "outcome",
+        header: "Outcome",
+        width: "108px",
+        cell: (row) => <OutcomeChip status={row.status} />,
+      },
+      {
+        id: "summary",
+        header: "Summary",
+        width: "minmax(240px,520px)",
+        cell: (row) =>
+          row.summary === null ? null : (
+            <span className="truncate text-sm text-foreground/90">{row.summary}</span>
+          ),
+      },
+    ],
+    [repoNames],
+  );
 
   /*
    * The two chip groups are independent axes that AND together, and as one
@@ -125,79 +201,63 @@ export function ActivityScreen() {
   );
 
   return (
-    <PageShell title="Activity" toolbar={toolbar}>
-
-      <AsyncPanel
-        state={activity}
-        emptyWhen={(rows) => rows.length === 0}
-        emptyMessage={
-          <EmptyState
-            icon={History}
-            title={filtered ? "Nothing matches this filter" : "No activity yet"}
-            description={
-              filtered
-                ? "No entries match the selected action and outcome. Clear the filters to see everything."
-                : "Checks and updates will show up here as soon as RepoSync runs one."
-            }
-            compact
-          />
-        }
-      >
-        {(rows) => (
-          <Card className="divide-y divide-border">
-            {paginate(rows).visible.map((row) => (
-              <button
-                key={row.id}
-                type="button"
-                onClick={() => setSelectedId(row.id)}
-                aria-haspopup="dialog"
-                className={cn(
-                  "grid w-full grid-cols-[128px_96px_1fr_auto] items-center gap-3 px-4 py-2.5 text-left transition-colors first:rounded-t-xl last:rounded-b-xl hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                  selectedId === row.id && "bg-muted",
-                )}
-              >
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  {relativeTime(row.timestamp)}
-                </span>
-                <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
-                  {row.actionType}
-                </span>
-                {/*
-                  The chip lives inside the existing summary cell rather than
-                  as a fifth grid column: a real outcome column is BL-NI-89 and
-                  is blocked on the row-standard decision, so the grid template
-                  here is deliberately unchanged.
-
-                  The old `?? row.status` fallback is gone because the chip now
-                  always renders that same word; keeping both would print
-                  "failed  failed" on every row that has no summary.
-                */}
-                <span className="flex min-w-0 items-center gap-2">
-                  <OutcomeChip status={row.status} />
-                  <span className="truncate text-sm text-foreground/90">{row.summary}</span>
-                </span>
-                <span className="truncate text-xs text-muted-foreground">
-                  {repoNames.get(row.repoId) ?? ""}
-                </span>
-                {/*
-                  The row opens the receipt drawer, and until this chevron it
-                  said so nowhere: the page byline that used to read "Select a
-                  row for the full receipt" was removed with the other three,
-                  and a hover background is not an affordance a keyboard or
-                  first-time user can see. DESIGN.md asks that destination and
-                  open actions stay discoverable, so the cue is a permanent part
-                  of the row rather than something hover reveals.
-
-                  `aria-hidden` because the row's own `aria-haspopup="dialog"`
-                  already tells a screen reader what activating it does; the
-                  glyph would only repeat it as noise.
-                */}
-                <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground/70" />
-              </button>
-            ))}
-          </Card>
-        )}
-      </AsyncPanel>
+    <PageShell
+      title="Activity"
+      // `fill`: N3 puts Activity on the same internally-scrolling `DataTable`
+      // architecture as Repos (N2), rather than leaving the table to grow with
+      // its content and letting the whole page scroll underneath a header that
+      // can never catch up. See `page-shell.tsx`'s `fill` doc comment and
+      // `data-table.tsx`'s scroll-ownership doc comment. Verified in a real
+      // browser (not just jsdom) via `pnpm dev` + Playwright, per PR #73's own
+      // precedent for exactly this class of change.
+      fill
+      toolbar={toolbar}
+    >
+      <div className="flex min-h-0 flex-1 flex-col">
+        <AsyncPanel
+          state={activity}
+          emptyWhen={(rows) => rows.length === 0}
+          emptyMessage={
+            <EmptyState
+              icon={History}
+              title={filtered ? "Nothing matches this filter" : "No activity yet"}
+              description={
+                filtered
+                  ? "No entries match the selected action and outcome. Clear the filters to see everything."
+                  : "Checks and updates will show up here as soon as RepoSync runs one."
+              }
+              compact
+            />
+          }
+        >
+          {(rows) => (
+            <DataTable
+              aria-label="Activity log"
+              density="compact"
+              columns={columns}
+              rows={paginate(rows).visible}
+              rowKey={(r) => r.id}
+              onRowClick={(r) => setSelectedId(r.id)}
+              // A single unlabeled action (the receipt chevron), unlike Repos'
+              // two, so `actionsWidth` is narrowed from the primitive's
+              // two-button default (112px) to fit one 36px button plus the
+              // existing 12px cell padding on both sides (12 + 36 + 12 = 60,
+              // rounded up).
+              actionsWidth="64px"
+              actions={(r) => (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Open receipt"
+                  onClick={() => setSelectedId(r.id)}
+                >
+                  <ChevronRight aria-hidden />
+                </Button>
+              )}
+            />
+          )}
+        </AsyncPanel>
+      </div>
 
       {/*
         Say so when the page was cut, and ONLY then. A list capped at 60 with
