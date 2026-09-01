@@ -515,4 +515,30 @@ describe("RepoDetailPanel homepage glyph (N4)", () => {
 
     await waitFor(() => expect(openHomepage).toHaveBeenCalledWith(7));
   });
+
+  it("a rejected homepage URL routes through run's generic failure toast with the backend's own message", async () => {
+    // github.invalid_external_url (BL-NI-94): the dedicated wire code for a
+    // homepage value that fails the same http(s)-only scheme validation
+    // `repo_open_remote` already applies. The glyph itself has no special
+    // handling for this code - it goes through the drawer's shared `run`
+    // helper like every other Open-in action, so this also pins that `run`'s
+    // error arm covers the new action.
+    mockCommand(commands, "repoGet", async () => ok({ ...DETAIL, homepage: "https://example.com" }));
+    mockCommand(commands, "repoOpenHomepage", async () =>
+      err("github.invalid_external_url", "the homepage URL is not a web address RepoSync will open"),
+    );
+    const { toast } = renderPanel();
+    const user = userEvent.setup();
+
+    const button = await screen.findByRole("button", { name: "Open homepage" });
+    await user.click(button);
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        "error",
+        "Action failed",
+        "the homepage URL is not a web address RepoSync will open",
+      ),
+    );
+  });
 });

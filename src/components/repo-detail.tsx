@@ -394,12 +394,19 @@ function DetailBody({
       <Tabs value={tab} onValueChange={(v) => onTabChange(v as PanelTab)} className="flex min-h-0 flex-1 flex-col">
         <TabList aria-label="Repository sections" tabs={PANEL_TABS} className="px-5" />
         {/*
-          Each tab's content owns its own scroll region beneath the fixed
-          chrome and tab strip above, per the ratified requirement that
-          switching tabs never re-scrolls the whole drawer.
+          `overflow-auto` lives on EACH TabPanel, not on a shared wrapper
+          around all three. A shared scroll container would persist its own
+          `scrollTop` across a tab switch even though `TabPanel` unmounts the
+          CONTENT inside it - the container itself never goes away, so
+          scrolling down in Settings and switching to Overview would land on
+          Overview already scrolled (caught by a real-browser check during
+          verification: the Focal card was clipped off the top after
+          switching in from a scrolled tab). Scoping the scroll region to the
+          panel that unmounts means a fresh mount always starts at the top,
+          which is also the ARIA-correct shape: a focusable (`tabIndex=0`)
+          `tabpanel` that owns its own scrolling.
         */}
-        <div className="min-h-0 flex-1 overflow-auto">
-          <TabPanel value="overview" className="flex flex-col gap-5 p-5">
+          <TabPanel value="overview" className="min-h-0 flex-1 overflow-auto flex flex-col gap-5 p-5">
             <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
               <Focal r={r} status={status} busy={busy} run={run} onCheckNow={onCheckNow} />
             </div>
@@ -553,11 +560,11 @@ function DetailBody({
             </section>
           </TabPanel>
 
-          <TabPanel value="activity" className="flex flex-col gap-3 p-5">
+          <TabPanel value="activity" className="min-h-0 flex-1 overflow-auto flex flex-col gap-3 p-5">
             <ActivitySection repoName={r.localName} state={activity} />
           </TabPanel>
 
-          <TabPanel value="settings" className="flex flex-col gap-5 p-5">
+          <TabPanel value="settings" className="min-h-0 flex-1 overflow-auto flex flex-col gap-5 p-5">
             {/*
               Keyed distinctly from RemoveSection below, not both `key={r.id}`
               (a pre-existing defect found while verifying N4 in a real
@@ -600,7 +607,6 @@ function DetailBody({
 
             <RemoveSection key={`remove-${r.id}`} name={r.localName} busy={busy} onRemove={onRemove} />
           </TabPanel>
-        </div>
       </Tabs>
     </div>
   );
