@@ -380,51 +380,86 @@ export function ReposScreen({
     [groupsForRepo],
   );
 
-  // Search and the status chips ride in PageShell's sticky header rather than
-  // scrolling away with the table. Filters that leave the screen force a scroll
-  // back up to change what you are looking at, which is the opposite of what a
-  // filter is for. Behaviour is unchanged; only where it renders moved.
+  // ONE toolbar (N5, sidebar restructure and toolbar consolidation;
+  // ui-delivery-plan.md ledger B1 / round-five correction, coverage-matrix.md
+  // section 11): search, the status filter chips and the
+  // group filter control together, all riding in PageShell's sticky header
+  // rather than scrolling away with the table. Filters that leave the screen
+  // force a scroll back up to change what you are looking at, which is the
+  // opposite of what a filter is for.
+  //
+  // The group control folds in what used to be a separate "Filtered to X /
+  // Clear filter" banner rendered below the header (see the removed block
+  // near the old `activeGroup &&` site). DECISION FLAGGED FOR VETO in the PR
+  // body: coverage-matrix.md section 3 KEEPs that banner as its own row, but
+  // once the group control here already shows the active group (dot, name,
+  // count) and offers Clear, the banner is a second copy of the same
+  // information - the later, more specific round-five toolbar-consolidation
+  // decision supersedes that KEEP row rather than sitting beside it.
+  //
+  // CORRECTED post-review: search, the status chips and Check all stay gated
+  // by `list.length > 0` (nothing to search, filter or check-all against an
+  // empty list), but the GROUP CONTROL is not part of that gate any more. A
+  // Codex adversarial review caught the first cut's real bug: gating the
+  // whole toolbar on `list.length` meant an emptied library with an active
+  // group filter showed no clear affordance at all, and the filter would
+  // silently reapply the moment a repo reappeared - `activeGroupId` lives in
+  // `AppShell`, entirely independent of this screen's own repo list, so
+  // nothing about an empty `list` ever clears it. The control now renders
+  // whenever `activeGroup` is set, full stop, so the filter stays visible and
+  // clearable through every state the list can be in - the sidebar's "All
+  // repositories" row was never the ONLY way to clear it; it is one of two,
+  // as it always should have been.
   const toolbar =
-    list.length > 0 ? (
+    list.length > 0 || activeGroup ? (
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative w-full max-w-xs">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter by name"
-                className="pl-8"
-                spellCheck={false}
-              />
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
-              {STATUS_ORDER.map(
-                (s) =>
-                  counts[s] > 0 && (
-                    <FilterChip
-                      key={s}
-                      label={STATUS_STYLE[s].label}
-                      count={counts[s]}
-                      active={chip === s}
-                      tone={STATUS_STYLE[s].text}
-                      onClick={() => setChip(s)}
-                    />
-                  ),
-              )}
-            </div>
+            {list.length > 0 && (
+              <>
+                <div className="relative w-full max-w-xs">
+                  <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Filter by name"
+                    className="pl-8"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
+                  {STATUS_ORDER.map(
+                    (s) =>
+                      counts[s] > 0 && (
+                        <FilterChip
+                          key={s}
+                          label={STATUS_STYLE[s].label}
+                          count={counts[s]}
+                          active={chip === s}
+                          tone={STATUS_STYLE[s].text}
+                          onClick={() => setChip(s)}
+                        />
+                      ),
+                  )}
+                </div>
+              </>
+            )}
+            {activeGroup && (
+              <GroupFilterControl group={activeGroup} count={inGroupCount} onClear={onClearGroup} />
+            )}
             {/* Provisional (N2 PR, veto invited): closes BL-NI-86, repo_check_all
                 has no consumer. */}
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              disabled={checkAllBusy}
-              onClick={checkAll}
-            >
-              <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
-              Check all
-            </Button>
+            {list.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto"
+                disabled={checkAllBusy}
+                onClick={checkAll}
+              >
+                <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
+                Check all
+              </Button>
+            )}
           </div>
     ) : undefined;
 
@@ -445,27 +480,6 @@ export function ReposScreen({
       }
       toolbar={toolbar}
     >
-
-      {activeGroup && (
-        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2">
-          <span
-            className={cn(
-              "size-2.5 shrink-0 rounded-full",
-              activeGroup.color === null && "bg-muted-foreground/50",
-            )}
-            style={activeGroup.color ? { backgroundColor: activeGroup.color } : undefined}
-          />
-          <span className="text-sm">
-            Filtered to <span className="font-semibold">{activeGroup.name}</span>
-          </span>
-          <span className="font-mono text-xs text-muted-foreground">
-            {inGroupCount === null ? "…" : `${inGroupCount} ${inGroupCount === 1 ? "repo" : "repos"}`}
-          </span>
-          <Button variant="ghost" size="sm" className="ml-auto" onClick={onClearGroup}>
-            <X /> Clear filter
-          </Button>
-        </div>
-      )}
 
       {/*
         `min-h-0` lets this region shrink below its content height when
@@ -586,5 +600,62 @@ function GroupChip({ group }: { group: GroupSummary }) {
       />
       {group.name}
     </span>
+  );
+}
+
+/**
+ * The Repos toolbar's group control (N5): what the old standalone "Filtered
+ * to X / Clear filter" banner folded into. Shows the active group exactly the
+ * way the sidebar and the Groups column do - a colour dot plus name - plus
+ * the count of repos in it, and offers Clear. Selecting a DIFFERENT group
+ * still happens from the sidebar (GroupsNav); this control only displays and
+ * clears the filter the sidebar set, per the withdrawn F1/F2 group-filter
+ * proposals in coverage-matrix.md ("group filtering already works from the
+ * sidebar").
+ *
+ * `count === null` means the bulk membership read is still loading or failed
+ * (BL-NI-22 (O(N) group filter)'s sibling honesty finding, coverage-matrix.md
+ * section 3): this renders an ellipsis, never a fabricated zero.
+ *
+ * Wording restored post-review. The first cut dropped the fold to a bare
+ * "[dot] Work 1 [Clear filter]" sequence: visually a name and a number with
+ * nothing saying what the number counts, and for a screen reader an
+ * unlabelled mono "1" with no relationship to "Work" spoken before it. The
+ * old banner's explicit "Filtered to X" plus "N repo(s)" wording is restored
+ * here instead of only in an ARIA attribute, per jp's show-the-meaning-up-
+ * front preference - a sighted user gets the same explicit sentence a screen
+ * reader does, not two different experiences of the same control.
+ */
+function GroupFilterControl({
+  group,
+  count,
+  onClear,
+}: {
+  group: GroupSummary;
+  count: number | null;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-sm">
+      <span className="text-muted-foreground">Filtered to</span>
+      <span
+        className={cn("size-2.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
+        style={group.color ? { backgroundColor: group.color } : undefined}
+      />
+      <span className="font-semibold">{group.name}</span>
+      <span className="font-mono text-xs text-muted-foreground">
+        {count === null ? "…" : `${count} ${count === 1 ? "repo" : "repos"}`}
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 gap-1 px-1.5 text-xs"
+        onClick={onClear}
+        aria-label={`Clear ${group.name} filter`}
+      >
+        <X />
+        Clear filter
+      </Button>
+    </div>
   );
 }
