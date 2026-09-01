@@ -7,6 +7,18 @@ import { absoluteTime, formatReceipt } from "@/lib/activity";
 import { cn } from "@/lib/utils";
 
 /**
+ * The id of this component's own repo-name heading, so any `Drawer` that
+ * renders it can name itself via `aria-labelledby` from the same visible
+ * text a sighted user reads (Codex adversarial review, finding 3, confirmed
+ * - the receipt drawer had no accessible name). Both call sites
+ * (`screens/activity.tsx`'s own receipt, and `repo-detail.tsx`'s nested
+ * receipt on the Activity tab) reuse this one constant; only one
+ * `ActivityReceipt` is ever mounted at a time (the two live in mutually
+ * exclusive screens/panels), so the shared id is safe.
+ */
+export const ACTIVITY_RECEIPT_TITLE_ID = "activity-receipt-title";
+
+/**
  * The receipt for one activity row: what RepoSync ran, what git said back, and
  * how it was classified.
  *
@@ -52,7 +64,9 @@ export function ActivityReceipt({
             </span>
             <StatusChip status={record.status} />
           </div>
-          <h3 className="mt-1.5 truncate text-base font-semibold">{repoName ?? "Unknown repo"}</h3>
+          <h3 id={ACTIVITY_RECEIPT_TITLE_ID} className="mt-1.5 truncate text-base font-semibold">
+            {repoName ?? "Unknown repo"}
+          </h3>
           <p className="text-xs text-foreground/70">
             {absoluteTime(record.timestamp)} - {relativeTime(record.timestamp)}
           </p>

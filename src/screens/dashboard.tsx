@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState, AllClearState } from "@/components/empty-state";
 import { Drawer } from "@/components/ui/drawer";
-import { RepoDetailPanel } from "@/components/repo-detail";
+import { RepoDetailPanel, REPO_DETAIL_TITLE_ID } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
 import { PageShell } from "@/components/page-shell";
 import { useBackendEvents, useRepoList, useSummaryToday } from "@/hooks/queries";
@@ -156,7 +156,12 @@ export function DashboardScreen({ onOpenRepos }: { onOpenRepos: () => void }) {
         </AsyncPanel>
       )}
 
-      <Drawer open={selectedId !== null} onClose={() => setSelectedId(null)}>
+      <Drawer
+        open={selectedId !== null}
+        onClose={() => setSelectedId(null)}
+        size="wide"
+        aria-labelledby={REPO_DETAIL_TITLE_ID}
+      >
         {selectedId !== null && (
           <RepoDetailPanel id={selectedId} onChanged={refetch} onClose={() => setSelectedId(null)} />
         )}
