@@ -276,15 +276,21 @@ pub fn open_remote(raw_url: &str) -> Result<(), AppError> {
 
 /// The typed rejection for a homepage URL that is not `http(s)`.
 ///
-/// `InvalidSetting` (not `NotFound`): the homepage DOES exist, it is simply not
-/// a scheme this command will hand to the OS opener. Reuses the same variant
-/// [`invalid_remote`] does for the analogous case on a git remote - `homepage`
-/// is not literally a user-editable setting either, but minting a dedicated
-/// `AppError` variant for one more "a stored URL failed validation" case would
-/// duplicate that precedent rather than follow it.
-fn invalid_homepage() -> AppError {
-    AppError::InvalidSetting {
-        field: "homepage".into(),
+/// `InvalidExternalUrl` (not `InvalidSetting`, and not `NotFound`): the
+/// homepage DOES exist, it is simply not a scheme this command will hand to
+/// the OS opener - and RepoSync has no homepage SETTING, so `InvalidSetting`'s
+/// "Correct it in Settings" remediation would point the user at a control
+/// that does not exist. An earlier version of this code reused
+/// `InvalidSetting` (the same variant [`invalid_remote`] uses for the
+/// analogous git-remote case) on the theory that `remote_origin_url` is not a
+/// literal setting either; a Codex adversarial review of that version
+/// confirmed the remediation was actually impossible to follow for a
+/// GitHub-API-supplied field, so this is now a dedicated variant with its own
+/// honest remediation (correct or remove the value on GitHub, then refresh
+/// metadata).
+fn invalid_external_url(url: &str) -> AppError {
+    AppError::InvalidExternalUrl {
+        url: url.to_string(),
     }
 }
 
@@ -309,7 +315,7 @@ fn validate_homepage_url(raw: &str) -> Result<String, AppError> {
     let rest = strip_scheme_ci(trimmed, "https://").or_else(|| strip_scheme_ci(trimmed, "http://"));
     match rest {
         Some(r) if is_web_host(web_host_of(r)) => Ok(trimmed.to_string()),
-        _ => Err(invalid_homepage()),
+        _ => Err(invalid_external_url(trimmed)),
     }
 }
 
@@ -678,39 +684,41 @@ mod tests {
     fn validate_homepage_url_rejects_non_web_schemes_and_hostless_urls() {
         // The scheme-rejection table BL-NI-94 asks for: homepage is documented
         // as a web URL only, so unlike remote_url_to_web_url this does NOT
-        // translate ssh/scp forms - it rejects them outright.
+        // translate ssh/scp forms - it rejects them outright. `InvalidExternalUrl`,
+        // NOT `InvalidSetting`: RepoSync has no homepage setting to correct
+        // (Codex adversarial review finding on the original version of this code).
         assert!(matches!(
             validate_homepage_url("javascript:alert(1)"),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         assert!(matches!(
             validate_homepage_url("file:///C:/Users/evil/repo"),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         assert!(matches!(
             validate_homepage_url("git@github.com:owner/repo.git"),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         assert!(matches!(
             validate_homepage_url("ssh://git@github.com/owner/repo.git"),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         assert!(matches!(
             validate_homepage_url(r"C:\Windows\System32\cmd.exe"),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         // A scheme with no host is not a browsable URL either.
         assert!(matches!(
             validate_homepage_url("https://"),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         assert!(matches!(
             validate_homepage_url(""),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
         assert!(matches!(
             validate_homepage_url("   "),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
     }
 
@@ -740,7 +748,7 @@ mod tests {
         // spawning a real process.
         assert!(matches!(
             open_homepage(Some("javascript:alert(1)"), 7),
-            Err(AppError::InvalidSetting { .. })
+            Err(AppError::InvalidExternalUrl { .. })
         ));
     }
 
