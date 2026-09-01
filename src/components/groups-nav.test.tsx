@@ -31,7 +31,15 @@ const GROUPS: GroupSummary[] = [
   { id: 2, name: "Forks", color: null, repoCount: 0 },
 ];
 
-function renderNav(groups: GroupSummary[], activeGroupId: number | null = null) {
+// `railActive` defaults to true (the "we are on Repos" case) so every
+// existing interaction test below exercises the same visual path it always
+// did; the two tests specifically about the destination/filter split pass
+// `railActive: false` explicitly.
+function renderNav(
+  groups: GroupSummary[],
+  activeGroupId: number | null = null,
+  options: { railActive?: boolean } = {},
+) {
   const toast = vi.fn();
   const onSelectGroup = vi.fn();
   const onClearActiveGroup = vi.fn();
@@ -41,6 +49,7 @@ function renderNav(groups: GroupSummary[], activeGroupId: number | null = null) 
       <GroupsNav
         groups={groups}
         activeGroupId={activeGroupId}
+        railActive={options.railActive ?? true}
         onSelectGroup={onSelectGroup}
         onClearActiveGroup={onClearActiveGroup}
         refetchGroups={refetchGroups}
@@ -193,5 +202,33 @@ describe("GroupsNav", () => {
     // The navigating callback is never touched by delete - only the
     // navigation-free one is, which is the whole point of the distinction.
     expect(onSelectGroup).not.toHaveBeenCalled();
+  });
+
+  // Codex adversarial review finding 2: destination state (which screen is
+  // current) and filter state (which group is applied) were conflated - the
+  // group row's accent fill painted on every screen, not only Repos, so a
+  // sighted user saw two "current" things in one rail at once. The fix
+  // separates them: `aria-pressed` (the filter's own, real, persistent
+  // state) is unaffected by `railActive`; only the visual fill is gated.
+  it("aria-pressed reflects the true filter state regardless of railActive - the filter persists even where its accent fill does not paint", () => {
+    renderNav(GROUPS, 1, { railActive: false });
+
+    // Work (id 1) IS the active filter even though this render represents a
+    // screen other than Repos (railActive: false) - the semantic state must
+    // say so for assistive tech, independent of whether the accent fill painted.
+    expect(screen.getByRole("button", { name: "Work" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Forks" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "All repositories" }).getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+  });
+
+  it("aria-pressed on 'All repositories' is true exactly when no group is the active filter, on every screen", () => {
+    renderNav(GROUPS, null, { railActive: false });
+
+    expect(screen.getByRole("button", { name: "All repositories" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Work" }).getAttribute("aria-pressed")).toBe("false");
   });
 });

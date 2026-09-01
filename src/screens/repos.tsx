@@ -397,57 +397,69 @@ export function ReposScreen({
   // information - the later, more specific round-five toolbar-consolidation
   // decision supersedes that KEEP row rather than sitting beside it.
   //
-  // Behaviour delta, named rather than silently dropped: the old banner
-  // rendered regardless of `list.length` (an empty library with an active
-  // group filter still showed "Filtered to X"). This toolbar is gated by
-  // `list.length > 0` per the ratified "hidden when the list is empty" rule,
-  // so that combination now shows no group-filter affordance in the Repos
-  // header. The capability is not lost - the sidebar's "All repositories" row
-  // still clears the filter from any screen - only this one display of it.
+  // CORRECTED post-review: search, the status chips and Check all stay gated
+  // by `list.length > 0` (nothing to search, filter or check-all against an
+  // empty list), but the GROUP CONTROL is not part of that gate any more. A
+  // Codex adversarial review caught the first cut's real bug: gating the
+  // whole toolbar on `list.length` meant an emptied library with an active
+  // group filter showed no clear affordance at all, and the filter would
+  // silently reapply the moment a repo reappeared - `activeGroupId` lives in
+  // `AppShell`, entirely independent of this screen's own repo list, so
+  // nothing about an empty `list` ever clears it. The control now renders
+  // whenever `activeGroup` is set, full stop, so the filter stays visible and
+  // clearable through every state the list can be in - the sidebar's "All
+  // repositories" row was never the ONLY way to clear it; it is one of two,
+  // as it always should have been.
   const toolbar =
-    list.length > 0 ? (
+    list.length > 0 || activeGroup ? (
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative w-full max-w-xs">
-              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Filter by name"
-                className="pl-8"
-                spellCheck={false}
-              />
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
-              {STATUS_ORDER.map(
-                (s) =>
-                  counts[s] > 0 && (
-                    <FilterChip
-                      key={s}
-                      label={STATUS_STYLE[s].label}
-                      count={counts[s]}
-                      active={chip === s}
-                      tone={STATUS_STYLE[s].text}
-                      onClick={() => setChip(s)}
-                    />
-                  ),
-              )}
-            </div>
+            {list.length > 0 && (
+              <>
+                <div className="relative w-full max-w-xs">
+                  <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Filter by name"
+                    className="pl-8"
+                    spellCheck={false}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
+                  {STATUS_ORDER.map(
+                    (s) =>
+                      counts[s] > 0 && (
+                        <FilterChip
+                          key={s}
+                          label={STATUS_STYLE[s].label}
+                          count={counts[s]}
+                          active={chip === s}
+                          tone={STATUS_STYLE[s].text}
+                          onClick={() => setChip(s)}
+                        />
+                      ),
+                  )}
+                </div>
+              </>
+            )}
             {activeGroup && (
               <GroupFilterControl group={activeGroup} count={inGroupCount} onClear={onClearGroup} />
             )}
             {/* Provisional (N2 PR, veto invited): closes BL-NI-86, repo_check_all
                 has no consumer. */}
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              disabled={checkAllBusy}
-              onClick={checkAll}
-            >
-              <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
-              Check all
-            </Button>
+            {list.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-auto"
+                disabled={checkAllBusy}
+                onClick={checkAll}
+              >
+                <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
+                Check all
+              </Button>
+            )}
           </div>
     ) : undefined;
 
@@ -604,6 +616,15 @@ function GroupChip({ group }: { group: GroupSummary }) {
  * `count === null` means the bulk membership read is still loading or failed
  * (BL-NI-22 (O(N) group filter)'s sibling honesty finding, coverage-matrix.md
  * section 3): this renders an ellipsis, never a fabricated zero.
+ *
+ * Wording restored post-review. The first cut dropped the fold to a bare
+ * "[dot] Work 1 [Clear filter]" sequence: visually a name and a number with
+ * nothing saying what the number counts, and for a screen reader an
+ * unlabelled mono "1" with no relationship to "Work" spoken before it. The
+ * old banner's explicit "Filtered to X" plus "N repo(s)" wording is restored
+ * here instead of only in an ARIA attribute, per jp's show-the-meaning-up-
+ * front preference - a sighted user gets the same explicit sentence a screen
+ * reader does, not two different experiences of the same control.
  */
 function GroupFilterControl({
   group,
@@ -616,12 +637,15 @@ function GroupFilterControl({
 }) {
   return (
     <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-sm">
+      <span className="text-muted-foreground">Filtered to</span>
       <span
         className={cn("size-2.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
         style={group.color ? { backgroundColor: group.color } : undefined}
       />
       <span className="font-semibold">{group.name}</span>
-      <span className="font-mono text-xs text-muted-foreground">{count === null ? "…" : count}</span>
+      <span className="font-mono text-xs text-muted-foreground">
+        {count === null ? "…" : `${count} ${count === 1 ? "repo" : "repos"}`}
+      </span>
       <Button
         variant="ghost"
         size="sm"

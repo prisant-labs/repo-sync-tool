@@ -156,6 +156,33 @@ describe("AppShell sidebar (N5)", () => {
     expect(await screen.findByRole("heading", { name: "Repos" })).toBeDefined();
   });
 
+  // Codex adversarial review finding 2: GroupsNav rendered its selected
+  // row's accent fill on every screen, not only Repos, so Dashboard's own
+  // active nav item and an accent-active group row both read as "current" at
+  // once. Destination (aria-current) and filter (aria-pressed) are now two
+  // separate, non-competing signals.
+  it("exactly one destination reads as current at any time, even with a group filter still selected on a different screen", async () => {
+    mockShellCommands();
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Work" }));
+    await screen.findByRole("heading", { name: "Repos" });
+
+    // Navigate away while the group filter stays selected.
+    await user.click(within(screen.getAllByRole("navigation")[0]).getByRole("button", { name: "Dashboard" }));
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    const current = document.querySelectorAll('[aria-current="page"]');
+    expect(current).toHaveLength(1);
+    expect(current[0].textContent).toBe("Dashboard");
+
+    // The filter's own state is identified separately (aria-pressed), not
+    // via aria-current, and it persists across the navigation above.
+    expect(screen.getByRole("button", { name: "Work" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("deleting the ACTIVE group's filter clears it WITHOUT forcing navigation away from the current screen (E-16 known defect 6)", async () => {
     mockShellCommands();
     mockCommand(commands, "groupDelete", async () => ok(null));

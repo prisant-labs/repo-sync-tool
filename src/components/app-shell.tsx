@@ -44,18 +44,38 @@ const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = 
  * One sidebar nav button, shared by the primary list and the bottom-docked
  * Settings entry.
  *
- * Active state (N5): moved off the accent tint (`bg-primary/10 text-primary`)
- * onto the ratified neutral 1B surface ramp - `bg-sidebar-accent` is the same
- * `0.935`/`0.269` well step `--muted` already sits on, so this reads as "one
- * step down the ramp," not a color statement. Computed (`_generators/
- * contrast.py`): `text-foreground` on `bg-sidebar-accent` is 16.35:1 in light,
- * 14.48:1 in dark - both far past the 4.5:1 floor.
+ * Active state (N5, corrected post-review): moved off the accent tint
+ * (`bg-primary/10 text-primary`) onto the ratified neutral 1B surface ramp -
+ * `bg-sidebar-accent` is the same `0.935`/`0.269` well step `--muted` already
+ * sits on. `text-foreground` on `bg-sidebar-accent` is 16.35:1 in light,
+ * 14.48:1 in dark (`_generators/contrast.py`).
  *
- * Because `--muted` and `--sidebar-accent` are the SAME value in both themes,
- * a hover state that also used `bg-muted` at full opacity would render
- * identically to this active state. Hover therefore steps to `bg-muted/60`
- * (half the fill) so an active item and a hovered-but-inactive item stay
- * perceptibly different, per jp's design-options-must-differ preference.
+ * The first cut paired that with `hover:bg-muted/60`, reasoned to differ from
+ * active's full-opacity fill by weight alone. A Codex adversarial review
+ * measured the actual COMPOSITE (muted painted at 60% alpha over the sidebar,
+ * not the raw property value) and found it lands within 0.01 L of active's
+ * flat fill - roughly 1.01:1 in light, 1.08:1 in dark, regardless of which
+ * alpha is chosen. Re-derived here: `--sidebar` (0.945/0.205) and
+ * `--muted`/`--sidebar-accent` (0.935/0.269) are only ~0.01 L apart in this
+ * ramp, so ANY alpha blend of one over the other stays within that same 0.01
+ * band - there is no opacity value that makes hover "genuinely different"
+ * from active while both stay on the neutral ramp. That is smaller than the
+ * 4% lightness step the design record already calls sub-threshold (jp has
+ * rejected imperceptible option spacing before), so tuning the fill further
+ * cannot fix this; it needs a lever outside the greyscale ramp entirely.
+ *
+ * The fix moves SEVERAL levers on active, none of them tunable-into-collision
+ * by a background alpha: a 2px LEFT ACCENT BAR in `--primary` (a hue no
+ * resting or hovered item ever carries, so it cannot converge with hover no
+ * matter how the neutral ramp is tuned), the flat `bg-sidebar-accent` fill,
+ * and `font-semibold`. The border is reserved (`border-l-2 border-transparent`
+ * by default) rather than added only when active, so nothing shifts width on
+ * activation. Hover keeps a light neutral wash purely as a "this is clickable"
+ * touch - by the numbers above it can never be told apart from active on
+ * background alone, so it no longer tries to; its real, load-bearing signal is
+ * the text-color jump (`text-muted-foreground` to `text-foreground`, already
+ * a large, verified contrast delta), which active also carries but hover now
+ * shares only that lever, never the bar or the weight.
  */
 function NavButton({
   label,
@@ -73,10 +93,10 @@ function NavButton({
       onClick={onClick}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors",
+        "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-sm transition-colors",
         active
-          ? "bg-sidebar-accent font-semibold text-foreground"
-          : "font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+          ? "border-l-primary bg-sidebar-accent font-semibold text-foreground"
+          : "font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground",
       )}
     >
       <Icon className="size-[17px]" />
@@ -201,6 +221,7 @@ export function AppShell() {
           <GroupsNav
             groups={groups}
             activeGroupId={activeGroupId}
+            railActive={view === "repos"}
             onSelectGroup={selectGroup}
             onClearActiveGroup={clearActiveGroup}
             refetchGroups={groupsState.refetch}

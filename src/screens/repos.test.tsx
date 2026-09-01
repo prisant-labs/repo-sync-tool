@@ -393,15 +393,19 @@ describe("ReposScreen table", () => {
     expect(await screen.findByText("No repositories yet")).toBeDefined();
   });
 
-  it("the toolbar (search, chips, Check all) is hidden along with the group control when the list is empty", async () => {
-    renderScreen([], [], { activeGroupId: 1 });
+  it("search, the status chips and Check all are hidden when the list is empty and no group is active", async () => {
+    renderScreen([]);
     await screen.findByText("No repositories yet");
 
     expect(screen.queryByPlaceholderText("Filter by name")).toBeNull();
     expect(screen.queryByRole("button", { name: /Check all/ })).toBeNull();
-    // The old standalone banner is gone; its replacement (the group control)
-    // is folded into this same toolbar and hidden with it.
-    expect(screen.queryByText("Work")).toBeNull();
+    // No toolbar at all in this case: nothing to search, filter, check-all,
+    // or clear. (An empty list WITH an active group filter is different -
+    // see "stays visible and clearable when the tracked-repo list is empty"
+    // in the toolbar group control describe block below: Codex adversarial
+    // review finding 1 confirmed the group control must not disappear with
+    // the rest of the toolbar, since `activeGroupId` lives in `AppShell` and
+    // does not depend on this screen's own list.)
   });
 
   it("hides zero-count status chips, keeping only All plus statuses actually present", async () => {
@@ -507,17 +511,18 @@ describe("ReposScreen toolbar group control (N5)", () => {
     expect(screen.getByRole("button", { name: /In sync/ })).toBeDefined();
 
     // Scope to the group control itself (its Clear button is the unique
-    // anchor): the row's own Groups-column chip also renders "Work" and "1",
-    // so an unscoped query would be ambiguous.
+    // anchor): the row's own Groups-column chip also renders "Work", so an
+    // unscoped query would be ambiguous.
     const clearButton = screen.getByRole("button", { name: "Clear Work filter" });
     const control = clearButton.closest("div") as HTMLElement;
+    expect(within(control).getByText("Filtered to")).toBeDefined();
     expect(within(control).getByText("Work")).toBeDefined();
     // GROUPS[0].repoCount is 1 in the fixture, but the control's count comes
     // from the live membership map (1 repo, in the group), not the sidebar's
-    // stale summary count - confirmed by the exact "1" here.
-    expect(within(control).getByText("1")).toBeDefined();
-    // The old sentence wording is gone; this is a compact control, not a banner.
-    expect(screen.queryByText(/Filtered to/)).toBeNull();
+    // stale summary count - confirmed by the exact "1 repo" here. Explicit
+    // semantics restored post-review: a bare "1" with nothing saying what it
+    // counts was flagged as a regression from the old banner's wording.
+    expect(within(control).getByText("1 repo")).toBeDefined();
 
     await user.click(clearButton);
     expect(onClearGroup).toHaveBeenCalledTimes(1);
@@ -536,5 +541,22 @@ describe("ReposScreen toolbar group control (N5)", () => {
     expect(await screen.findByText("Work")).toBeDefined();
     expect(screen.getByText("…")).toBeDefined();
     expect(screen.queryByText("0")).toBeNull();
+  });
+
+  it("stays visible and clearable when the tracked-repo list is empty (Codex review finding 1: activeGroupId lives in AppShell, independent of this screen's own list, so an empty list must not silently orphan the filter)", async () => {
+    const { onClearGroup } = renderScreen([], [], { activeGroupId: 1 });
+    await screen.findByText("No repositories yet");
+
+    // Search, chips and Check all have nothing to act on and stay hidden -
+    // but the group filter's own visibility and clear affordance do not
+    // depend on there being any repos to filter.
+    expect(screen.queryByPlaceholderText("Filter by name")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check all/ })).toBeNull();
+
+    const clearButton = screen.getByRole("button", { name: "Clear Work filter" });
+    expect(within(clearButton.closest("div") as HTMLElement).getByText("Filtered to")).toBeDefined();
+
+    await userEvent.setup().click(clearButton);
+    expect(onClearGroup).toHaveBeenCalledTimes(1);
   });
 });
