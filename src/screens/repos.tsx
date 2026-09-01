@@ -7,9 +7,11 @@ import {
   Folder,
   FolderGit2,
   GitBranch,
+  GitFork,
   Plus,
   RefreshCw,
   Search,
+  Star,
   X,
 } from "lucide-react";
 import { commands } from "@/lib/bindings";
@@ -190,16 +192,57 @@ export function ReposScreen({
 
   // Columns, in the ratified order (README settled list + ui-delivery-plan.md
   // ledger B5): Repository (first, frozen, the only flexible width), Status,
-  // Branch, Ahead, Behind, Groups, Folder, Checked, then the unlabeled actions
-  // column.
+  // Branch, Ahead, Behind, Groups, Folder, Checked, Stars, Forks, then the
+  // unlabeled actions column.
   //
-  // Branch and Folder shipped in this fix round: `RepoSummary` gained
+  // Branch and Folder shipped in the N2 fix round: `RepoSummary` gained
   // `activeBranch` and `localPath` in PR #74 (`feat/summary-fields-and-check-
   // summary`), closing the gap BL-NI-91 recorded when N2 first shipped without
-  // them. The five metadata fields PR #72 (N1) added to `RepoSummary`
-  // (stars/forks/license/size/visibility, plus `homepage`) are now ALSO
-  // available on the wire type, but adding those columns is explicitly out of
-  // scope for this fix round (jp's scope ruling: only Branch and Folder).
+  // them.
+  //
+  // Stars and Forks ship in N3 (this change): the table lab's `gen_lab2.py`
+  // COLS tuple carries `(key, label, width, kind, on, mig)` for all five
+  // metadata columns PR #72 (N1) added to `RepoSummary` - only `stars` and
+  // `forks` default ON (`("stars","Stars","76px","n",1,1)`,
+  // `("forks","Forks","76px","n",1,1)`); `license`, `size` and `visibility` all
+  // default OFF (`0`) and are therefore NOT rendered here - the lab's default
+  // on/off set decides which render, per the N3 task, since column show/hide
+  // is itself still deferred. Extracted values, stated here for veto:
+  //   - width 76px, kind "n" (number: label left in the header, value right in
+  //     the cell, per the lab's own alignment default), for both.
+  //   - icons: `STAR` / `FORK` in the lab's own glyph set, mapped to lucide's
+  //     `Star` / `GitFork` (the closest stock equivalents; the lab draws its
+  //     own inline SVG paths rather than naming a library icon).
+  //   - the lab's `cell()` does NOT give stars/forks the muted ".meta" class
+  //     it gives Checked/License/Size/Visibility, so these render at the
+  //     normal (non-muted) cell ink, matching Ahead/Behind's own treatment.
+  //   - the lab's mock data shows abbreviated values ("1.2k"). No abbreviation
+  //     rule is ratified anywhere else in this codebase, so this renders the
+  //     exact integer GitHub reports, in mono tabular-nums like Ahead/Behind -
+  //     a deviation from the lab's mock, flagged here for veto.
+  //   - a real zero renders as "0", not the dash: `stars`/`forks` are `Option`
+  //     fields whose OWN doc comment says "never a fabricated zero", meaning a
+  //     genuine 0 is real data GitHub reported, not an absence. Only `None`
+  //     (never-refreshed / non-GitHub) renders the dash. This is the opposite
+  //     rule from Ahead/Behind, whose `0` IS the "nothing to show" case for a
+  //     repo that is not ahead or behind at all - the two columns look similar
+  //     but the meaning of zero differs, so the two `cell()` functions differ
+  //     on purpose.
+  //
+  // `license`, `size` and `visibility` remain unrendered (lab-default-off,
+  // per the note above) - `size` arrives from GitHub in KILOBYTES
+  // (`RepoSummary.size`'s own doc comment), unhumanized, which would only
+  // matter once that column ships.
+  //
+  // The two round-five web-link glyphs (globe to the repo's web URL, link
+  // glyph to `homepage`) ratified for this identity cell are NOT built here:
+  // see BL-NI-94 (web link glyphs need two backend gaps) in `docs/backlog.md`
+  // and the PR body. In short, `RepoSummary` (unlike `RepoDetail`) carries no
+  // `remoteOriginUrl` to gate the globe's "hidden when null" requirement on,
+  // and no IPC command opens an arbitrary URL like `homepage` at all (only
+  // `repoOpenRemote`, which opens the git remote specifically) - both are
+  // `crates/reposync-core` / `src-tauri` changes, out of scope for this
+  // `src/`-only slice per the shell-crate chokepoint.
   const columns: DataTableColumn<RepoSummary>[] = useMemo(
     () => [
       {
@@ -313,6 +356,25 @@ export function ReposScreen({
         width: "96px",
         icon: Clock,
         cell: (r) => <span className="font-mono text-xs text-muted-foreground">{relativeTime(r.lastCheckedAt)}</span>,
+      },
+      {
+        id: "stars",
+        header: "Stars",
+        width: "76px",
+        align: "right",
+        icon: Star,
+        // `null` (never refreshed / non-GitHub) is the dash; a real `0` is
+        // GitHub's actual answer and renders as "0" - see the doc comment
+        // above the column list for why this differs from Ahead/Behind.
+        cell: (r) => (r.stars === null ? null : <span className="font-mono text-xs tabular-nums">{r.stars}</span>),
+      },
+      {
+        id: "forks",
+        header: "Forks",
+        width: "76px",
+        align: "right",
+        icon: GitFork,
+        cell: (r) => (r.forks === null ? null : <span className="font-mono text-xs tabular-nums">{r.forks}</span>),
       },
     ],
     [groupsForRepo],
