@@ -709,6 +709,24 @@ pub async fn repo_open_remote(state: tauri::State<'_, AppState>, id: i64) -> Res
     crate::opener::open_remote(&url)
 }
 
+/// Open the repo's homepage URL in the browser.
+///
+/// The STORED value is read server-side by id (BL-NI-94 / BL-NI-53 capability
+/// discipline: the frontend has no way to make this command open a URL it did
+/// not already put in the database). `homepage` is GitHub-API-supplied text
+/// with no scheme check at ingest, so `open_homepage` validates it is `http(s)`
+/// before it can reach the OS launcher, the same trust boundary `open_remote`
+/// enforces for `.git/config` remotes.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_open_homepage(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), AppError> {
+    let detail = reposync_core::store::repo_get(&state.pool, RepoId(id)).await?;
+    crate::opener::open_homepage(detail.homepage.as_deref(), id)
+}
+
 /// List activity-log records, filtered (newest first).
 ///
 /// Thin wrapper over [`reposync_core::activity::list`]: the read-side counterpart

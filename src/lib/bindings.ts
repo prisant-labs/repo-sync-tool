@@ -109,6 +109,17 @@ export const commands = {
 	/**  Open the repo's remote (origin URL) in the browser. */
 	repoOpenRemote: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_remote", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**
+	 *  Open the repo's homepage URL in the browser.
+	 * 
+	 *  The STORED value is read server-side by id (BL-NI-94 / BL-NI-53 capability
+	 *  discipline: the frontend has no way to make this command open a URL it did
+	 *  not already put in the database). `homepage` is GitHub-API-supplied text
+	 *  with no scheme check at ingest, so `open_homepage` validates it is `http(s)`
+	 *  before it can reach the OS launcher, the same trust boundary `open_remote`
+	 *  enforces for `.git/config` remotes.
+	 */
+	repoOpenHomepage: (id: number) => typedError<null, AppErrorPayload>(__TAURI_INVOKE("repo_open_homepage", { id })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	/**
 	 *  List activity-log records, filtered (newest first).
 	 * 
 	 *  Thin wrapper over [`reposync_core::activity::list`]: the read-side counterpart
@@ -228,6 +239,20 @@ export const events = {
 /**  Filter for `activity_list`. All fields optional; absent means "no constraint". */
 export type ActivityFilter = {
 	repoId: number | null,
+	/**
+	 *  Constrain to repos that belong to this group, resolved to membership
+	 *  SERVER-SIDE via a `repo_groups` join (BL-NI-93). A group can contain many
+	 *  repos, so this is deliberately a single group id rather than a
+	 *  caller-supplied repo-id set: `activity::list`'s query is a compile-time
+	 *  STATIC string (sqlx 0.9's `SqlSafeStr` forbids a dynamically built one),
+	 *  which rules out a variable-length `repo_id IN (...)` clause for an
+	 *  arbitrary `Vec<i64>` but admits a single static `EXISTS` subquery bound
+	 *  once. Applied in the same `WHERE` as every other filter, so it constrains
+	 *  BEFORE `LIMIT` - the same truncation-sentinel honesty `repo_id` already
+	 *  gets. `None` applies no group constraint (matches every row, same as
+	 *  every other filter here).
+	 */
+	groupId: number | null,
 	actionType: string | null,
 	status: string | null,
 	limit: number | null,
@@ -725,6 +750,10 @@ export type RepoDetail = {
 	lastErrorCode: string | null,
 	latestReleaseTag: string | null,
 	localPath: string,
+	/**
+	 *  See [`RepoSummary::remote_origin_url`] (BL-NI-94): same column, type, and
+	 *  nullability on both read paths.
+	 */
 	remoteOriginUrl: string | null,
 	defaultBranch: string | null,
 	updateMode: string,
@@ -830,6 +859,21 @@ export type RepoSummary = {
 	 *  on the bulk list read, not just the single-repo detail read).
 	 */
 	localPath: string,
+	/**
+	 *  The repo's remote origin URL (`repos.remote_origin_url`). Mirrors
+	 *  [`RepoDetail::remote_origin_url`] exactly: same column, same type, same
+	 *  nullability, same source (`repo::add` reads it once from `.git/config` at
+	 *  add time; `None` when the clone has no `origin` remote configured).
+	 * 
+	 *  `host_type` is NOT a safe substitute for gating a "has a remote" glyph:
+	 *  `repo::add` sets `host_type` to `"github"` only when the origin URL
+	 *  contains `github.com`, else `"unknown"`, so a valid non-GitHub remote
+	 *  (GitLab, a self-hosted host) would read `"unknown"` and wrongly hide a
+	 *  glyph that `repo_open_remote`'s own translator can still open (BL-NI-94:
+	 *  the ratified round-five web-link glyph needs this field on the bulk list
+	 *  read, not just the single-repo detail read, to know when to show at all).
+	 */
+	remoteOriginUrl: string | null,
 	hostType: string,
 	aheadCount: number | null,
 	behindCount: number | null,

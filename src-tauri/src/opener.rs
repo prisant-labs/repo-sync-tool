@@ -274,6 +274,67 @@ pub fn open_remote(raw_url: &str) -> Result<(), AppError> {
     open_url(&web_url)
 }
 
+/// The typed rejection for a homepage URL that is not `http(s)`.
+///
+/// `InvalidSetting` (not `NotFound`): the homepage DOES exist, it is simply not
+/// a scheme this command will hand to the OS opener. Reuses the same variant
+/// [`invalid_remote`] does for the analogous case on a git remote - `homepage`
+/// is not literally a user-editable setting either, but minting a dedicated
+/// `AppError` variant for one more "a stored URL failed validation" case would
+/// duplicate that precedent rather than follow it.
+fn invalid_homepage() -> AppError {
+    AppError::InvalidSetting {
+        field: "homepage".into(),
+    }
+}
+
+/// Validate a stored homepage URL is `http://` or `https://` with a real host,
+/// returning it unchanged if so.
+///
+/// Deliberately narrower than [`remote_url_to_web_url`]: a git remote can
+/// legitimately arrive as scp-like or `ssh://` and still be a browsable web
+/// project, so `open_remote` translates those forms. `homepage` is documented
+/// (`RepoSummary`/`RepoDetail`, BL-NI-94) as a URL GitHub's own API already
+/// returns as a web link, never a git remote, so accepting only the two web
+/// schemes is the correct validation, not a narrowing of `open_remote`'s.
+///
+/// The value is still remote-supplied data even though it round-trips through
+/// our own database first: GitHub's API supplies it verbatim into
+/// `repo_remote_meta.homepage` with no scheme check at ingest, so a hostile or
+/// merely malformed response (`javascript:`, `file://`, a bare path) must be
+/// rejected HERE, at the point it is about to reach the OS opener, not assumed
+/// safe because it already lived in SQLite.
+fn validate_homepage_url(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    let rest = strip_scheme_ci(trimmed, "https://").or_else(|| strip_scheme_ci(trimmed, "http://"));
+    match rest {
+        Some(r) if is_web_host(web_host_of(r)) => Ok(trimmed.to_string()),
+        _ => Err(invalid_homepage()),
+    }
+}
+
+/// Open a repo's homepage URL, given the STORED value read server-side by the
+/// caller.
+///
+/// The frontend never supplies a URL here (BL-NI-53 capability discipline): the
+/// command handler re-reads `homepage` from the database by repo id and passes
+/// it in, so a compromised WebView cannot point this at an arbitrary target -
+/// the same shape of boundary `open_remote` enforces for `.git/config` remotes.
+///
+/// `homepage: None` (no homepage configured, or the repo has never been
+/// refreshed) is [`AppError::NotFound`], naming the repo id, mirroring exactly
+/// how `repo_open_remote` reports a repo with no configured remote - the
+/// closest existing open-command's behavior when its target is missing, rather
+/// than a silent no-op that would leave the caller unable to tell "nothing to
+/// open" from "the open failed".
+pub fn open_homepage(homepage: Option<&str>, repo_id: i64) -> Result<(), AppError> {
+    let raw = homepage.ok_or_else(|| AppError::NotFound {
+        entity: format!("homepage URL for repo {repo_id}"),
+    })?;
+    let web_url = validate_homepage_url(raw)?;
+    open_url(&web_url)
+}
+
 /// Whether `s` starts with a `X:` drive prefix (a Windows drive-qualified path).
 #[cfg(windows)]
 fn has_drive_prefix(s: &str) -> bool {
@@ -591,6 +652,96 @@ mod tests {
         assert!(rejected("gitserver:owner/repo"));
         // scp form with an empty repo path.
         assert!(rejected("git@github.com:"));
+    }
+
+    // --- BL-NI-94: homepage-open scheme validation + null handling ---
+
+    #[test]
+    fn validate_homepage_url_accepts_http_and_https_with_a_real_host() {
+        assert_eq!(
+            validate_homepage_url("https://example.com").unwrap(),
+            "https://example.com"
+        );
+        assert_eq!(
+            validate_homepage_url("http://example.com/docs").unwrap(),
+            "http://example.com/docs"
+        );
+        // Leading/trailing whitespace (a plausible artifact of a hand-edited
+        // GitHub "Website" field) is trimmed, not rejected.
+        assert_eq!(
+            validate_homepage_url("  https://example.com  ").unwrap(),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn validate_homepage_url_rejects_non_web_schemes_and_hostless_urls() {
+        // The scheme-rejection table BL-NI-94 asks for: homepage is documented
+        // as a web URL only, so unlike remote_url_to_web_url this does NOT
+        // translate ssh/scp forms - it rejects them outright.
+        assert!(matches!(
+            validate_homepage_url("javascript:alert(1)"),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        assert!(matches!(
+            validate_homepage_url("file:///C:/Users/evil/repo"),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        assert!(matches!(
+            validate_homepage_url("git@github.com:owner/repo.git"),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        assert!(matches!(
+            validate_homepage_url("ssh://git@github.com/owner/repo.git"),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        assert!(matches!(
+            validate_homepage_url(r"C:\Windows\System32\cmd.exe"),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        // A scheme with no host is not a browsable URL either.
+        assert!(matches!(
+            validate_homepage_url("https://"),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        assert!(matches!(
+            validate_homepage_url(""),
+            Err(AppError::InvalidSetting { .. })
+        ));
+        assert!(matches!(
+            validate_homepage_url("   "),
+            Err(AppError::InvalidSetting { .. })
+        ));
+    }
+
+    #[test]
+    fn open_homepage_reports_not_found_when_no_homepage_is_configured() {
+        // The null case: no homepage configured (or never refreshed) is a typed
+        // NotFound naming the repo, mirroring repo_open_remote's handling of a
+        // repo with no configured remote - the closest existing open-command's
+        // behavior when its target is missing. This must return BEFORE ever
+        // reaching open_url/open_homepage's OS launch, so this test spawns
+        // nothing.
+        match open_homepage(None, 42) {
+            Err(AppError::NotFound { entity }) => {
+                assert!(
+                    entity.contains("42"),
+                    "the error should name the repo id so it is actionable, got {entity:?}"
+                );
+            }
+            other => panic!("expected AppError::NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_homepage_rejects_a_bad_scheme_before_ever_launching_anything() {
+        // A present-but-invalid homepage must fail scheme validation and return
+        // BEFORE reaching the OS launcher, so this is safe to assert without
+        // spawning a real process.
+        assert!(matches!(
+            open_homepage(Some("javascript:alert(1)"), 7),
+            Err(AppError::InvalidSetting { .. })
+        ));
     }
 
     // --- Findings 3/4 + 5: Windows editor resolution and wt detection ---

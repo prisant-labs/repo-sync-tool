@@ -35,7 +35,7 @@ export function useSummaryToday() {
 export function useActivity(filter: ActivityFilter) {
   return useAsync(
     () => unwrap(commands.activityList(filter)),
-    [filter.repoId, filter.actionType, filter.status, filter.limit],
+    [filter.repoId, filter.groupId, filter.actionType, filter.status, filter.limit],
     { clearDataOnDepsChange: true },
   );
 }

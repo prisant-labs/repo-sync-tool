@@ -33,6 +33,7 @@ function repo(overrides: Partial<RepoSummary> = {}): RepoSummary {
     id: 1,
     localName: "repo-a",
     localPath: "E:\\Projects\\repo-a",
+    remoteOriginUrl: null,
     hostType: "github",
     aheadCount: 0,
     behindCount: 0,

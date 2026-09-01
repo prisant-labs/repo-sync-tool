@@ -43,6 +43,7 @@ function repo(overrides: Partial<RepoSummary> = {}): RepoSummary {
     id: 7,
     localName: "repo-a",
     localPath: "E:\\Projects\\repo-a",
+    remoteOriginUrl: null,
     hostType: "github",
     aheadCount: 0,
     behindCount: 0,
@@ -151,6 +152,7 @@ describe("ActivityScreen table", () => {
     await waitFor(() =>
       expect(activityList).toHaveBeenLastCalledWith({
         repoId: null,
+        groupId: null,
         actionType: "check",
         status: null,
         limit: ACTIVITY_FETCH_LIMIT,
