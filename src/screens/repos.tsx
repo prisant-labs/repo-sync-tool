@@ -380,10 +380,30 @@ export function ReposScreen({
     [groupsForRepo],
   );
 
-  // Search and the status chips ride in PageShell's sticky header rather than
-  // scrolling away with the table. Filters that leave the screen force a scroll
-  // back up to change what you are looking at, which is the opposite of what a
-  // filter is for. Behaviour is unchanged; only where it renders moved.
+  // ONE toolbar (N5, sidebar restructure and toolbar consolidation;
+  // ui-delivery-plan.md ledger B1 / round-five correction, coverage-matrix.md
+  // section 11): search, the status filter chips and the
+  // group filter control together, all riding in PageShell's sticky header
+  // rather than scrolling away with the table. Filters that leave the screen
+  // force a scroll back up to change what you are looking at, which is the
+  // opposite of what a filter is for.
+  //
+  // The group control folds in what used to be a separate "Filtered to X /
+  // Clear filter" banner rendered below the header (see the removed block
+  // near the old `activeGroup &&` site). DECISION FLAGGED FOR VETO in the PR
+  // body: coverage-matrix.md section 3 KEEPs that banner as its own row, but
+  // once the group control here already shows the active group (dot, name,
+  // count) and offers Clear, the banner is a second copy of the same
+  // information - the later, more specific round-five toolbar-consolidation
+  // decision supersedes that KEEP row rather than sitting beside it.
+  //
+  // Behaviour delta, named rather than silently dropped: the old banner
+  // rendered regardless of `list.length` (an empty library with an active
+  // group filter still showed "Filtered to X"). This toolbar is gated by
+  // `list.length > 0` per the ratified "hidden when the list is empty" rule,
+  // so that combination now shows no group-filter affordance in the Repos
+  // header. The capability is not lost - the sidebar's "All repositories" row
+  // still clears the filter from any screen - only this one display of it.
   const toolbar =
     list.length > 0 ? (
           <div className="flex flex-wrap items-center gap-3">
@@ -413,6 +433,9 @@ export function ReposScreen({
                   ),
               )}
             </div>
+            {activeGroup && (
+              <GroupFilterControl group={activeGroup} count={inGroupCount} onClear={onClearGroup} />
+            )}
             {/* Provisional (N2 PR, veto invited): closes BL-NI-86, repo_check_all
                 has no consumer. */}
             <Button
@@ -445,27 +468,6 @@ export function ReposScreen({
       }
       toolbar={toolbar}
     >
-
-      {activeGroup && (
-        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-2">
-          <span
-            className={cn(
-              "size-2.5 shrink-0 rounded-full",
-              activeGroup.color === null && "bg-muted-foreground/50",
-            )}
-            style={activeGroup.color ? { backgroundColor: activeGroup.color } : undefined}
-          />
-          <span className="text-sm">
-            Filtered to <span className="font-semibold">{activeGroup.name}</span>
-          </span>
-          <span className="font-mono text-xs text-muted-foreground">
-            {inGroupCount === null ? "…" : `${inGroupCount} ${inGroupCount === 1 ? "repo" : "repos"}`}
-          </span>
-          <Button variant="ghost" size="sm" className="ml-auto" onClick={onClearGroup}>
-            <X /> Clear filter
-          </Button>
-        </div>
-      )}
 
       {/*
         `min-h-0` lets this region shrink below its content height when
@@ -586,5 +588,50 @@ function GroupChip({ group }: { group: GroupSummary }) {
       />
       {group.name}
     </span>
+  );
+}
+
+/**
+ * The Repos toolbar's group control (N5): what the old standalone "Filtered
+ * to X / Clear filter" banner folded into. Shows the active group exactly the
+ * way the sidebar and the Groups column do - a colour dot plus name - plus
+ * the count of repos in it, and offers Clear. Selecting a DIFFERENT group
+ * still happens from the sidebar (GroupsNav); this control only displays and
+ * clears the filter the sidebar set, per the withdrawn F1/F2 group-filter
+ * proposals in coverage-matrix.md ("group filtering already works from the
+ * sidebar").
+ *
+ * `count === null` means the bulk membership read is still loading or failed
+ * (BL-NI-22 (O(N) group filter)'s sibling honesty finding, coverage-matrix.md
+ * section 3): this renders an ellipsis, never a fabricated zero.
+ */
+function GroupFilterControl({
+  group,
+  count,
+  onClear,
+}: {
+  group: GroupSummary;
+  count: number | null;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-sm">
+      <span
+        className={cn("size-2.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
+        style={group.color ? { backgroundColor: group.color } : undefined}
+      />
+      <span className="font-semibold">{group.name}</span>
+      <span className="font-mono text-xs text-muted-foreground">{count === null ? "…" : count}</span>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 gap-1 px-1.5 text-xs"
+        onClick={onClear}
+        aria-label={`Clear ${group.name} filter`}
+      >
+        <X />
+        Clear filter
+      </Button>
+    </div>
   );
 }

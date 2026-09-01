@@ -54,8 +54,13 @@ export function GroupsNav({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col border-t border-border pt-3">
-      <div className="flex items-center gap-2 px-3.5 pb-1.5">
+    // N5 (sidebar restructure and toolbar consolidation): no top border/pt-3
+    // here any more - this section now renders nested
+    // directly beneath the Repos nav button (app-shell.tsx supplies the
+    // indent and the left guide rail that say "nested," not a rule separating
+    // two unrelated top-level blocks).
+    <div className="flex min-h-0 flex-1 flex-col pt-1">
+      <div className="flex items-center gap-2 px-2 pb-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
           Groups
         </span>

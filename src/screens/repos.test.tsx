@@ -129,16 +129,27 @@ const MINIMAL_SETTINGS: Settings = {
 
 const GROUPS: GroupSummary[] = [{ id: 1, name: "Work", color: "#4477ff", repoCount: 1 }];
 
-function renderScreen(repos: RepoSummary[], memberships: RepoGroupMembership[] = []) {
+function renderScreen(
+  repos: RepoSummary[],
+  memberships: RepoGroupMembership[] = [],
+  options: { activeGroupId?: number | null; membershipsPending?: boolean } = {},
+) {
   mockCommand(commands, "repoList", async () => ok(repos));
-  mockCommand(commands, "repoGroupMemberships", async () => ok(memberships));
+  if (options.membershipsPending) {
+    // Never resolves within the test: simulates the bulk membership read
+    // still being in flight, so the group control's count must show the
+    // loading ellipsis rather than a fabricated zero.
+    mockCommand(commands, "repoGroupMemberships", () => new Promise(() => {}));
+  } else {
+    mockCommand(commands, "repoGroupMemberships", async () => ok(memberships));
+  }
   const toast = vi.fn();
   const onClearGroup = vi.fn();
   const onGroupsChanged = vi.fn();
   const view = render(
     <ToastContext.Provider value={toast}>
       <ReposScreen
-        activeGroupId={null}
+        activeGroupId={options.activeGroupId ?? null}
         groups={GROUPS}
         onClearGroup={onClearGroup}
         onGroupsChanged={onGroupsChanged}
@@ -382,6 +393,36 @@ describe("ReposScreen table", () => {
     expect(await screen.findByText("No repositories yet")).toBeDefined();
   });
 
+  it("the toolbar (search, chips, Check all) is hidden along with the group control when the list is empty", async () => {
+    renderScreen([], [], { activeGroupId: 1 });
+    await screen.findByText("No repositories yet");
+
+    expect(screen.queryByPlaceholderText("Filter by name")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check all/ })).toBeNull();
+    // The old standalone banner is gone; its replacement (the group control)
+    // is folded into this same toolbar and hidden with it.
+    expect(screen.queryByText("Work")).toBeNull();
+  });
+
+  it("hides zero-count status chips, keeping only All plus statuses actually present", async () => {
+    renderScreen([
+      repo({ id: 1, localName: "repo-a" }),
+      repo({ id: 2, localName: "repo-b" }),
+    ]);
+    await screen.findByText("repo-a");
+
+    // Both repos are in sync: only "All" and "In sync" should render.
+    expect(screen.getByRole("button", { name: /All/ })).toBeDefined();
+    expect(screen.getByRole("button", { name: /In sync/ })).toBeDefined();
+    // A chip's accessible name includes its count ("Behind 1", never bare
+    // "Behind"), so these must be prefix regexes - an exact-string query
+    // would return null whether or not the chip renders, since neither
+    // string ever matches a real chip's name.
+    for (const label of [/^Behind/, /^Dirty/, /^Failed/, /^Paused/, /^Ahead/]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+
   it("the table has a valid accessible tree: table > rowgroup > row, and a row carries no button role or tabIndex", async () => {
     renderScreen([repo()]);
     await screen.findByText("repo-a");
@@ -444,5 +485,56 @@ describe("ReposScreen table", () => {
     await user.keyboard(" ");
     await waitFor(() => expect(repoGet).toHaveBeenCalledTimes(2));
     expect(repoGet).toHaveBeenLastCalledWith(10);
+  });
+});
+
+// N5 (sidebar restructure and toolbar consolidation; ui-delivery-plan.md
+// ledger B1): the active-group banner folds into this toolbar's group
+// control - see repos.tsx's own doc comment above the toolbar for the decision.
+describe("ReposScreen toolbar group control (N5)", () => {
+  it("folds the active group's dot, name, count and Clear into the same toolbar as search and the status chips", async () => {
+    const { onClearGroup } = renderScreen(
+      [repo({ id: 1, localName: "repo-a" })],
+      [{ repoId: 1, groupIds: [1] }],
+      { activeGroupId: 1 },
+    );
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    // Search input and a status chip are present alongside the group
+    // control - all in the one toolbar, not a separate banner below it.
+    expect(screen.getByPlaceholderText("Filter by name")).toBeDefined();
+    expect(screen.getByRole("button", { name: /In sync/ })).toBeDefined();
+
+    // Scope to the group control itself (its Clear button is the unique
+    // anchor): the row's own Groups-column chip also renders "Work" and "1",
+    // so an unscoped query would be ambiguous.
+    const clearButton = screen.getByRole("button", { name: "Clear Work filter" });
+    const control = clearButton.closest("div") as HTMLElement;
+    expect(within(control).getByText("Work")).toBeDefined();
+    // GROUPS[0].repoCount is 1 in the fixture, but the control's count comes
+    // from the live membership map (1 repo, in the group), not the sidebar's
+    // stale summary count - confirmed by the exact "1" here.
+    expect(within(control).getByText("1")).toBeDefined();
+    // The old sentence wording is gone; this is a compact control, not a banner.
+    expect(screen.queryByText(/Filtered to/)).toBeNull();
+
+    await user.click(clearButton);
+    expect(onClearGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a loading ellipsis for the group count while membership is still resolving, never a fabricated zero", async () => {
+    renderScreen([repo({ id: 1, localName: "repo-a" })], [], {
+      activeGroupId: 1,
+      membershipsPending: true,
+    });
+
+    // The group control lives in the sticky toolbar, driven by `repoList`
+    // alone, so it renders even though the table body is stuck showing its
+    // own loading state for the still-unresolved membership read (both are
+    // honest about not knowing yet, rather than one of them guessing).
+    expect(await screen.findByText("Work")).toBeDefined();
+    expect(screen.getByText("…")).toBeDefined();
+    expect(screen.queryByText("0")).toBeNull();
   });
 });

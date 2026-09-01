@@ -20,12 +20,70 @@ function isView(value: string): value is View {
   return (VIEWS as readonly string[]).includes(value);
 }
 
-const NAV: { id: View; label: string; Icon: typeof LayoutDashboard }[] = [
+// Ratified sidebar order (ui-delivery-plan.md ledger B1 / N5, sidebar
+// restructure and toolbar consolidation): Dashboard,
+// Activity, Repos - with Groups nested one level beneath Repos (rendered
+// separately below, not in this array) - then Settings, bottom-docked
+// (its own nav below, separated by a hairline and pushed down with
+// `mt-auto`). Split into two arrays rather than one flat NAV so the render
+// below can place Settings at the sidebar's foot without reordering `VIEWS`/
+// `isView`, which the tray's `navigate:requested` handler validates against
+// and must not change shape.
+const PRIMARY_NAV: { id: View; label: string; Icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
-  { id: "repos", label: "Repos", Icon: List },
   { id: "activity", label: "Activity", Icon: Activity },
-  { id: "settings", label: "Settings", Icon: Settings },
+  { id: "repos", label: "Repos", Icon: List },
 ];
+const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = {
+  id: "settings",
+  label: "Settings",
+  Icon: Settings,
+};
+
+/**
+ * One sidebar nav button, shared by the primary list and the bottom-docked
+ * Settings entry.
+ *
+ * Active state (N5): moved off the accent tint (`bg-primary/10 text-primary`)
+ * onto the ratified neutral 1B surface ramp - `bg-sidebar-accent` is the same
+ * `0.935`/`0.269` well step `--muted` already sits on, so this reads as "one
+ * step down the ramp," not a color statement. Computed (`_generators/
+ * contrast.py`): `text-foreground` on `bg-sidebar-accent` is 16.35:1 in light,
+ * 14.48:1 in dark - both far past the 4.5:1 floor.
+ *
+ * Because `--muted` and `--sidebar-accent` are the SAME value in both themes,
+ * a hover state that also used `bg-muted` at full opacity would render
+ * identically to this active state. Hover therefore steps to `bg-muted/60`
+ * (half the fill) so an active item and a hovered-but-inactive item stay
+ * perceptibly different, per jp's design-options-must-differ preference.
+ */
+function NavButton({
+  label,
+  Icon,
+  active,
+  onClick,
+}: {
+  label: string;
+  Icon: typeof LayoutDashboard;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors",
+        active
+          ? "bg-sidebar-accent font-semibold text-foreground"
+          : "font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+      )}
+    >
+      <Icon className="size-[17px]" />
+      {label}
+    </button>
+  );
+}
 
 function useTheme() {
   const [dark, setDark] = useState(false);
@@ -124,29 +182,44 @@ export function AppShell() {
           </span>
         </div>
         <nav className="flex flex-col gap-0.5 px-2.5 py-2">
-          {NAV.map(({ id, label, Icon }) => (
-            <button
-              key={id}
-              onClick={() => setView(id)}
-              className={cn(
-                "flex items-center gap-3 rounded-md px-2.5 py-2 text-sm font-medium transition-colors",
-                view === id
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-            >
-              <Icon className="size-[17px]" />
-              {label}
-            </button>
+          {PRIMARY_NAV.map(({ id, label, Icon }) => (
+            <NavButton key={id} label={label} Icon={Icon} active={view === id} onClick={() => setView(id)} />
           ))}
         </nav>
-        <GroupsNav
-          groups={groups}
-          activeGroupId={activeGroupId}
-          onSelectGroup={selectGroup}
-          onClearActiveGroup={clearActiveGroup}
-          refetchGroups={groupsState.refetch}
-        />
+
+        {/*
+          Groups, nested one level beneath Repos (ui-delivery-plan.md ledger
+          B1 / N5, coverage-matrix.md section 1). The indent plus the left
+          guide rail are what say "this belongs to Repos" rather than "this is
+          a second top-level nav list"; no mockup specified an exact value, so
+          this materialization is provisional and named in the PR body for
+          veto. Every shipped Groups behaviour (matrix section 2) is
+          unchanged: only this wrapper and GroupsNav's own outer spacing
+          moved, nothing inside it did.
+        */}
+        <div className="ml-[23px] flex min-h-0 flex-1 flex-col border-l border-border pl-2">
+          <GroupsNav
+            groups={groups}
+            activeGroupId={activeGroupId}
+            onSelectGroup={selectGroup}
+            onClearActiveGroup={clearActiveGroup}
+            refetchGroups={groupsState.refetch}
+          />
+        </div>
+
+        {/*
+          Settings, bottom-docked (N5): pushed to the sidebar's foot with
+          `mt-auto` and separated from Groups above it by a hairline, rather
+          than living in the primary nav list.
+        */}
+        <nav className="mt-auto border-t border-border px-2.5 py-2">
+          <NavButton
+            label={SETTINGS_NAV.label}
+            Icon={SETTINGS_NAV.Icon}
+            active={view === SETTINGS_NAV.id}
+            onClick={() => setView(SETTINGS_NAV.id)}
+          />
+        </nav>
       </aside>
 
       {/*
