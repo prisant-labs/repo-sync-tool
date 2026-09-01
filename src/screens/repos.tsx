@@ -26,7 +26,7 @@ import { FilterChip } from "@/components/filter-chip";
 import { StatusBadge } from "@/components/status-badge";
 import { IntelSignals } from "@/components/intel-signals";
 import { Drawer } from "@/components/ui/drawer";
-import { RepoDetailPanel } from "@/components/repo-detail";
+import { RepoDetailPanel, REPO_DETAIL_TITLE_ID } from "@/components/repo-detail";
 import { AddReposDialog } from "@/components/add-repos-dialog";
 import { PageShell } from "@/components/page-shell";
 import { useToast } from "@/hooks/use-toast";
@@ -557,7 +557,12 @@ export function ReposScreen({
         </AsyncPanel>
       </div>
 
-      <Drawer open={selectedId !== null} onClose={() => setSelectedId(null)}>
+      <Drawer
+        open={selectedId !== null}
+        onClose={() => setSelectedId(null)}
+        size="wide"
+        aria-labelledby={REPO_DETAIL_TITLE_ID}
+      >
         {selectedId !== null && (
           <RepoDetailPanel
             id={selectedId}

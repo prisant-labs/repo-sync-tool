@@ -6,7 +6,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
 import { FilterChip } from "@/components/filter-chip";
-import { ActivityReceipt } from "@/components/activity-receipt";
+import { ActivityReceipt, ACTIVITY_RECEIPT_TITLE_ID } from "@/components/activity-receipt";
 import { PageShell } from "@/components/page-shell";
 import { useActivity, useRepoList } from "@/hooks/queries";
 import { ACTIVITY_PAGE_LIMIT, paginate, toActivityFilter } from "@/lib/activity";
@@ -280,7 +280,11 @@ export function ActivityScreen() {
         </p>
       )}
 
-      <Drawer open={selected !== null} onClose={() => setSelectedId(null)}>
+      <Drawer
+        open={selected !== null}
+        onClose={() => setSelectedId(null)}
+        aria-labelledby={ACTIVITY_RECEIPT_TITLE_ID}
+      >
         {selected !== null && (
           <ActivityReceipt
             record={selected}

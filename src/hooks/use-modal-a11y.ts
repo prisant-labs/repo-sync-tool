@@ -4,8 +4,23 @@ import type { KeyboardEvent, RefObject } from "react";
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+/**
+ * `querySelectorAll` matches `FOCUSABLE_SELECTOR` regardless of CSS
+ * visibility - it does not know about `hidden`, `display:none`, or `inert`.
+ * A mounted-but-hidden subtree (the Tabs primitive keeps inactive
+ * `TabPanel`s mounted and toggles the `hidden` attribute rather than
+ * unmounting them, and a nested `Drawer`'s own `<aside>` stays mounted with
+ * `inert` while closed) would otherwise pollute this trap's computed
+ * first/last boundary with controls nobody can actually see or reach,
+ * exactly the class of bug a real browser caught once already (N4 adversarial
+ * review, finding 2). `closest` walks the element itself and every ancestor,
+ * so this excludes anything inside either attribute, not just elements that
+ * carry it directly.
+ */
 function focusableIn(container: HTMLElement): HTMLElement[] {
-  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (el) => el.closest("[hidden], [inert]") === null,
+  );
 }
 
 /**

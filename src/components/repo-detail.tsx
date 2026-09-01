@@ -41,7 +41,7 @@ import { Input } from "@/components/ui/input";
 import { AsyncPanel } from "@/components/async-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
-import { ActivityReceipt } from "@/components/activity-receipt";
+import { ActivityReceipt, ACTIVITY_RECEIPT_TITLE_ID } from "@/components/activity-receipt";
 import { Drawer } from "@/components/ui/drawer";
 import { Tabs, TabList, TabPanel } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
@@ -65,6 +65,20 @@ import {
   type RepoStatus,
 } from "@/lib/status";
 import { cn } from "@/lib/utils";
+
+/**
+ * The id of the drawer header's repo-name span, so the OUTER `Drawer` (owned
+ * by whichever screen opened this panel - `screens/repos.tsx` or
+ * `screens/dashboard.tsx`) can name itself via `aria-labelledby` from the
+ * same visible heading a sighted user reads, rather than a generic "dialog"
+ * a screen reader would otherwise announce (Codex adversarial review,
+ * finding 3, confirmed - neither this panel's own drawer nor its nested
+ * receipt drawer had an accessible name). Exported rather than duplicated as
+ * a string literal at each call site, so the two ends cannot drift.
+ * Reusing one id across those two screens is safe: `AppShell` renders only
+ * one screen at a time, so at most one `RepoDetailPanel` is ever mounted.
+ */
+export const REPO_DETAIL_TITLE_ID = "repo-detail-panel-title";
 
 /** Fire a mutating command, then toast + refetch + tell the parent list to refresh. */
 type RunFn = (
@@ -286,7 +300,7 @@ export function RepoDetailPanel({
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border px-5 py-4">
         <GitBranch className="size-4 shrink-0 text-muted-foreground" />
-        <span className="truncate font-mono text-sm font-semibold">
+        <span id={REPO_DETAIL_TITLE_ID} className="truncate font-mono text-sm font-semibold">
           {detail.data?.localName ?? "Repository"}
         </span>
         <Button variant="ghost" size="icon" className="ml-auto" onClick={onClose} aria-label="Close">
@@ -1185,7 +1199,11 @@ function ActivitySection({
         so only Tab needed this extra stop here.
       */}
       <div onKeyDown={(e) => selected !== null && e.stopPropagation()}>
-        <Drawer open={selected !== null} onClose={() => setSelectedId(null)}>
+        <Drawer
+          open={selected !== null}
+          onClose={() => setSelectedId(null)}
+          aria-labelledby={ACTIVITY_RECEIPT_TITLE_ID}
+        >
           {selected !== null && (
             <ActivityReceipt record={selected} repoName={repoName} onClose={() => setSelectedId(null)} />
           )}

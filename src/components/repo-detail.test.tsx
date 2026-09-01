@@ -7,7 +7,7 @@ import type { ActivityRecord, GroupSummary, RepoDetail, Settings } from "@/lib/b
 import { err, mockCommand, ok } from "@/test/mock-ipc";
 import { ToastContext } from "@/hooks/use-toast";
 import { Drawer } from "@/components/ui/drawer";
-import { RepoDetailPanel } from "@/components/repo-detail";
+import { RepoDetailPanel, REPO_DETAIL_TITLE_ID } from "@/components/repo-detail";
 
 /**
  * The removal states these tests exist to keep distinguishable (BL-NI-85, plus
@@ -147,7 +147,7 @@ function renderPanelInDrawer() {
   const toast = vi.fn();
   render(
     <ToastContext.Provider value={toast}>
-      <Drawer open onClose={onClose}>
+      <Drawer open onClose={onClose} size="wide" aria-labelledby={REPO_DETAIL_TITLE_ID}>
         <RepoDetailPanel id={7} onChanged={onChanged} onClose={onClose} />
       </Drawer>
     </ToastContext.Provider>,
@@ -162,9 +162,11 @@ function confirmButton() {
 
 /**
  * Remove moved to the Settings tab in N4 (D3, the ratified tab mapping).
- * `TabPanel` unmounts inactive content (see `ui/tabs.tsx`'s doc comment), so
- * "Remove from RepoSync" does not exist in the DOM until the Settings tab is
- * the active one - every Remove test needs this step first. Mechanical only:
+ * `TabPanel` keeps every panel mounted but toggles the `hidden` attribute
+ * (see `ui/tabs.tsx`'s doc comment), so "Remove from RepoSync" is present in
+ * the DOM but excluded from the accessibility tree - and from `getByRole`/
+ * `findByRole`, which respect that by default - until the Settings tab is
+ * the active one. Every Remove test needs this step first. Mechanical only:
  * none of the six tests' own assertions (arm/cancel/confirm/not-found/failure/
  * stale-resolve) changed.
  */
@@ -298,7 +300,7 @@ function tabSelected(name: string): boolean {
 }
 
 describe("RepoDetailPanel tabs (N4)", () => {
-  it("switches tabs by mouse click, unmounting the previous tab's content", async () => {
+  it("switches tabs by mouse click; the previous tab's panel is hidden, not unmounted", async () => {
     renderPanel();
     const user = userEvent.setup();
 
@@ -309,8 +311,14 @@ describe("RepoDetailPanel tabs (N4)", () => {
 
     expect(tabSelected("Activity")).toBe(true);
     expect(tabSelected("Overview")).toBe(false);
-    // The Overview panel's content is gone from the DOM, not merely hidden.
-    expect(screen.queryByText("Up to date with origin")).toBeNull();
+    // `queryByText` does not filter hidden content, so it cannot tell
+    // "unmounted" from "hidden" - assert via the panel's own `hidden`
+    // attribute instead (TabPanel keeps every panel mounted; see
+    // `ui/tabs.tsx`'s file doc comment).
+    const overviewHeading = screen.getByText("Up to date with origin");
+    const overviewPanel = overviewHeading.closest('[role="tabpanel"]');
+    expect(overviewPanel).not.toBeNull();
+    expect(overviewPanel?.hasAttribute("hidden")).toBe(true);
     expect(await screen.findByText("No activity yet for this repository.")).toBeDefined();
   });
 
@@ -367,6 +375,37 @@ describe("RepoDetailPanel tabs (N4)", () => {
 
     await user.keyboard("{Shift>}{Tab}{/Shift}");
     expect(document.activeElement).toBe(removeTrigger);
+  });
+
+  it("excludes hidden panels from the trap's boundary: with Overview active (DOM-first), Tab from its own last control wraps straight to Close, never landing on a hidden Activity/Settings control", async () => {
+    // The test above proves the trap still works when the ACTIVE tab
+    // (Settings) happens to be LAST in DOM order - its own controls are
+    // naturally the trap's last element regardless of whether hidden
+    // content is excluded, so that case alone cannot distinguish a correct
+    // exclusion from a filter that does nothing (Codex adversarial review,
+    // finding 2, the `focusableIn` fix in `use-modal-a11y.ts`). Overview is
+    // FIRST in DOM order (`repo-detail.tsx`'s TabPanel order is
+    // overview/activity/settings) with the other two - Activity's empty
+    // state and Settings' Cadence/Update-policy/Remove controls - mounted
+    // but hidden AFTER it. Without the exclusion filter, the trap's
+    // computed "last" element would be one of those hidden controls, and
+    // Tab from Overview's real last VISIBLE control would never satisfy the
+    // wrap condition.
+    renderPanelInDrawer();
+    await screen.findByText("Up to date with origin");
+    expect(tabSelected("Overview")).toBe(true);
+
+    // The last focusable control inside Overview's own content: the
+    // "Where it lives" > Remote row renders as a link-styled button when
+    // `remoteOriginUrl` is set. Selected by its visible URL text since an
+    // earlier "Open in > Remote" button shares the same accessible name.
+    const remoteLink = screen.getByText(DETAIL.remoteOriginUrl!);
+    remoteLink.focus();
+    expect(document.activeElement).toBe(remoteLink);
+
+    const user = userEvent.setup();
+    await user.keyboard("{Tab}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
   });
 });
 
@@ -447,6 +486,44 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     // The outer drawer's own Close button is still there: Escape closed only
     // the nested receipt, not the whole panel.
     expect(screen.getByRole("button", { name: "Close" })).toBeDefined();
+  });
+
+  it("names both modal layers from their own visible heading, and restores focus to the opener row on close (Codex adversarial review, finding 3)", async () => {
+    // `renderPanel` alone (used above) renders no OUTER Drawer, so it can
+    // only exercise the nested receipt in isolation. Naming the outer layer
+    // needs the real thing, hence `renderPanelInDrawer`.
+    mockCommand(commands, "activityList", async () => ok([activityRow(1, { summary: "fetched 3 commits" })]));
+    renderPanelInDrawer();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+
+    const rowText = await screen.findByText("fetched 3 commits");
+    const rowButton = rowText.closest("button");
+    expect(rowButton).not.toBeNull();
+    await user.click(rowButton!);
+    expect(await screen.findByRole("button", { name: "Close receipt" })).toBeDefined();
+
+    // Before this fix neither modal boundary had an accessible name at all
+    // (both were bare "dialog"); now each is named from its own visible
+    // heading (`REPO_DETAIL_TITLE_ID` for the outer panel,
+    // `ACTIVITY_RECEIPT_TITLE_ID` for the receipt). They happen to show the
+    // same text here ("example", this fixture's repo name) - which is
+    // exactly the scenario a bare, unnamed "dialog" role could never
+    // distinguish: two same-named dialogs open at once, each still
+    // individually resolvable via `getByRole("dialog", { name })`.
+    expect(screen.getAllByRole("dialog", { name: "example" })).toHaveLength(2);
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Close receipt" })).toBeNull());
+    // Escape closed only the inner layer: the outer dialog survives, still
+    // named from the same heading.
+    expect(screen.getByRole("dialog", { name: "example" })).toBeDefined();
+
+    // Focus returns to the specific row that opened the receipt, not merely
+    // "somewhere in the panel" - `useModalA11y` restores focus to whatever
+    // `document.activeElement` was at open time, and clicking a `<button>`
+    // natively focuses it first.
+    expect(document.activeElement).toBe(rowButton);
   });
 });
 
