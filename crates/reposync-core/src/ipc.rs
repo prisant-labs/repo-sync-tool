@@ -333,6 +333,19 @@ pub struct RepoSummary {
     /// repo lives (BL-NI-91: the ratified table lab's Folder column needs this
     /// on the bulk list read, not just the single-repo detail read).
     pub local_path: String,
+    /// The repo's remote origin URL (`repos.remote_origin_url`). Mirrors
+    /// [`RepoDetail::remote_origin_url`] exactly: same column, same type, same
+    /// nullability, same source (`repo::add` reads it once from `.git/config` at
+    /// add time; `None` when the clone has no `origin` remote configured).
+    ///
+    /// `host_type` is NOT a safe substitute for gating a "has a remote" glyph:
+    /// `repo::add` sets `host_type` to `"github"` only when the origin URL
+    /// contains `github.com`, else `"unknown"`, so a valid non-GitHub remote
+    /// (GitLab, a self-hosted host) would read `"unknown"` and wrongly hide a
+    /// glyph that `repo_open_remote`'s own translator can still open (BL-NI-94:
+    /// the ratified round-five web-link glyph needs this field on the bulk list
+    /// read, not just the single-repo detail read, to know when to show at all).
+    pub remote_origin_url: Option<String>,
     pub host_type: String,
     pub ahead_count: Option<i64>,
     pub behind_count: Option<i64>,
@@ -420,6 +433,8 @@ pub struct RepoDetail {
     pub latest_release_tag: Option<String>,
     // --- repos ---
     pub local_path: String,
+    /// See [`RepoSummary::remote_origin_url`] (BL-NI-94): same column, type, and
+    /// nullability on both read paths.
     pub remote_origin_url: Option<String>,
     pub default_branch: Option<String>,
     pub update_mode: String,
@@ -645,6 +660,18 @@ pub struct RepoFilter {
 #[serde(rename_all = "camelCase")]
 pub struct ActivityFilter {
     pub repo_id: Option<i64>,
+    /// Constrain to repos that belong to this group, resolved to membership
+    /// SERVER-SIDE via a `repo_groups` join (BL-NI-93). A group can contain many
+    /// repos, so this is deliberately a single group id rather than a
+    /// caller-supplied repo-id set: `activity::list`'s query is a compile-time
+    /// STATIC string (sqlx 0.9's `SqlSafeStr` forbids a dynamically built one),
+    /// which rules out a variable-length `repo_id IN (...)` clause for an
+    /// arbitrary `Vec<i64>` but admits a single static `EXISTS` subquery bound
+    /// once. Applied in the same `WHERE` as every other filter, so it constrains
+    /// BEFORE `LIMIT` - the same truncation-sentinel honesty `repo_id` already
+    /// gets. `None` applies no group constraint (matches every row, same as
+    /// every other filter here).
+    pub group_id: Option<i64>,
     pub action_type: Option<String>,
     pub status: Option<String>,
     pub limit: Option<i64>,
@@ -812,6 +839,7 @@ mod tests {
             id: 1,
             local_name: "repo".into(),
             local_path: "C:/repos/repo".into(),
+            remote_origin_url: Some("https://github.com/o/repo".into()),
             host_type: "github".into(),
             ahead_count: Some(2),
             behind_count: None,

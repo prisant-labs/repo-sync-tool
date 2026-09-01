@@ -45,6 +45,7 @@ pub async fn repo_list(
     let rows = sqlx::query(
         "SELECT \
             r.id AS id, r.local_name AS local_name, r.local_path AS local_path, \
+            r.remote_origin_url AS remote_origin_url, \
             r.host_type AS host_type, r.enabled AS enabled, \
             s.ahead_count AS ahead_count, s.behind_count AS behind_count, \
             s.is_dirty AS is_dirty, s.is_detached AS is_detached, \
@@ -95,6 +96,7 @@ pub async fn repo_list(
             id: r.try_get("id")?,
             local_name,
             local_path,
+            remote_origin_url: r.try_get("remote_origin_url")?,
             host_type,
             ahead_count: r.try_get("ahead_count")?,
             behind_count: r.try_get("behind_count")?,
@@ -1294,6 +1296,95 @@ mod tests {
             summary.active_branch, detail.active_branch,
             "list and detail must never disagree about the current branch"
         );
+    }
+
+    #[tokio::test]
+    async fn remote_origin_url_agrees_between_list_and_get() {
+        // BL-NI-94: RepoSummary carries remote_origin_url (mirroring
+        // RepoDetail's field name/type/nullability/source exactly) so the
+        // ratified web-link glyph has something to gate on from the bulk list
+        // read, not just the single-repo detail read. host_type is not a safe
+        // substitute (a non-GitHub remote reads "unknown" there too), so this
+        // pins the real field instead.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!("skipping remote_origin_url_agrees_between_list_and_get: git not resolvable");
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        let repo = git2::Repository::init(repotmp.path()).expect("init repo");
+        repo.remote("origin", "https://github.com/owner/repo.git")
+            .expect("add origin remote");
+        std::fs::write(repotmp.path().join("README.md"), "hello\n").expect("write file");
+        let mut index = repo.index().expect("index");
+        index.add_path(Path::new("README.md")).expect("add path");
+        index.write().expect("write index");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repo.find_tree(tree_id).expect("find tree");
+        let sig = git2::Signature::now("Store Test", "store@example.com").expect("sig");
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .expect("commit");
+
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert_eq!(
+            detail.remote_origin_url.as_deref(),
+            Some("https://github.com/owner/repo.git"),
+            "sanity: the configured remote must actually be recorded"
+        );
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert_eq!(
+            summary.remote_origin_url, detail.remote_origin_url,
+            "list and detail must never disagree about the repo's remote origin URL"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_origin_url_is_none_on_both_read_paths_when_no_remote_is_configured() {
+        // The other half: a clone with no `origin` remote must report None on
+        // BOTH read paths, never a fabricated empty string or a stale value.
+        let Ok(git) = SystemGitEngine::discover() else {
+            eprintln!(
+                "skipping remote_origin_url_is_none_on_both_read_paths_when_no_remote_is_configured: \
+                 git not resolvable"
+            );
+            return;
+        };
+        let dbtmp = TempDir::new().unwrap();
+        let pool = fresh_pool(dbtmp.path()).await;
+
+        let repotmp = TempDir::new().unwrap();
+        init_repo_with_commit(repotmp.path());
+        let id = crate::repo::add(&pool, &git, repotmp.path())
+            .await
+            .expect("add ok");
+
+        let detail = repo_get(&pool, id).await.expect("get");
+        assert_eq!(
+            detail.remote_origin_url, None,
+            "no remote configured must read as None, not a fabricated value"
+        );
+
+        let empty = RepoFilter {
+            enabled_only: None,
+            host_type: None,
+            query: None,
+        };
+        let list = repo_list(&pool, &empty).await.expect("list");
+        let summary = list.iter().find(|r| r.id == id.0).expect("repo in list");
+        assert_eq!(summary.remote_origin_url, None);
     }
 
     /// A Codex adversarial review of PR #74 found `active_branch`'s doc claimed

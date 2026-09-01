@@ -224,17 +224,32 @@ pub async fn list(
     // binds NULL (matching every row), a present one constrains. Each placeholder
     // is bound once (the Option is bound twice), so the values stay parameterized -
     // never interpolated. `ORDER BY timestamp DESC` is served by the E-02 indexes.
+    //
+    // `group_id` (BL-NI-93) is the same shape of guard, but resolves membership
+    // via an `EXISTS` subquery against `repo_groups` rather than an equality
+    // comparison: a group constrains a SET of repos, and the static-query
+    // requirement above rules out a dynamically-sized `repo_id IN (...)` list for
+    // an arbitrary caller-supplied set. `EXISTS` stays a fixed, static string
+    // while still resolving membership server-side, and it lands in the SAME
+    // `WHERE` as every other filter - so it constrains BEFORE `LIMIT`, keeping the
+    // truncation-sentinel semantics `repo_id` already gets.
     let rows = sqlx::query(
         "SELECT id, repo_id, timestamp, action_type, status, reason_code, summary, \
          commit_range, raw_command, raw_stdout, raw_stderr, exit_code, duration_ms \
          FROM activity_records \
          WHERE (? IS NULL OR repo_id = ?) \
+           AND (? IS NULL OR EXISTS ( \
+             SELECT 1 FROM repo_groups rg \
+             WHERE rg.repo_id = activity_records.repo_id AND rg.group_id = ? \
+           )) \
            AND (? IS NULL OR action_type = ?) \
            AND (? IS NULL OR status = ?) \
          ORDER BY timestamp DESC LIMIT ?",
     )
     .bind(filter.repo_id)
     .bind(filter.repo_id)
+    .bind(filter.group_id)
+    .bind(filter.group_id)
     .bind(filter.action_type.as_deref())
     .bind(filter.action_type.as_deref())
     .bind(filter.status.as_deref())
@@ -651,6 +666,7 @@ mod tests {
 
         let none = ipc::ActivityFilter {
             repo_id: None,
+            group_id: None,
             action_type: None,
             status: None,
             limit: None,
@@ -719,6 +735,104 @@ mod tests {
             zero.len(),
             3,
             "limit <= 0 falls back to the default, not an empty read"
+        );
+    }
+
+    // --- Group constraint (BL-NI-93) ---------------------------------------------
+
+    #[tokio::test]
+    async fn list_group_filter_applies_before_limit_not_after() {
+        // The dishonest alternative this guards against: filtering client-side
+        // (or in SQL AFTER LIMIT) would let a group's own rows be pushed entirely
+        // out of a small capped page by newer rows belonging to repos outside the
+        // group, silently returning nothing for a group that actually has
+        // matches - the exact "cheap once N3 lands" trap BL-NI-93 was raised
+        // against. This seeds MORE non-member rows, all NEWER, than the requested
+        // limit: a post-LIMIT filter over the unfiltered newest-2 (both
+        // non-member) would return zero group rows, while filtering inside the
+        // same WHERE as every other clause (pre-LIMIT) returns a full page of the
+        // member's own rows.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let member = seed_repo(&pool, "member").await;
+        let outsider = seed_repo(&pool, "outsider").await;
+
+        let group_id: i64 = sqlx::query("INSERT INTO groups (name) VALUES ('release-watch')")
+            .execute(&pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+        sqlx::query("INSERT INTO repo_groups (repo_id, group_id) VALUES (?, ?)")
+            .bind(member)
+            .bind(group_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Member rows: older timestamps, three of them (one more than the limit
+        // below, so the limit still has something to cap WITHIN the group).
+        for ts in [1000, 1001, 1002] {
+            record(&pool, &success_input(member, ts)).await;
+        }
+        // Outsider rows: newer timestamps, and MORE of them than the limit below,
+        // so an unfiltered newest-N read would be entirely outsider rows.
+        for ts in [2000, 2001, 2002, 2003] {
+            record(&pool, &success_input(outsider, ts)).await;
+        }
+
+        let filtered = list(
+            &pool,
+            &ipc::ActivityFilter {
+                repo_id: None,
+                group_id: Some(group_id),
+                action_type: None,
+                status: None,
+                limit: Some(2),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            filtered.len(),
+            2,
+            "the group has 3 matching rows; a post-LIMIT filter over the \
+             unfiltered newest-2 (both outsider) would return 0, which is the \
+             exact silent under-fill BL-NI-93 exists to rule out"
+        );
+        assert!(
+            filtered.iter().all(|r| r.repo_id == member),
+            "every returned row must belong to the group's member repo, got {filtered:?}"
+        );
+        assert_eq!(filtered[0].timestamp, 1002, "newest member row first");
+        assert_eq!(
+            filtered[1].timestamp, 1001,
+            "limit still caps WITHIN the group (the 1000 row exists but is cut), \
+             so the truncation-sentinel semantics stay intact under the new filter"
+        );
+
+        // An outsider-scoped read must never see the member's rows either -
+        // group membership is exclusive, not merely additive.
+        let unrelated_group: i64 = sqlx::query("INSERT INTO groups (name) VALUES ('unrelated')")
+            .execute(&pool)
+            .await
+            .unwrap()
+            .last_insert_rowid();
+        let empty = list(
+            &pool,
+            &ipc::ActivityFilter {
+                group_id: Some(unrelated_group),
+                action_type: None,
+                status: None,
+                repo_id: None,
+                limit: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            empty.is_empty(),
+            "a group with no members must match nothing, not fall back to unconstrained"
         );
     }
 

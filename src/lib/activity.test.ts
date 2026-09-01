@@ -135,6 +135,7 @@ describe("toActivityFilter", () => {
   it("maps the unfiltered selection to all-null, not to the string 'all'", () => {
     expect(toActivityFilter("all", "all")).toEqual({
       repoId: null,
+      groupId: null,
       actionType: null,
       status: null,
       limit: ACTIVITY_FETCH_LIMIT,
@@ -144,6 +145,7 @@ describe("toActivityFilter", () => {
   it("passes a concrete action type through and leaves status unconstrained", () => {
     expect(toActivityFilter("update", "all")).toEqual({
       repoId: null,
+      groupId: null,
       actionType: "update",
       status: null,
       limit: ACTIVITY_FETCH_LIMIT,
@@ -153,6 +155,7 @@ describe("toActivityFilter", () => {
   it("passes a concrete status through and leaves action type unconstrained", () => {
     expect(toActivityFilter("all", "failed")).toEqual({
       repoId: null,
+      groupId: null,
       actionType: null,
       status: "failed",
       limit: ACTIVITY_FETCH_LIMIT,
@@ -162,6 +165,7 @@ describe("toActivityFilter", () => {
   it("combines both axes independently", () => {
     expect(toActivityFilter("check", "success")).toEqual({
       repoId: null,
+      groupId: null,
       actionType: "check",
       status: "success",
       limit: ACTIVITY_FETCH_LIMIT,
@@ -179,13 +183,16 @@ describe("toActivityFilter", () => {
     expect(ACTIVITY_PAGE_LIMIT).toBeGreaterThan(0);
   });
 
-  it("never scopes to a repo, since no control sets one yet", () => {
-    // Guards against a future edit wiring repoId here without also adding the
-    // control and the label that say the view is scoped. A silently repo-scoped
-    // audit trail is worse than an unscoped one.
+  it("never scopes to a repo or a group, since no control sets either yet", () => {
+    // Guards against a future edit wiring repoId/groupId here without also
+    // adding the control and the label that say the view is scoped. A silently
+    // repo- or group-scoped audit trail is worse than an unscoped one - the
+    // same bug class BL-NI-93's own backend fix exists to make honest, not
+    // reintroduce on the frontend side.
     for (const a of ["all", "check", "update"] as const) {
       for (const s of ["all", "success", "failed"] as const) {
         expect(toActivityFilter(a, s).repoId).toBeNull();
+        expect(toActivityFilter(a, s).groupId).toBeNull();
       }
     }
   });

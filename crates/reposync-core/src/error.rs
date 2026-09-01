@@ -28,12 +28,16 @@ pub struct AppErrorPayload {
 
 /// The RepoSync error taxonomy.
 ///
-/// Thirty variants grouped by domain (git, fs, net/github, db, config,
-/// internal). Each carries a stable [`code`] string and a [`remediation`] hint;
-/// the `Display` impl supplies the `message`. The first seven variants are the
-/// week-1 tracer subset and are frozen verbatim (identifiers, fields,
+/// Thirty-one variants grouped by domain (git, fs, net/github, db, config,
+/// internal), as of the first post-freeze addition (`InvalidExternalUrl`,
+/// BL-NI-94). Each carries a stable [`code`] string and a [`remediation`]
+/// hint; the `Display` impl supplies the `message`. The first seven variants
+/// are the week-1 tracer subset and are frozen verbatim (identifiers, fields,
 /// `#[error(...)]` strings, and codes) because `repo.rs` / `db.rs` construct
-/// them and `bindings.ts` froze the wire shape.
+/// them and `bindings.ts` froze the wire shape. The wire SHAPE (`{ code,
+/// message, remediation, context }`) is frozen for every variant; the variant
+/// SET is additive - a new variant is a new error code, never a breaking
+/// change, and lands with an update to the golden snapshot test below.
 ///
 /// [`code`]: AppError::code
 /// [`remediation`]: AppError::remediation
@@ -115,6 +119,18 @@ pub enum AppError {
     #[error("remote is not on github")]
     NotAGithubRemote,
 
+    // --- github.* (N4-prep addition, BL-NI-94) ---
+    /// An externally-sourced URL (currently: a repo's `homepage`, cached from
+    /// GitHub's own API into `repo_remote_meta.homepage`) is not an openable
+    /// `http`/`https` link. Deliberately NOT `InvalidSetting`: RepoSync has no
+    /// homepage SETTING - there is nothing in Settings to correct - so
+    /// `InvalidSetting`'s "Correct it in Settings" remediation would be
+    /// impossible to follow. A Codex adversarial review of the original
+    /// homepage-open work confirmed this exact concern and asked for a
+    /// dedicated variant instead of the reused one.
+    #[error("external URL is not an openable http(s) link: {url}")]
+    InvalidExternalUrl { url: String },
+
     // --- db.* (E-05 additions) ---
     #[error("database migration failed: {cause}")]
     MigrationFailed { cause: String },
@@ -172,6 +188,8 @@ impl AppError {
             AppError::GithubNotFound => "github.not_found",
             AppError::GithubApiError { .. } => "github.api_error",
             AppError::NotAGithubRemote => "github.not_a_github_remote",
+            // github.* (N4-prep addition, BL-NI-94)
+            AppError::InvalidExternalUrl { .. } => "github.invalid_external_url",
             // db.* (E-05 additions)
             AppError::MigrationFailed { .. } => "db.migration_failed",
             AppError::DbLocked => "db.locked",
@@ -264,6 +282,11 @@ impl AppError {
             AppError::NotAGithubRemote => {
                 "This remote is not on GitHub, so release metadata is unavailable.".to_string()
             }
+            // github.* (N4-prep addition, BL-NI-94)
+            AppError::InvalidExternalUrl { .. } => {
+                "The homepage URL on GitHub isn't an openable http/https link. Correct or remove it on GitHub, then refresh metadata."
+                    .to_string()
+            }
             // db.* (E-05 additions)
             AppError::MigrationFailed { .. } => {
                 "The database could not be upgraded. Your old data was backed up; see the log."
@@ -337,6 +360,7 @@ impl AppError {
             // net.* / github.* additions
             AppError::RateLimited { reset_at } => Some(json!({ "resetAt": reset_at })),
             AppError::GithubApiError { status } => Some(json!({ "status": status })),
+            AppError::InvalidExternalUrl { url } => Some(json!({ "url": url })),
             // db.* additions
             AppError::MigrationFailed { cause } => Some(json!({ "cause": cause })),
             AppError::NotFound { entity } => Some(json!({ "entity": entity })),
@@ -508,6 +532,10 @@ mod tests {
             AppError::GithubNotFound,
             AppError::GithubApiError { status: 503 },
             AppError::NotAGithubRemote,
+            // github.* (N4-prep addition, BL-NI-94)
+            AppError::InvalidExternalUrl {
+                url: "javascript:alert(1)".into(),
+            },
             // db.* (E-05 additions)
             AppError::MigrationFailed { cause: "x".into() },
             AppError::DbLocked,
@@ -559,6 +587,7 @@ mod tests {
             "git.not_found",
             "git.too_old",
             "github.api_error",
+            "github.invalid_external_url",
             "github.not_a_github_remote",
             "github.not_found",
             "github.rate_limited",
@@ -568,7 +597,7 @@ mod tests {
         ];
 
         let variants = one_of_each();
-        assert_eq!(variants.len(), 30, "there must be exactly 30 variants");
+        assert_eq!(variants.len(), 31, "there must be exactly 31 variants");
 
         let mut codes: Vec<&str> = variants.iter().map(|e| e.code()).collect();
 
@@ -580,7 +609,7 @@ mod tests {
 
         codes.sort_unstable();
         codes.dedup();
-        assert_eq!(codes.len(), 30, "all 30 codes must be unique");
+        assert_eq!(codes.len(), 31, "all 31 codes must be unique");
 
         assert_eq!(
             codes.as_slice(),
@@ -686,6 +715,42 @@ mod tests {
         assert!(value["message"].is_string());
         assert!(!value["remediation"].as_str().unwrap().is_empty());
         assert_eq!(value["context"]["status"], 503);
+    }
+
+    /// BL-NI-94, Codex adversarial review of the homepage-open work: the
+    /// scheme-rejection path must NOT reuse `InvalidSetting` ("Correct it in
+    /// Settings") for a value RepoSync never let the user set - there is no
+    /// homepage setting to correct. This pins the honest replacement: a real,
+    /// distinct wire code, and a remediation that names the actual source
+    /// (GitHub) and the actual fix (correct/remove on GitHub, then refresh),
+    /// never the impossible-to-follow Settings wording.
+    #[test]
+    fn invalid_external_url_round_trip() {
+        let err = AppError::InvalidExternalUrl {
+            url: "javascript:alert(1)".to_string(),
+        };
+        let value = serde_json::to_value(&err).expect("serialize");
+        assert_eq!(value["code"], "github.invalid_external_url");
+        assert!(value["message"].is_string());
+        assert!(value["message"]
+            .as_str()
+            .unwrap()
+            .contains("javascript:alert(1)"));
+        assert!(value["remediation"].is_string());
+        let remediation = value["remediation"].as_str().unwrap();
+        assert!(!remediation.is_empty());
+        assert!(
+            remediation.to_lowercase().contains("github"),
+            "remediation must point at GitHub (the real source), not a nonexistent \
+             app setting; got {remediation:?}"
+        );
+        assert!(
+            !remediation.to_lowercase().contains("settings"),
+            "must never repeat InvalidSetting's impossible-to-follow \"Correct it \
+             in Settings\" guidance for a value RepoSync never let the user set; \
+             got {remediation:?}"
+        );
+        assert_eq!(value["context"]["url"], "javascript:alert(1)");
     }
 
     #[test]
