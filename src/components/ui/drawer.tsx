@@ -8,6 +8,15 @@ import { useModalA11y } from "@/hooks/use-modal-a11y";
  * Stays mounted across open/close (for the slide transition) but is made
  * `inert` and hidden from assistive tech while closed, and while open traps
  * focus and closes on Escape (findings 12/13, BL-NI-29).
+ *
+ * Widened to roughly two thirds of the window for N4 (ui-delivery-plan.md
+ * ledger B2, ratified 2026-08-27: "the drawer too cramped" for the wide
+ * detail panel this width now hosts). `min-w-[480px]` is a deliberate
+ * addition beyond the literal ratification (which named only "roughly 66vw"):
+ * without it a window narrower than ~730px would hand the drawer LESS room
+ * than the fixed 480px it replaces, since `min-width` always wins over
+ * `max-width` in the CSS cascade regardless of source order. Flagged in the
+ * PR body for veto.
  */
 export function Drawer({
   open,
@@ -40,7 +49,7 @@ export function Drawer({
         tabIndex={-1}
         onKeyDown={onKeyDown}
         className={cn(
-          "fixed inset-y-0 right-0 z-40 flex w-[480px] max-w-[92vw] flex-col border-l border-border bg-card shadow-float outline-none transition-transform duration-300",
+          "fixed inset-y-0 right-0 z-40 flex w-[66vw] min-w-[480px] max-w-[92vw] flex-col border-l border-border bg-card shadow-float outline-none transition-transform duration-300",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >

@@ -1,36 +1,60 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
+  AlertTriangle,
   ArrowDownToLine,
+  CheckCircle2,
+  ChevronRight,
+  Clock,
   ExternalLink,
   FolderOpen,
   GitBranch,
+  GitCompare,
+  GitPullRequest,
+  Globe,
+  Hash,
+  History,
+  Link2,
   Package,
   Pause,
   Pencil,
   Play,
+  Plus,
   RefreshCw,
+  SlidersHorizontal,
   Terminal,
   Trash2,
   X,
+  XCircle,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { commands } from "@/lib/bindings";
-import type { GroupSummary, RepoDetail as RepoDetailData, UpdateMode } from "@/lib/bindings";
+import type {
+  ActivityRecord,
+  GroupSummary,
+  RepoDetail as RepoDetailData,
+  UpdateMode,
+} from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
 import { AsyncPanel } from "@/components/async-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { LagSignal } from "@/components/lag-signal";
+import { ActivityReceipt } from "@/components/activity-receipt";
+import { Drawer } from "@/components/ui/drawer";
+import { Tabs, TabList, TabPanel } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
+  useActivity,
   useGroups,
   useGroupsForRepo,
   useRepoBackendEvents,
   useRepoDetail,
   useSettings,
 } from "@/hooks/queries";
+import { ACTIVITY_FETCH_LIMIT, ACTIVITY_PAGE_LIMIT, paginate } from "@/lib/activity";
+import type { AsyncState } from "@/hooks/use-async";
 import {
   checkFailureMessage,
   deriveStatus,
@@ -71,6 +95,14 @@ const POLICY_OPTIONS: { mode: UpdateMode; label: string; blurb: string; disabled
   { mode: "pull_rebase", label: "Rebase pull", blurb: "Not available in this release.", disabled: true },
 ];
 
+type PanelTab = "overview" | "activity" | "settings";
+
+const PANEL_TABS: { value: PanelTab; label: string }[] = [
+  { value: "overview", label: "Overview" },
+  { value: "activity", label: "Activity" },
+  { value: "settings", label: "Settings" },
+];
+
 export function RepoDetailPanel({
   id,
   onChanged,
@@ -84,6 +116,17 @@ export function RepoDetailPanel({
   const groupsState = useGroups();
   const memberships = useGroupsForRepo(id);
   const settings = useSettings();
+  // Scoped to this repo (BL-NI-93's groupId is not needed here: a single repo
+  // id is already the tightest possible constraint). No action/status/group
+  // narrowing per the ratified shape - the panel's Activity tab carries no
+  // filter controls.
+  const activity = useActivity({
+    repoId: id,
+    groupId: null,
+    actionType: null,
+    status: null,
+    limit: ACTIVITY_FETCH_LIMIT,
+  });
   // Trimmed, because a whitespace-only command is as unusable as an empty one
   // and the Settings field accepts free text.
   const hasEditorCommand = (settings.data?.editorCommand ?? "code").trim().length > 0;
@@ -91,14 +134,27 @@ export function RepoDetailPanel({
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
   const [groupBusyId, setGroupBusyId] = useState<number | null>(null);
+  // Persists across a repo switch (this component instance is reused when the
+  // parent list swaps `id` without remounting the drawer): staying on the
+  // Activity tab while stepping through a few repos in a row seemed more
+  // useful than always resetting to Overview. Deliberate choice, flagged in
+  // the PR for veto.
+  const [tab, setTab] = useState<PanelTab>("overview");
   const refetch = detail.refetch;
   const refetchGroups = groupsState.refetch;
   const refetchMemberships = memberships.refetch;
+  const refetchActivity = activity.refetch;
 
   // Keep the open drawer live when a background scheduled check/update
   // completes for this repo, instead of only refreshing after this drawer's
-  // own actions (finding 11 / BL-NI-28).
-  useRepoBackendEvents(id, refetch);
+  // own actions (finding 11 / BL-NI-28). Now also refreshes the Activity tab,
+  // since a background check writes a new activity row this repo's own log
+  // should show without requiring the user to close and reopen the drawer.
+  const onBackendEvent = useCallback(() => {
+    refetch();
+    refetchActivity();
+  }, [refetch, refetchActivity]);
+  useRepoBackendEvents(id, onBackendEvent);
 
   const run = useCallback<RunFn>(
     (key, action, okTitle, okMessage) => {
@@ -237,7 +293,7 @@ export function RepoDetailPanel({
           <X />
         </Button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-hidden">
         <AsyncPanel state={detail}>
           {(r) => (
             <DetailBody
@@ -253,6 +309,9 @@ export function RepoDetailPanel({
               groupBusyId={groupBusyId}
               onToggleGroup={toggleGroup}
               onRemove={removeRepo}
+              tab={tab}
+              onTabChange={setTab}
+              activity={activity}
             />
           )}
         </AsyncPanel>
@@ -274,6 +333,9 @@ function DetailBody({
   groupBusyId,
   onToggleGroup,
   onRemove,
+  tab,
+  onTabChange,
+  activity,
 }: {
   r: RepoDetailData;
   busy: string | null;
@@ -289,6 +351,9 @@ function DetailBody({
   groupBusyId: number | null;
   onToggleGroup: (group: GroupSummary, isMember: boolean) => void;
   onRemove: () => void;
+  tab: PanelTab;
+  onTabChange: (tab: PanelTab) => void;
+  activity: AsyncState<ActivityRecord[]>;
 }) {
   const status = deriveStatus(r);
   const style = STATUS_STYLE[status];
@@ -297,9 +362,20 @@ function DetailBody({
     status === "behind" ? (r.behindCount ?? 0) : status === "ahead" ? (r.aheadCount ?? 0) : undefined;
 
   return (
-    <div className="flex flex-col gap-5 p-5">
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
+    <div className="flex h-full min-h-0 flex-col">
+      {/*
+        Chrome above the tabs (ratified 2026-08-31 shape): repo name/description,
+        then the third header line carrying the status chip, the archived pill,
+        and the member-only group pills (G2: in the header). Deliberate reading
+        of a header that pre-dated a "path" line in the mockup this decision
+        traces to - no path row is added here, since Path stays inside "Where it
+        lives" (Overview tab) rather than duplicating it in chrome. Flagged in
+        the PR for veto.
+      */}
+      <div className="flex flex-col gap-2 px-5 pt-5 pb-3">
+        <div className="font-mono text-lg font-bold">{r.localName}</div>
+        {r.description && <p className="text-sm text-muted-foreground">{r.description}</p>}
+        <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={status} count={badgeCount} />
           {r.isArchived && (
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
@@ -307,155 +383,225 @@ function DetailBody({
             </span>
           )}
         </div>
-        <div className="font-mono text-lg font-bold">{r.localName}</div>
-        {r.description && <p className="text-sm text-muted-foreground">{r.description}</p>}
+        <GroupPills
+          groups={groups}
+          memberIds={memberIds}
+          groupBusyId={groupBusyId}
+          onToggleGroup={onToggleGroup}
+        />
       </div>
 
-      <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
-        <Focal r={r} status={status} busy={busy} run={run} onCheckNow={onCheckNow} />
-      </div>
+      <Tabs value={tab} onValueChange={(v) => onTabChange(v as PanelTab)} className="flex min-h-0 flex-1 flex-col">
+        <TabList aria-label="Repository sections" tabs={PANEL_TABS} className="px-5" />
+        {/*
+          Each tab's content owns its own scroll region beneath the fixed
+          chrome and tab strip above, per the ratified requirement that
+          switching tabs never re-scrolls the whole drawer.
+        */}
+        <div className="min-h-0 flex-1 overflow-auto">
+          <TabPanel value="overview" className="flex flex-col gap-5 p-5">
+            <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
+              <Focal r={r} status={status} busy={busy} run={run} onCheckNow={onCheckNow} />
+            </div>
 
-      <IntelSection r={r} />
+            <SyncStateSection r={r} />
 
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={isBusy}
-          onClick={onCheckNow}
-        >
-          <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Check now
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={isBusy}
-          onClick={() => run("meta", () => unwrap(commands.repoRefreshMetadata(r.id)), "Metadata refreshed")}
-        >
-          <Package /> Refresh metadata
-        </Button>
-        {r.enabled && !r.autoPaused && (
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isBusy}
-            onClick={() => run("pause", () => unwrap(commands.repoSetEnabled(r.id, false)), `Paused ${r.localName}`)}
-          >
-            <Pause /> Pause
-          </Button>
-        )}
-      </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" disabled={isBusy} onClick={onCheckNow}>
+                <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Check now
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isBusy}
+                onClick={() => run("meta", () => unwrap(commands.repoRefreshMetadata(r.id)), "Metadata refreshed")}
+              >
+                <Package /> Refresh metadata
+              </Button>
+              {r.enabled && !r.autoPaused && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={isBusy}
+                  onClick={() => run("pause", () => unwrap(commands.repoSetEnabled(r.id, false)), `Paused ${r.localName}`)}
+                >
+                  <Pause /> Pause
+                </Button>
+              )}
+            </div>
 
-      <GroupsSection
-        groups={groups}
-        memberIds={memberIds}
-        groupBusyId={groupBusyId}
-        onToggleGroup={onToggleGroup}
-      />
+            <section>
+              <SectionLabel icon={ExternalLink}>Open in</SectionLabel>
+              <div className="flex flex-wrap gap-2">
+                <OpenButton
+                  label="Folder"
+                  icon={FolderOpen}
+                  disabled={isBusy}
+                  onClick={() => run("folder", () => unwrap(commands.repoOpenFolder(r.id)), "Opened folder")}
+                />
+                {/*
+                  Terminal and Editor are gated on their settings being set at
+                  all. Both commands return `InvalidSetting` when the column is
+                  NULL, so before 0009 backfilled them these buttons looked live
+                  and failed on click, with a Settings field whose placeholder
+                  ("code", "default") read like a configured value. A button
+                  that cannot succeed should say so before it is pressed rather
+                  than after.
 
-      <section>
-        <SectionLabel>Open in</SectionLabel>
-        <div className="flex flex-wrap gap-2">
-          <OpenButton
-            label="Folder"
-            icon={FolderOpen}
-            disabled={isBusy}
-            onClick={() => run("folder", () => unwrap(commands.repoOpenFolder(r.id)), "Opened folder")}
-          />
-          {/*
-            Terminal and Editor are gated on their settings being set at all.
-            Both commands return `InvalidSetting` when the column is NULL, so
-            before 0009 backfilled them these buttons looked live and failed on
-            click, with a Settings field whose placeholder ("code", "default")
-            read like a configured value. A button that cannot succeed should
-            say so before it is pressed rather than after.
+                  `?? true` while settings are loading: assume available rather
+                  than flashing a disabled control that enables a moment later.
+                */}
+                <OpenButton
+                  label="Terminal"
+                  icon={Terminal}
+                  disabled={isBusy || !hasTerminalCommand}
+                  title={hasTerminalCommand ? undefined : "Set a terminal command in Settings"}
+                  onClick={() => run("terminal", () => unwrap(commands.repoOpenTerminal(r.id)), "Opened terminal")}
+                />
+                <OpenButton
+                  label="Editor"
+                  icon={Pencil}
+                  disabled={isBusy || !hasEditorCommand}
+                  title={hasEditorCommand ? undefined : "Set an editor command in Settings"}
+                  onClick={() => run("editor", () => unwrap(commands.repoOpenEditor(r.id)), "Opened editor")}
+                />
+                {r.remoteOriginUrl && (
+                  <>
+                    <OpenButton
+                      label="Remote"
+                      icon={ExternalLink}
+                      disabled={isBusy}
+                      onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
+                    />
+                    {/*
+                      The round-five web-link glyph (BL-NI-94): a globe that
+                      opens the repo's web URL. Deliberately redundant with the
+                      "Remote" button above - both call `repoOpenRemote`,
+                      because that command IS "the existing remote-open path"
+                      the ratified shape names, and no separate binding exists
+                      for a repo's "web view" distinct from its git remote's
+                      translated URL. Shipping both, as the ratified shape
+                      states them, flagged in the PR for veto.
+                    */}
+                    <Button
+                      variant="secondary"
+                      size="icon"
+                      aria-label="Open repository website"
+                      title="Open repository website"
+                      disabled={isBusy}
+                      onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
+                    >
+                      <Globe />
+                    </Button>
+                  </>
+                )}
+                {r.homepage && (
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    aria-label="Open homepage"
+                    title="Open homepage"
+                    disabled={isBusy}
+                    onClick={() => run("homepage", () => unwrap(commands.repoOpenHomepage(r.id)), "Opened homepage")}
+                  >
+                    <Link2 />
+                  </Button>
+                )}
+              </div>
+            </section>
 
-            `?? true` while settings are loading: assume available rather than
-            flashing a disabled control that enables a moment later.
-          */}
-          <OpenButton
-            label="Terminal"
-            icon={Terminal}
-            disabled={isBusy || !hasTerminalCommand}
-            title={hasTerminalCommand ? undefined : "Set a terminal command in Settings"}
-            onClick={() => run("terminal", () => unwrap(commands.repoOpenTerminal(r.id)), "Opened terminal")}
-          />
-          <OpenButton
-            label="Editor"
-            icon={Pencil}
-            disabled={isBusy || !hasEditorCommand}
-            title={hasEditorCommand ? undefined : "Set an editor command in Settings"}
-            onClick={() => run("editor", () => unwrap(commands.repoOpenEditor(r.id)), "Opened editor")}
-          />
-          {r.remoteOriginUrl && (
-            <OpenButton
-              label="Remote"
-              icon={ExternalLink}
-              disabled={isBusy}
-              onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
-            />
-          )}
-        </div>
-      </section>
-
-      <CadenceSection key={r.id} r={r} globalMinutes={globalMinutes} busy={busy} run={run} />
-
-      <section>
-        <SectionLabel>Update policy</SectionLabel>
-        <div className="flex flex-col gap-1.5">
-          {POLICY_OPTIONS.map((opt) => (
-            <PolicyOption
-              key={opt.mode}
-              opt={opt}
-              current={r.updateMode}
-              disabled={isBusy}
-              onSelect={() =>
-                run(
-                  "policy",
-                  () =>
-                    unwrap(
-                      commands.repoSetPolicy(r.id, {
-                        mode: opt.mode,
-                        dirtyHandling: "skip",
-                        branchPolicy: "default_branch_only",
-                      }),
-                    ),
-                  `Policy set to ${opt.label}`,
-                )
-              }
-            />
-          ))}
-        </div>
-      </section>
-
-      {r.latestReleaseTag && (
-        <section>
-          <SectionLabel>Latest release</SectionLabel>
-          <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
-            <Package className="size-4 shrink-0 text-status-release" />
-            <span className="font-mono text-sm font-semibold">{r.latestReleaseTag}</span>
-            {r.latestReleaseAt !== null && (
-              <span className="ml-auto text-xs text-muted-foreground">{relativeTime(r.latestReleaseAt)}</span>
+            {r.latestReleaseTag && (
+              <section>
+                <SectionLabel icon={Package}>Latest release</SectionLabel>
+                <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
+                  <Package className="size-4 shrink-0 text-status-release" />
+                  <span className="font-mono text-sm font-semibold">{r.latestReleaseTag}</span>
+                  {r.latestReleaseAt !== null && (
+                    <span className="ml-auto text-xs text-muted-foreground">{relativeTime(r.latestReleaseAt)}</span>
+                  )}
+                </div>
+              </section>
             )}
-          </div>
-        </section>
-      )}
 
-      <section>
-        <SectionLabel>Where it lives</SectionLabel>
-        <dl className="overflow-hidden rounded-md border border-border">
-          <KvRow label="Path" value={r.localPath} mono />
-          <KvRow label="Remote" value={r.remoteOriginUrl ?? "none"} mono />
-          <KvRow label="Branch" value={r.activeBranch ?? r.defaultBranch ?? "unknown"} mono />
-          <KvRow label="Head" value={r.headSha ? r.headSha.slice(0, 10) : "unknown"} mono />
-          <KvRow label="Upstream" value={r.upstreamBranch ?? "none"} mono />
-          <KvRow label="Last checked" value={relativeTime(r.lastCheckedAt)} />
-          <KvRow label="Last fetched" value={relativeTime(r.lastFetchedAt)} />
-          <KvRow label="Consecutive failures" value={String(r.consecutiveFailures)} />
-        </dl>
-      </section>
+            <section>
+              <SectionLabel icon={FolderOpen}>Where it lives</SectionLabel>
+              <dl className="overflow-hidden rounded-md border border-border">
+                <KvRow label="Path" icon={FolderOpen} value={r.localPath} mono breakAll />
+                <KvRow
+                  label="Remote"
+                  icon={Globe}
+                  value={
+                    r.remoteOriginUrl ? (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
+                        className="text-left text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                      >
+                        {r.remoteOriginUrl}
+                      </button>
+                    ) : (
+                      "none"
+                    )
+                  }
+                  mono
+                  breakAll
+                />
+                <KvRow label="Last checked" icon={Clock} value={relativeTime(r.lastCheckedAt)} />
+                <KvRow label="Last fetched" icon={RefreshCw} value={relativeTime(r.lastFetchedAt)} />
+              </dl>
+            </section>
+          </TabPanel>
 
-      <RemoveSection key={r.id} name={r.localName} busy={busy} onRemove={onRemove} />
+          <TabPanel value="activity" className="flex flex-col gap-3 p-5">
+            <ActivitySection repoName={r.localName} state={activity} />
+          </TabPanel>
+
+          <TabPanel value="settings" className="flex flex-col gap-5 p-5">
+            {/*
+              Keyed distinctly from RemoveSection below, not both `key={r.id}`
+              (a pre-existing defect found while verifying N4 in a real
+              browser: React warns "two children with the same key" because
+              both keys resolved to the identical string regardless of the
+              two components' different types - key uniqueness is scoped to
+              the whole sibling list, not per element type). Both still need
+              a key on the repo id so switching repos resets each section's
+              own local state (the confirm-armed flag, the cadence draft).
+            */}
+            <CadenceSection key={`cadence-${r.id}`} r={r} globalMinutes={globalMinutes} busy={busy} run={run} />
+
+            <section>
+              <SectionLabel icon={SlidersHorizontal}>Update policy</SectionLabel>
+              <div className="flex flex-col gap-1.5">
+                {POLICY_OPTIONS.map((opt) => (
+                  <PolicyOption
+                    key={opt.mode}
+                    opt={opt}
+                    current={r.updateMode}
+                    disabled={isBusy}
+                    onSelect={() =>
+                      run(
+                        "policy",
+                        () =>
+                          unwrap(
+                            commands.repoSetPolicy(r.id, {
+                              mode: opt.mode,
+                              dirtyHandling: "skip",
+                              branchPolicy: "default_branch_only",
+                            }),
+                          ),
+                        `Policy set to ${opt.label}`,
+                      )
+                    }
+                  />
+                ))}
+              </div>
+            </section>
+
+            <RemoveSection key={`remove-${r.id}`} name={r.localName} busy={busy} onRemove={onRemove} />
+          </TabPanel>
+        </div>
+      </Tabs>
     </div>
   );
 }
@@ -580,17 +726,25 @@ function Focal({
 }
 
 /**
- * The branch and PR intelligence block (E-17): ahead/behind vs upstream, last-commit
- * recency (local intel, always available for any git remote), and the open
- * pull-request counts (remote intel, GitHub-only). Degrades gracefully:
+ * Sync state (E-17): the old `IntelSection` ("Branch & PR intelligence") folds
+ * in here rather than staying its own labelled section, per the ratified N4
+ * shape. Everything this panel knows about where the repo stands relative to
+ * its upstream and its GitHub remote, in one block: ahead/behind vs upstream,
+ * branch identity, last-commit recency (always available for any git remote),
+ * and the open pull-request counts (GitHub-only). Degrades gracefully:
  *   - a non-GitHub remote shows local intel and "unavailable" for PRs;
  *   - an un-refreshed or private-inaccessible repo shows "not yet checked", NEVER a
  *     fabricated "0 PRs" (E-17 AC5);
  *   - offline / rate-limited keeps the last-known counts and shows an "as of <time>"
  *     staleness marker from prLastCheckedAt (E-17 AC8);
  *   - a missing upstream reports "No upstream" rather than a fabricated 0 ahead/behind.
+ *
+ * Deliberate consolidation into ONE block (some earlier notes named two
+ * destinations, "Sync state and Remote"): Branch/Head/Upstream moved here
+ * from the old "Where it lives" list, since they are sync-state facts, not
+ * where-it-physically-lives facts. Flagged in the PR for veto.
  */
-function IntelSection({ r }: { r: RepoDetailData }) {
+function SyncStateSection({ r }: { r: RepoDetailData }) {
   const isGithub = r.hostType === "github";
   const aheadBehind =
     r.aheadCount === null && r.behindCount === null
@@ -606,28 +760,82 @@ function IntelSection({ r }: { r: RepoDetailData }) {
 
   return (
     <section>
-      <SectionLabel>Branch & PR intelligence</SectionLabel>
+      <SectionLabel icon={GitBranch}>Sync state</SectionLabel>
       <dl className="overflow-hidden rounded-md border border-border">
-        <KvRow label="Ahead / behind" value={aheadBehind} />
-        <KvRow label="Last commit" value={relativeTime(r.lastLocalCommitAt)} />
-        <KvRow label="Open PRs" value={prValue} />
+        <KvRow label="Ahead / behind" icon={GitCompare} value={aheadBehind} />
+        <KvRow label="Branch" icon={GitBranch} value={r.activeBranch ?? r.defaultBranch ?? "unknown"} mono />
+        <KvRow label="Head" icon={Hash} value={r.headSha ? r.headSha.slice(0, 10) : "unknown"} mono />
+        <KvRow label="Upstream" icon={Link2} value={r.upstreamBranch ?? "none"} mono />
+        <KvRow label="Last commit" icon={History} value={relativeTime(r.lastLocalCommitAt)} />
+        <KvRow label="Open PRs" icon={GitPullRequest} value={prValue} />
         {isGithub && r.openPrCount !== null && (
-          <KvRow label="PRs as of" value={relativeTime(r.prLastCheckedAt)} />
+          <KvRow label="PRs as of" icon={Clock} value={relativeTime(r.prLastCheckedAt)} />
         )}
+        <KvRow label="Consecutive failures" icon={AlertTriangle} value={String(r.consecutiveFailures)} />
       </dl>
     </section>
   );
 }
 
-function SectionLabel({ children }: { children: ReactNode }) {
+function SectionLabel({ icon: Icon, children }: { icon?: LucideIcon; children: ReactNode }) {
   return (
-    <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      {Icon && <Icon aria-hidden className="size-3.5 shrink-0" />}
       {children}
     </div>
   );
 }
 
-function GroupsSection({
+/** The small colour dot used by both group pills and the add-to-group candidates. */
+function GroupDot({ color }: { color: string | null }) {
+  return (
+    <span
+      className={cn("size-2 shrink-0 rounded-full", color === null && "bg-muted-foreground/50")}
+      style={color ? { backgroundColor: color } : undefined}
+    />
+  );
+}
+
+function GroupPill({
+  group,
+  busy,
+  onRemove,
+}: {
+  group: GroupSummary;
+  busy: boolean;
+  onRemove: () => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-2 text-xs font-medium">
+      <GroupDot color={group.color} />
+      {group.name}
+      <button
+        type="button"
+        aria-label={`Remove from ${group.name}`}
+        disabled={busy}
+        onClick={onRemove}
+        className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+      >
+        <X className="size-3" />
+      </button>
+    </span>
+  );
+}
+
+/**
+ * Member-only group pills on the third header line (G2, ui-delivery-plan.md
+ * ledger B7): only groups this repo actually belongs to render as pills, each
+ * removable in place, plus one "+ Add" affordance that must be able to reach
+ * EVERY non-member group (the matrix names losing this as the exact risk of
+ * a naive pills-only rebuild).
+ *
+ * No floating menu: this codebase has no popover primitive and Radix is
+ * skipped for N4 (D2), so "+ Add" expands an INLINE disclosure listing every
+ * non-member group as its own button, rather than an absolutely positioned
+ * dropdown. Keeps every control in the normal tab order and inside the
+ * drawer's existing focus trap with no extra plumbing.
+ */
+function GroupPills({
   groups,
   memberIds,
   groupBusyId,
@@ -638,42 +846,58 @@ function GroupsSection({
   groupBusyId: number | null;
   onToggleGroup: (group: GroupSummary, isMember: boolean) => void;
 }) {
+  const [addOpen, setAddOpen] = useState(false);
+
+  if (groups.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No groups yet. Create one from the sidebar to organize this repo.
+      </p>
+    );
+  }
+
+  const memberGroups = groups.filter((g) => memberIds.includes(g.id));
+  const nonMemberGroups = groups.filter((g) => !memberIds.includes(g.id));
+
   return (
-    <section>
-      <SectionLabel>Groups</SectionLabel>
-      {groups.length === 0 ? (
-        <p className="text-xs text-muted-foreground">
-          No groups yet. Create one from the sidebar to organize this repo.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-1.5">
-          {groups.map((g) => {
-            const member = memberIds.includes(g.id);
-            return (
-              <div
-                key={g.id}
-                className="flex items-center gap-3 rounded-md border border-border px-3 py-2"
-              >
-                <span
-                  className={cn(
-                    "size-2.5 shrink-0 rounded-full",
-                    g.color === null && "bg-muted-foreground/50",
-                  )}
-                  style={g.color ? { backgroundColor: g.color } : undefined}
-                />
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{g.name}</span>
-                <span className="font-mono text-[11px] text-muted-foreground">{g.repoCount}</span>
-                <Switch
-                  checked={member}
-                  disabled={groupBusyId === g.id}
-                  onCheckedChange={() => onToggleGroup(g, member)}
-                />
-              </div>
-            );
-          })}
+    <div className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {memberGroups.map((g) => (
+          <GroupPill
+            key={g.id}
+            group={g}
+            busy={groupBusyId === g.id}
+            onRemove={() => onToggleGroup(g, true)}
+          />
+        ))}
+        {nonMemberGroups.length > 0 && (
+          <button
+            type="button"
+            aria-expanded={addOpen}
+            aria-label="Add this repo to a group"
+            onClick={() => setAddOpen((v) => !v)}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted"
+          >
+            <Plus className="size-3" /> Add
+          </button>
+        )}
+      </div>
+      {addOpen && nonMemberGroups.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-dashed border-border p-1.5">
+          {nonMemberGroups.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              disabled={groupBusyId === g.id}
+              onClick={() => onToggleGroup(g, false)}
+              className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
+            >
+              <GroupDot color={g.color} /> {g.name}
+            </button>
+          ))}
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -709,7 +933,7 @@ function CadenceSection({
 
   return (
     <section>
-      <SectionLabel>Check cadence</SectionLabel>
+      <SectionLabel icon={Clock}>Check cadence</SectionLabel>
       <div className="flex flex-col gap-1.5">
         <button
           type="button"
@@ -796,11 +1020,33 @@ function CadenceRadio({ active }: { active: boolean }) {
   );
 }
 
-function KvRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+/**
+ * A key-value row (ratified N4 key-value treatment): a hairline under every
+ * pair, an icon per label, and the VALUE LEFT-ALIGNED - replacing the old
+ * right-aligned, single-line-truncated-with-a-tooltip shape. `breakAll` opts
+ * a value (a path or a URL) into wrapping instead of ever needing that
+ * tooltip in the first place.
+ */
+function KvRow({
+  label,
+  value,
+  icon: Icon,
+  mono,
+  breakAll,
+}: {
+  label: string;
+  value: ReactNode;
+  icon?: LucideIcon;
+  mono?: boolean;
+  breakAll?: boolean;
+}) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-border px-3 py-2 last:border-b-0">
-      <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={cn("max-w-[62%] truncate text-xs", mono && "font-mono")} title={value}>
+    <div className="flex items-start gap-3 border-b border-border px-3 py-2 last:border-b-0">
+      <dt className="flex w-32 shrink-0 items-center gap-1.5 pt-px text-xs text-muted-foreground">
+        {Icon && <Icon aria-hidden className="size-3.5 shrink-0" />}
+        {label}
+      </dt>
+      <dd className={cn("min-w-0 flex-1 text-left text-xs", mono && "font-mono", breakAll && "break-all")}>
         {value}
       </dd>
     </div>
@@ -868,6 +1114,120 @@ function PolicyOption({
 }
 
 /**
+ * The panel's Activity tab (NEW, ratified N4 shape): this repo's own recent
+ * activity, scoped server-side by `repoId` through the existing `activityList`
+ * binding, honoring the same truncation-sentinel contract as the Activity
+ * screen (`lib/activity.ts`'s `paginate`/`ACTIVITY_PAGE_LIMIT`). Per the
+ * ratified round-five corrections: no filter controls (this list is already
+ * scoped to one repository), a short block title, dates that never wrap.
+ *
+ * Simple rows rather than the `DataTable` primitive: this call is the task's
+ * own to make, flagged for veto. A five-column, scroll-owning, sticky-header
+ * table felt like the wrong tool inside a region that is already a single
+ * scrolling tab panel a few hundred pixels tall - the primitive's own ceremony
+ * (frozen columns, a header rowgroup, its own internal scrollbar) solves
+ * problems this list does not have.
+ */
+function ActivitySection({
+  repoName,
+  state,
+}: {
+  repoName: string;
+  state: AsyncState<ActivityRecord[]>;
+}) {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const rows = state.data ?? [];
+  const selected = rows.find((row) => row.id === selectedId) ?? null;
+
+  return (
+    <section>
+      <SectionLabel icon={History}>Recent activity</SectionLabel>
+      <AsyncPanel
+        state={state}
+        emptyWhen={(r) => r.length === 0}
+        emptyMessage="No activity yet for this repository."
+      >
+        {(allRows) => {
+          const { visible, hasMore } = paginate(allRows);
+          return (
+            <>
+              <div className="overflow-hidden rounded-md border border-border">
+                {visible.map((row) => (
+                  <ActivityRow key={row.id} row={row} onClick={() => setSelectedId(row.id)} />
+                ))}
+              </div>
+              {hasMore && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Showing the {ACTIVITY_PAGE_LIMIT} most recent entries. There are older ones; they are
+                  kept and are in the log, but are not listed here yet.
+                </p>
+              )}
+            </>
+          );
+        }}
+      </AsyncPanel>
+
+      {/*
+        A nested drawer (the same shared `Drawer` primitive the Activity screen
+        uses for this exact component) is a new composition for this codebase:
+        two focus-trapped modals mounted at once. The wrapper's `onKeyDown`
+        stops propagation while the receipt is open so a Tab press does not
+        also reach the OUTER drawer's own trap, which would otherwise recompute
+        its first/last focusable using `querySelectorAll` (which cannot tell
+        the inner drawer's controls are the "current" modal) and steal focus
+        back. Escape already stops propagation inside `useModalA11y` itself,
+        so only Tab needed this extra stop here.
+      */}
+      <div onKeyDown={(e) => selected !== null && e.stopPropagation()}>
+        <Drawer open={selected !== null} onClose={() => setSelectedId(null)}>
+          {selected !== null && (
+            <ActivityReceipt record={selected} repoName={repoName} onClose={() => setSelectedId(null)} />
+          )}
+        </Drawer>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One row of the panel's Activity tab. Deliberately duplicates the outcome
+ * chip's shape from `activity.tsx`'s `OutcomeChip` (itself already a
+ * deliberate duplicate of `activity-receipt.tsx`'s `StatusChip`, "so list and
+ * receipt cannot drift") rather than importing a third screen's private
+ * component - this file's own established idiom for the same reason.
+ */
+function ActivityRow({ row, onClick }: { row: ActivityRecord; onClick: () => void }) {
+  const bad = row.status === "failed" || row.status === "error";
+  const Icon = bad ? XCircle : CheckCircle2;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-haspopup="dialog"
+      className="flex w-full items-center gap-3 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-muted"
+    >
+      <span className="w-16 shrink-0 font-mono text-xs whitespace-nowrap text-muted-foreground">
+        {relativeTime(row.timestamp)}
+      </span>
+      <span className="inline-flex w-fit shrink-0 rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
+        {row.actionType}
+      </span>
+      <span
+        className={cn(
+          "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
+          bad ? "bg-status-failed/10 text-status-failed" : "bg-status-sync/10 text-status-sync",
+        )}
+      >
+        <Icon aria-hidden className="size-3" />
+        {row.status}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">{row.summary ?? "-"}</span>
+      <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+    </button>
+  );
+}
+
+/**
  * Removal (BL-NI-85). Two-step inline confirm in the same idiom as the group
  * delete in `groups-nav.tsx`: the first click only arms the confirm, so a stray
  * click can never clear history. The consequence copy stays visible BEFORE the
@@ -906,7 +1266,7 @@ function RemoveSection({
 
   return (
     <section>
-      <SectionLabel>Remove</SectionLabel>
+      <SectionLabel icon={Trash2}>Remove</SectionLabel>
       <div className="rounded-md border border-border px-3 py-2.5">
         <p className="text-xs text-foreground/80">
           Stops tracking <span className="font-semibold">{name}</span> and deletes its RepoSync

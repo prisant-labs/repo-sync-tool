@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commands, events } from "@/lib/bindings";
-import type { RepoDetail, Settings } from "@/lib/bindings";
+import type { ActivityRecord, GroupSummary, RepoDetail, Settings } from "@/lib/bindings";
 import { err, mockCommand, ok } from "@/test/mock-ipc";
 import { ToastContext } from "@/hooks/use-toast";
+import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel } from "@/components/repo-detail";
 
 /**
@@ -108,6 +109,12 @@ beforeEach(() => {
   mockCommand(commands, "groupList", async () => ok([]));
   mockCommand(commands, "groupsForRepo", async () => ok([]));
   mockCommand(commands, "settingsGet", async () => ok(SETTINGS));
+  // N4: the panel now fetches this repo's own activity for the Activity tab
+  // on mount, regardless of which tab is showing (see `RepoDetailPanel`'s
+  // `useActivity` call). Without this stub the real binding is hit and every
+  // test in this file would fail on an unmocked IPC call, not just the ones
+  // that visit that tab.
+  mockCommand(commands, "activityList", async () => ok([]));
   // The drawer subscribes to per-repo backend events on mount; without a Tauri
   // runtime the real `listen` cannot resolve, so stub it to a no-op unlistener.
   for (const ev of [events.repoCheckCompleted, events.repoUpdateCompleted, events.repoStateChanged]) {
@@ -127,9 +134,42 @@ function renderPanel() {
   return { onChanged, onClose, toast, unmount: view.unmount };
 }
 
+/**
+ * Like `renderPanel`, but inside the real `Drawer` primitive so its focus
+ * trap (`use-modal-a11y.ts`) is actually attached and exercised - `renderPanel`
+ * alone renders no modal wrapper at all, so a test asserting the OUTER trap's
+ * wrap-around behaviour (Tab from the last control back to the first) needs
+ * this instead.
+ */
+function renderPanelInDrawer() {
+  const onChanged = vi.fn();
+  const onClose = vi.fn();
+  const toast = vi.fn();
+  render(
+    <ToastContext.Provider value={toast}>
+      <Drawer open onClose={onClose}>
+        <RepoDetailPanel id={7} onChanged={onChanged} onClose={onClose} />
+      </Drawer>
+    </ToastContext.Provider>,
+  );
+  return { onChanged, onClose, toast };
+}
+
 /** The armed-state confirm button, distinct from the "Remove from RepoSync" trigger. */
 function confirmButton() {
   return screen.getByRole("button", { name: "Remove" });
+}
+
+/**
+ * Remove moved to the Settings tab in N4 (D3, the ratified tab mapping).
+ * `TabPanel` unmounts inactive content (see `ui/tabs.tsx`'s doc comment), so
+ * "Remove from RepoSync" does not exist in the DOM until the Settings tab is
+ * the active one - every Remove test needs this step first. Mechanical only:
+ * none of the six tests' own assertions (arm/cancel/confirm/not-found/failure/
+ * stale-resolve) changed.
+ */
+async function gotoSettingsTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("tab", { name: "Settings" }));
 }
 
 describe("RepoDetailPanel remove", () => {
@@ -137,6 +177,7 @@ describe("RepoDetailPanel remove", () => {
     const remove = mockCommand(commands, "repoRemove", async () => ok(null));
     renderPanel();
     const user = userEvent.setup();
+    await gotoSettingsTab(user);
 
     const arm = await screen.findByRole("button", { name: "Remove from RepoSync" });
     // Everything the cascade deletes is named before any click, alongside what
@@ -157,6 +198,7 @@ describe("RepoDetailPanel remove", () => {
     const remove = mockCommand(commands, "repoRemove", async () => ok(null));
     renderPanel();
     const user = userEvent.setup();
+    await gotoSettingsTab(user);
 
     await user.click(await screen.findByRole("button", { name: "Remove from RepoSync" }));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -171,6 +213,7 @@ describe("RepoDetailPanel remove", () => {
     const remove = mockCommand(commands, "repoRemove", async () => ok(null));
     const { onChanged, onClose } = renderPanel();
     const user = userEvent.setup();
+    await gotoSettingsTab(user);
 
     await user.click(await screen.findByRole("button", { name: "Remove from RepoSync" }));
     await user.click(confirmButton());
@@ -187,6 +230,7 @@ describe("RepoDetailPanel remove", () => {
     mockCommand(commands, "repoRemove", async () => err("db.not_found", "repo 7 was not found"));
     const { onChanged, onClose, toast } = renderPanel();
     const user = userEvent.setup();
+    await gotoSettingsTab(user);
 
     await user.click(await screen.findByRole("button", { name: "Remove from RepoSync" }));
     await user.click(confirmButton());
@@ -203,6 +247,7 @@ describe("RepoDetailPanel remove", () => {
     );
     const { onClose, toast } = renderPanel();
     const user = userEvent.setup();
+    await gotoSettingsTab(user);
 
     await user.click(await screen.findByRole("button", { name: "Remove from RepoSync" }));
     await user.click(confirmButton());
@@ -232,6 +277,7 @@ describe("RepoDetailPanel remove", () => {
     );
     const { onChanged, onClose, unmount } = renderPanel();
     const user = userEvent.setup();
+    await gotoSettingsTab(user);
 
     await user.click(await screen.findByRole("button", { name: "Remove from RepoSync" }));
     await user.click(confirmButton());
@@ -243,5 +289,230 @@ describe("RepoDetailPanel remove", () => {
 
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+/** Whether the named tab is the one currently marked selected. */
+function tabSelected(name: string): boolean {
+  return screen.getByRole("tab", { name }).getAttribute("aria-selected") === "true";
+}
+
+describe("RepoDetailPanel tabs (N4)", () => {
+  it("switches tabs by mouse click, unmounting the previous tab's content", async () => {
+    renderPanel();
+    const user = userEvent.setup();
+
+    await screen.findByText("Up to date with origin");
+    expect(tabSelected("Overview")).toBe(true);
+
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
+
+    expect(tabSelected("Activity")).toBe(true);
+    expect(tabSelected("Overview")).toBe(false);
+    // The Overview panel's content is gone from the DOM, not merely hidden.
+    expect(screen.queryByText("Up to date with origin")).toBeNull();
+    expect(await screen.findByText("No activity yet for this repository.")).toBeDefined();
+  });
+
+  it("switches tabs with Left/Right/Home/End, and moving focus also activates (automatic activation)", async () => {
+    renderPanel();
+    const user = userEvent.setup();
+    await screen.findByText("Up to date with origin");
+
+    const overviewTab = screen.getByRole("tab", { name: "Overview" });
+    overviewTab.focus();
+
+    await user.keyboard("{ArrowRight}");
+    expect(tabSelected("Activity")).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("tab", { name: "Activity" }));
+
+    await user.keyboard("{ArrowRight}");
+    expect(tabSelected("Settings")).toBe(true);
+
+    // Wraps forward past the last tab.
+    await user.keyboard("{ArrowRight}");
+    expect(tabSelected("Overview")).toBe(true);
+
+    await user.keyboard("{End}");
+    expect(tabSelected("Settings")).toBe(true);
+
+    await user.keyboard("{Home}");
+    expect(tabSelected("Overview")).toBe(true);
+
+    // Wraps backward past the first tab.
+    await user.keyboard("{ArrowLeft}");
+    expect(tabSelected("Settings")).toBe(true);
+  });
+
+  it("roving tabindex: only the active tab is a Tab stop", async () => {
+    renderPanel();
+    await screen.findByText("Up to date with origin");
+
+    expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("tabindex")).toBe("0");
+    expect(screen.getByRole("tab", { name: "Activity" }).getAttribute("tabindex")).toBe("-1");
+    expect(screen.getByRole("tab", { name: "Settings" }).getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("keeps the focus trap intact across a tab switch: Tab from the last control wraps to the first", async () => {
+    renderPanelInDrawer();
+    const user = userEvent.setup();
+    await gotoSettingsTab(user);
+
+    const removeTrigger = await screen.findByRole("button", { name: "Remove from RepoSync" });
+    removeTrigger.focus();
+    expect(document.activeElement).toBe(removeTrigger);
+
+    await user.keyboard("{Tab}");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
+
+    await user.keyboard("{Shift>}{Tab}{/Shift}");
+    expect(document.activeElement).toBe(removeTrigger);
+  });
+});
+
+describe("RepoDetailPanel activity tab (N4)", () => {
+  function activityRow(id: number, overrides: Partial<ActivityRecord> = {}): ActivityRecord {
+    return {
+      id,
+      repoId: 7,
+      timestamp: 1_700_000_000 - id,
+      actionType: "check",
+      status: "success",
+      reasonCode: null,
+      summary: `entry ${id}`,
+      commitRange: null,
+      rawCommand: null,
+      rawStdout: null,
+      rawStderr: null,
+      exitCode: null,
+      durationMs: null,
+      ...overrides,
+    };
+  }
+
+  it("fetches this repo's activity scoped by repoId, with no filter controls in the panel", async () => {
+    const list = mockCommand(commands, "activityList", async () => ok([activityRow(1)]));
+    renderPanel();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ repoId: 7, groupId: null, actionType: null, status: null }),
+      ),
+    );
+    expect(screen.getByText("entry 1")).toBeDefined();
+    // No filter chips or controls: the panel scopes to one repo already.
+    expect(screen.queryByRole("group")).toBeNull();
+  });
+
+  it("shows the truncation notice only when the sentinel row (N+1) comes back, never from a length guess", async () => {
+    const sixty = Array.from({ length: 60 }, (_, i) => activityRow(i + 1));
+    mockCommand(commands, "activityList", async () => ok(sixty));
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+
+    await screen.findByText("entry 1");
+    expect(screen.queryByText(/most recent entries/i)).toBeNull();
+  });
+
+  it("shows the truncation notice when a 61st (sentinel) row arrives", async () => {
+    const sixtyOne = Array.from({ length: 61 }, (_, i) => activityRow(i + 1));
+    mockCommand(commands, "activityList", async () => ok(sixtyOne));
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+
+    expect(await screen.findByText(/showing the 60 most recent entries/i)).toBeDefined();
+    // The sentinel itself (the 61st row) is never rendered.
+    expect(screen.queryByText("entry 61")).toBeNull();
+  });
+
+  it("opens the activity receipt drawer on a row click, and Escape closes only the receipt", async () => {
+    mockCommand(commands, "activityList", async () => ok([activityRow(1, { summary: "fetched 3 commits" })]));
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+
+    await user.click(await screen.findByText("fetched 3 commits"));
+
+    expect(await screen.findByRole("button", { name: "Close receipt" })).toBeDefined();
+    // The receipt shows the record's own repo name (this repo), not "Unknown repo".
+    expect(screen.getByRole("heading", { name: "example" })).toBeDefined();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Close receipt" })).toBeNull());
+    // The outer drawer's own Close button is still there: Escape closed only
+    // the nested receipt, not the whole panel.
+    expect(screen.getByRole("button", { name: "Close" })).toBeDefined();
+  });
+});
+
+describe("RepoDetailPanel group pills (N4)", () => {
+  const GROUPS: GroupSummary[] = [
+    { id: 1, name: "Client work", color: "oklch(0.55 0.16 264)", repoCount: 2 },
+    { id: 2, name: "Archived clients", color: null, repoCount: 1 },
+  ];
+
+  it("renders only member groups as pills, with an Add affordance reaching every non-member group", async () => {
+    mockCommand(commands, "groupList", async () => ok(GROUPS));
+    mockCommand(commands, "groupsForRepo", async () => ok([1]));
+    renderPanel();
+
+    await screen.findByText("Client work");
+    // Membership-only: the non-member group is not rendered as a standing pill.
+    expect(screen.queryByText("Archived clients")).toBeNull();
+    expect(screen.getByRole("button", { name: "Add this repo to a group" })).toBeDefined();
+  });
+
+  it("removing a member pill calls groupUnassign for that group", async () => {
+    mockCommand(commands, "groupList", async () => ok(GROUPS));
+    mockCommand(commands, "groupsForRepo", async () => ok([1]));
+    const unassign = mockCommand(commands, "groupUnassign", async () => ok(null));
+    renderPanel();
+    const user = userEvent.setup();
+
+    await screen.findByText("Client work");
+    await user.click(screen.getByRole("button", { name: "Remove from Client work" }));
+
+    await waitFor(() => expect(unassign).toHaveBeenCalledWith(7, 1));
+  });
+
+  it("the Add disclosure lists every non-member group and assigns on click", async () => {
+    mockCommand(commands, "groupList", async () => ok(GROUPS));
+    mockCommand(commands, "groupsForRepo", async () => ok([1]));
+    const assign = mockCommand(commands, "groupAssign", async () => ok(null));
+    renderPanel();
+    const user = userEvent.setup();
+
+    await screen.findByText("Client work");
+    await user.click(screen.getByRole("button", { name: "Add this repo to a group" }));
+
+    const candidate = await screen.findByRole("button", { name: /Archived clients/ });
+    await user.click(candidate);
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(7, 2));
+  });
+});
+
+describe("RepoDetailPanel homepage glyph (N4)", () => {
+  it("is hidden when homepage is null", async () => {
+    renderPanel();
+    await screen.findByText("Up to date with origin");
+    expect(screen.queryByRole("button", { name: "Open homepage" })).toBeNull();
+  });
+
+  it("opens the homepage via repoOpenHomepage when set", async () => {
+    mockCommand(commands, "repoGet", async () => ok({ ...DETAIL, homepage: "https://example.com" }));
+    const openHomepage = mockCommand(commands, "repoOpenHomepage", async () => ok(null));
+    renderPanel();
+    const user = userEvent.setup();
+
+    const button = await screen.findByRole("button", { name: "Open homepage" });
+    await user.click(button);
+
+    await waitFor(() => expect(openHomepage).toHaveBeenCalledWith(7));
   });
 });
