@@ -258,7 +258,24 @@ export function AppShell() {
       */}
       <main className="flex min-h-0 min-w-0 flex-col">
         {showRecovery && recovery.data && (
-          <div className="flex items-start gap-3 border-b border-status-dirty/40 bg-status-dirty/12 px-6 py-3">
+          // Q1 -> 1A (ui-delivery-plan.md decision queue, N7 consistency
+          // sweep): the old full-fill `bg-status-dirty/12` region (with its
+          // own tinted `border-status-dirty/40` bottom hairline) becomes a
+          // thin left-edge stripe on a neutral surface, matching the
+          // Diagnostics warnings band's identical treatment
+          // (`diagnostics-card.tsx`) and PR #78's active-nav bar idiom: a
+          // solid `bg-muted` fill (never an alpha tint) plus a 2px
+          // `border-l-status-dirty` bar, with the bottom hairline reverting
+          // to the plain neutral `border-border`. Icon, wording and dismiss
+          // behavior are unchanged.
+          //
+          // Measured (`_generators/contrast.py`, N7 section): status-dirty on
+          // the `--muted` well (non-text 3:1 floor) is 4.71:1 light, 8.03:1
+          // dark. The two text lines (text-foreground opaque, and the
+          // pre-existing text-foreground/90 body copy - alpha-composited in
+          // gamma-encoded sRGB, the CSS default) clear the 4.5:1 text floor
+          // by a wide margin: 16.35:1 / 13.40:1 light, 14.48:1 / 11.97:1 dark.
+          <div className="flex items-start gap-3 border-b border-l-2 border-border border-l-status-dirty bg-muted px-6 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-dirty" />
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium text-foreground">

@@ -174,4 +174,78 @@ describe("DiagnosticsCard warnings", () => {
     const msg = await screen.findByText(/could not be used/i);
     expect(msg.textContent).toContain("C:\\typo\\git.exe");
   });
+
+  /**
+   * N7 consistency sweep, Q1 -> 1A: the warnings band moved from a tinted
+   * `bg-status-failed/10` fill to a neutral stripe, but the message ORDER is
+   * explicitly load-bearing (coverage-matrix.md section 7a) and untouched by
+   * that restyle. Every existing test above pins one condition (or a
+   * precedence PAIR) in isolation; this one triggers five independent
+   * conditions at once and pins the FULL sequence, which nothing above does.
+   */
+  it("orders every independent warning exactly as the source lists them, even with five true at once", async () => {
+    renderWith({
+      gitExplicitPath: "C:\\typo\\git.exe",
+      gitExplicitPathHonored: false,
+      gitPath: "C:\\Program Files\\Git\\cmd\\git.exe",
+      logDroppedLines: 4,
+      onedriveRooted: true,
+      schedulerOutcomePersistFailures: 2,
+      dbRecovered: true,
+    });
+
+    // Each phrase below is unique to its OWN warning message, deliberately
+    // distinct from the "Scheduled checks since launch" row's own hint text
+    // ("...outcomes that could not be saved"), which would otherwise
+    // false-match the scheduler warning's more generic wording and collapse
+    // two elements into what looks like one.
+    const messages = await screen.findAllByText(
+      /could not be used, so RepoSync fell back to|were dropped because RepoSync|OneDrive-synced tree|Those repos retried|moved aside/i,
+    );
+    const order = messages.map((m) => m.textContent ?? "");
+    expect(order).toHaveLength(5);
+    expect(order[0]).toMatch(/^The git path set in Settings/);
+    expect(order[1]).toMatch(/^4 log line\(s\) were dropped/);
+    expect(order[2]).toMatch(/^Your data folder is inside a OneDrive-synced tree/);
+    expect(order[3]).toMatch(/^2 scheduled check outcome\(s\) could not be saved/);
+    expect(order[4]).toMatch(/^The database could not be migrated at startup/);
+  });
+});
+
+describe("DiagnosticsCard row shape (N7, Q2 -> 2A)", () => {
+  it("keeps every row's label, hint and value after the unified fact-row reshape", async () => {
+    renderWith({});
+
+    // Label + hint text is untouched content, per the matrix's KEEP on row
+    // content and order - only the shape changed.
+    expect(await screen.findByText("Log folder")).toBeDefined();
+    expect(screen.getByText("Everything RepoSync records goes here.")).toBeDefined();
+    expect(screen.getByText("RepoSync version")).toBeDefined();
+    expect(screen.getByText("0.9.0")).toBeDefined();
+  });
+
+  it("keeps the Log folder row's action button reachable by role", async () => {
+    renderWith({});
+
+    expect(await screen.findByRole("button", { name: /open logs/i })).toBeDefined();
+  });
+
+  it("keeps the full-width PathRow treatment for every path row", async () => {
+    renderWith({});
+
+    expect(await screen.findByText(HEALTHY.logDir)).toBeDefined();
+    expect(screen.getByText(HEALTHY.dataDir)).toBeDefined();
+    expect(screen.getByText(HEALTHY.dbPath)).toBeDefined();
+  });
+
+  it("still shows the copy-footer privacy sentence untouched", async () => {
+    renderWith({});
+
+    expect(
+      await screen.findByText(
+        "Copying includes the folder paths above, which contain your Windows account name.",
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("button", { name: /copy details/i })).toBeDefined();
+  });
 });

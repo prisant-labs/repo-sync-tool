@@ -1,6 +1,19 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import { AlertTriangle, ClipboardCopy, FolderOpen, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle,
+  Clock,
+  ClipboardCopy,
+  Database,
+  FileText,
+  Files,
+  FolderOpen,
+  GitBranch,
+  Info,
+  PenLine,
+  RefreshCw,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { commands } from "@/lib/bindings";
 import type { Diagnostics } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
@@ -84,11 +97,16 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
     <div className="flex flex-col">
       <Warnings d={d} />
 
-      <Row label="Log folder" hint="Everything RepoSync records goes here.">
-        <Button variant="secondary" size="sm" disabled={opening} onClick={() => void openLogs()}>
-          <FolderOpen /> Open logs
-        </Button>
-      </Row>
+      <Row
+        label="Log folder"
+        hint="Everything RepoSync records goes here."
+        icon={FolderOpen}
+        action={
+          <Button variant="secondary" size="sm" disabled={opening} onClick={() => void openLogs()}>
+            <FolderOpen /> Open logs
+          </Button>
+        }
+      />
       <PathRow value={d.logDir} />
 
       <Row
@@ -98,6 +116,7 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
             ? "Level and retention set at startup. The file count below is the live check."
             : "RepoSync could not open a log file, so nothing is being recorded."
         }
+        icon={FileText}
       >
         {d.loggingActive ? (
           <Mono>
@@ -108,7 +127,7 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
           <Mono tone="warn">not running</Mono>
         )}
       </Row>
-      <Row label="Log files on disk" hint="Counted now, not remembered.">
+      <Row label="Log files on disk" hint="Counted now, not remembered." icon={Files}>
         {d.logDirReadable ? (
           <Mono tone={d.loggingActive && d.logFileCount === 0 ? "warn" : undefined}>
             {d.logFileCount} {d.logFileCount === 1 ? "file" : "files"}, {formatBytes(d.logBytes)}
@@ -125,7 +144,11 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
         a writer that has written nothing also has no failures.
       */}
       {d.loggingActive && (
-        <Row label="Log writes" hint="What has actually reached the file since launch.">
+        <Row
+          label="Log writes"
+          hint="What has actually reached the file since launch."
+          icon={PenLine}
+        >
           <Mono
             tone={d.logWriteFailures > 0 || d.logBytesWritten === 0 ? "warn" : undefined}
           >
@@ -140,13 +163,15 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
         </Row>
       )}
 
-      <Row label="Data folder" hint="Settings, the repo registry, and the activity history.">
+      <Row
+        label="Data folder"
+        hint="Settings, the repo registry, and the activity history."
+        icon={FolderOpen}
+      >
         <Mono>{d.onedriveRooted ? "OneDrive-synced" : "local"}</Mono>
       </Row>
       <PathRow value={d.dataDir} />
-      <Row label="Database" hint="The SQLite file inside the data folder.">
-        <span />
-      </Row>
+      <Row label="Database" hint="The SQLite file inside the data folder." icon={Database} />
       <PathRow value={d.dbPath} />
 
       {/*
@@ -154,7 +179,11 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
         (E-03 AC7), so it reads as a warning about the VERSION, not as "git is
         missing" - which is the genuinely different, genuinely blocking state.
       */}
-      <Row label="Git" hint="The executable RepoSync runs for every fetch and pull.">
+      <Row
+        label="Git"
+        hint="The executable RepoSync runs for every fetch and pull."
+        icon={GitBranch}
+      >
         {!d.gitResolved ? (
           <Mono tone="warn">not found</Mono>
         ) : d.gitMeetsFloor ? (
@@ -168,13 +197,14 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
       <Row
         label="Scheduled checks since launch"
         hint="Cycles run, repos checked, and outcomes that could not be saved."
+        icon={Clock}
       >
         <Mono tone={d.schedulerOutcomePersistFailures > 0 ? "warn" : undefined}>
           {d.schedulerCycles} / {d.schedulerReposChecked} / {d.schedulerOutcomePersistFailures}
         </Mono>
       </Row>
 
-      <Row label="RepoSync version" hint="The build you are running.">
+      <Row label="RepoSync version" hint="The build you are running." icon={Info}>
         <Mono>{d.appVersion}</Mono>
       </Row>
 
@@ -271,7 +301,23 @@ function Warnings({ d }: { d: Diagnostics }) {
   if (items.length === 0) return null;
 
   return (
-    <div className="flex flex-col gap-2 border-b border-border bg-status-failed/10 px-4 py-3">
+    // Q1 -> 1A (ui-delivery-plan.md decision queue): a thin left-edge coloured
+    // stripe on a neutral surface, replacing the old `bg-status-failed/10`
+    // full-region fill. This card's Focal-equivalent tinted region does not
+    // exist (Diagnostics has no single-status "this screen's one allowed
+    // region" the way the repo detail Focal card or `AllClearState` do), so
+    // the whole band moves to the stripe idiom rather than keeping a fill.
+    // The stripe idiom matches PR #78's active-nav bar exactly: a solid,
+    // hue-less neutral fill (`bg-muted`, not an alpha tint) plus a 2px hued
+    // left border - never an alpha-blended tint, so the contrast math stays
+    // on flat surfaces `contrast.py` already models. Icons, wording and
+    // message ORDER (load-bearing, matrix section 7a) are unchanged.
+    //
+    // Measured (`_generators/contrast.py`, N7 section), non-text 3:1 floor for
+    // the icon/stripe hue, text 4.5:1 floor for the message: status-failed on
+    // the `--muted` well is 4.81:1 light, 5.22:1 dark; the opaque
+    // `text-foreground` message is 16.35:1 light, 14.48:1 dark.
+    <div className="flex flex-col gap-2 border-b border-l-2 border-border border-l-status-failed bg-muted px-4 py-3">
       {items.map((text) => (
         <div key={text} className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-failed" aria-hidden />
@@ -282,14 +328,59 @@ function Warnings({ d }: { d: Diagnostics }) {
   );
 }
 
-function Row({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+/**
+ * Q2 -> 2A (ui-delivery-plan.md decision queue): the unified fact-row pattern
+ * the detail panel ships (`repo-detail.tsx`'s `KvRow` - hairline rows, an icon
+ * per label, left-aligned values), extended here to carry Diagnostics'
+ * explanation line under the label and an optional right-side action button.
+ * `KvRow` has neither, so this is its own component rather than a shared
+ * import - matching the PATTERN (icon + label, hairline, left-aligned value),
+ * not the exact markup, since `KvRow` renders inside a `<dl>` this card does
+ * not have and Diagnostics' longer labels ("Scheduled checks since launch")
+ * need room `KvRow`'s fixed `w-32` label column does not give them.
+ *
+ * `children` is the VALUE (a `Mono` span, left-aligned in its own column,
+ * replacing the old right-aligned-at-the-row's-edge placement); `action` is a
+ * button that stays right-aligned, since it is a control, not a fact. A row
+ * carries one or the other in practice ("Log folder" has only an action, most
+ * rows have only a value), never both, but the shape allows either.
+ *
+ * No rounded/bordered wrapper around the row list (unlike `KvRow`'s `dl`
+ * border box in `repo-detail.tsx`): the `Card` this renders inside already
+ * frames the whole card, so a second border box here would nest one frame
+ * inside another for no reason `repo-detail.tsx` shares (its `KvRow` sections
+ * are NOT already inside a bordered container).
+ */
+function Row({
+  label,
+  hint,
+  icon: Icon,
+  action,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  icon?: LucideIcon;
+  /** A right-side control, e.g. "Open logs". Distinct from a value. */
+  action?: ReactNode;
+  /** The row's left-aligned value, e.g. a `Mono` span. Optional: a label-only
+   * row (like "Database", whose value is the `PathRow` beneath it) passes
+   * neither this nor `action`. */
+  children?: ReactNode;
+}) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-border px-4 pb-1.5 pt-3">
-      <div className="min-w-0">
-        <div className="text-sm font-medium">{label}</div>
-        {hint && <div className="text-xs text-foreground/70">{hint}</div>}
+    <div className="flex items-start gap-3 border-b border-border px-4 py-2.5 last:border-b-0">
+      <div className="flex w-52 shrink-0 items-start gap-1.5 pt-px">
+        {Icon && <Icon aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
+        <div className="min-w-0">
+          <div className="text-sm font-medium">{label}</div>
+          {hint && <div className="text-xs text-foreground/70">{hint}</div>}
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
+      <div className="flex min-w-0 flex-1 items-center gap-3 pt-px">
+        {children && <div className="text-left">{children}</div>}
+        {action && <div className="ml-auto shrink-0">{action}</div>}
+      </div>
     </div>
   );
 }
