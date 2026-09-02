@@ -296,7 +296,13 @@ export function AppShell() {
           nothing else.
         */}
         <div className="min-h-0 flex-1 overflow-auto">
-          {view === "dashboard" && <DashboardScreen onOpenRepos={() => setView("repos")} />}
+          {view === "dashboard" && (
+            <DashboardScreen
+              onOpenRepos={() => setView("repos")}
+              activeGroupId={activeGroupId}
+              groups={groups}
+            />
+          )}
           {view === "repos" && (
             <ReposScreen
               activeGroupId={activeGroupId}
