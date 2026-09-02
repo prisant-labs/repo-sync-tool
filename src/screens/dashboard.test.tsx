@@ -143,7 +143,12 @@ function renderScreen(
   repos: RepoSummary[],
   dailySummary: DailySummary,
   memberships: RepoGroupMembership[] = [],
-  options: { activeGroupId?: number | null; membershipsPending?: boolean; onOpenRepos?: () => void } = {},
+  options: {
+    activeGroupId?: number | null;
+    membershipsPending?: boolean;
+    onOpenRepos?: () => void;
+    groups?: GroupSummary[];
+  } = {},
 ) {
   mockCommand(commands, "repoList", async () => ok(repos));
   mockCommand(commands, "summaryToday", async () => ok(dailySummary));
@@ -157,7 +162,7 @@ function renderScreen(
     <DashboardScreen
       onOpenRepos={onOpenRepos}
       activeGroupId={options.activeGroupId ?? null}
-      groups={GROUPS}
+      groups={options.groups ?? GROUPS}
     />,
   );
   return { onOpenRepos, ...view };
@@ -193,7 +198,7 @@ describe("Dashboard tiles", () => {
     expect(screen.getByText("Updated today")).toBeDefined();
     expect(screen.getByText("New releases")).toBeDefined();
 
-    expect(screen.getByText("3 in sync")).toBeDefined();
+    expect(screen.getByText("3 checked, no change")).toBeDefined();
     expect(screen.getByText("dirty or failed")).toBeDefined();
     expect(screen.getByText("fast-forwarded, clean")).toBeDefined();
     expect(screen.getByText("upstream tags")).toBeDefined();
@@ -255,10 +260,10 @@ describe("Dashboard group scoping", () => {
     // Under watch: only repo 1 is a member of group 1.
     const underWatchTile = screen.getByRole("button", { name: /Under watch/ });
     expect(within(underWatchTile).getByText("1")).toBeDefined();
-    // The in-sync hint cannot be scoped (no per-repo id list backs
+    // The no-change hint cannot be scoped (no per-repo id list backs
     // noChangeCount) and says so rather than silently sitting under a
     // scoped headline.
-    expect(within(underWatchTile).getByText("40 in sync (all repos)")).toBeDefined();
+    expect(within(underWatchTile).getByText("40 checked, no change (all repos)")).toBeDefined();
 
     // Need attention scopes its count AND its list together (same filter,
     // one source): only "in-group" qualifies, "out-of-group" is excluded.
@@ -279,7 +284,7 @@ describe("Dashboard group scoping", () => {
     expect(screen.queryByText("0")).toBeNull();
   });
 
-  it("all-clear copy names the active group rather than claiming every watched repo when scoped", async () => {
+  it("all-clear copy names the active group and states only the predicate, rather than claiming every repo is in sync", async () => {
     renderScreen(
       [repo({ id: 1, localName: "in-group" })],
       summary({ attentionCount: 0, attention: [] }),
@@ -287,7 +292,51 @@ describe("Dashboard group scoping", () => {
       { activeGroupId: 1 },
     );
     await screen.findByText("All clear");
-    expect(screen.getByText("Every repo in Work is in sync or intentionally paused.")).toBeDefined();
+    expect(screen.getByText("No dirty or failed repositories in Work.")).toBeDefined();
+  });
+
+  it("does not claim a checked-but-behind repo is 'in sync', on the hint or in the All-clear copy", async () => {
+    // `summary.rs`'s `classify_row` folds a successful "check"/"fetch" - or a
+    // "skipped" activity row - into `noChangeCount` unconditionally, never
+    // keyed on the resulting ahead/behind counts; and the attention
+    // population separately excludes a clean-but-behind repo outright
+    // (`attention_excludes_a_repo_that_is_only_behind`). So a repo that was
+    // checked today, remains 40 commits behind, but is neither dirty nor
+    // failed reads as fully "healthy" here - correctly, since it is not
+    // dirty or failed - but neither the hint nor the All-clear text may
+    // claim it is "in sync" (Codex review finding 1, confirmed).
+    renderScreen(
+      [repo({ id: 1, localName: "behind-repo", behindCount: 40 })],
+      summary({ attentionCount: 0, attention: [], noChangeCount: 1 }),
+    );
+    await screen.findByText("All clear");
+
+    expect(screen.getByText("1 checked, no change")).toBeDefined();
+    expect(screen.getByText("No dirty or failed repositories.")).toBeDefined();
+    expect(screen.queryByText(/in sync/i)).toBeNull();
+  });
+
+  it("keeps every scope indicator honest even when the active group's metadata has not resolved", async () => {
+    // activeGroupId 99 is absent from the `groups` list (only id 1, "Work",
+    // exists): the "group list stale or not yet loaded while activeGroupId
+    // and membership data remain set" case (Codex review finding 3,
+    // confirmed). The scoping itself (repo 1 is a member of group 99) still
+    // works, keyed on activeGroupId alone - this test is about the LABELS,
+    // which must not silently fall back to unscoped wording.
+    renderScreen(
+      [repo({ id: 1, localName: "in-group" }), repo({ id: 2, localName: "out-of-group" })],
+      summary({ attentionCount: 0, attention: [], noChangeCount: 9 }),
+      [{ repoId: 1, groupIds: [99] }],
+      { activeGroupId: 99 },
+    );
+
+    await screen.findByText("Scoped to a group");
+    const underWatchTile = screen.getByRole("button", { name: /Under watch/ });
+    // The count is STILL correctly scoped: 1, not 2 - proving this is a
+    // labeling gap, not a filtering one.
+    expect(within(underWatchTile).getByText("1")).toBeDefined();
+    expect(within(underWatchTile).getByText("9 checked, no change (all repos)")).toBeDefined();
+    expect(screen.getByText("No dirty or failed repositories in this group.")).toBeDefined();
   });
 });
 
@@ -295,9 +344,7 @@ describe("Needs attention rows", () => {
   it("shows the all-clear state when nothing needs attention", async () => {
     renderScreen([repo()], summary({ attentionCount: 0, attention: [] }));
     await screen.findByText("All clear");
-    expect(
-      screen.getByText("Every watched repo is in sync or intentionally paused."),
-    ).toBeDefined();
+    expect(screen.getByText("No dirty or failed repositories.")).toBeDefined();
   });
 
   it("structures a row's reasons under local and remote icons, not a single joined string", async () => {
@@ -353,5 +400,89 @@ describe("Needs attention rows", () => {
 
     await userEvent.setup().click(screen.getByText("repo-a"));
     await waitFor(() => expect(repoGet).toHaveBeenCalledWith(1));
+  });
+});
+
+describe("Attention row provenance classification (Codex review finding 2)", () => {
+  it("classifies git.not_a_repo as LOCAL, covering both a missing path and a folder no longer a repo", async () => {
+    // `git/inspect.rs`'s `inspect` maps EVERY `Repository::open` failure to
+    // `AppError::NotARepo` ("git.not_a_repo") regardless of whether the path
+    // is missing entirely or merely no longer a valid git repository - the
+    // backend does not distinguish the two any further, so neither does
+    // this row. Written by `check_now`'s `record_hard_failure_code`
+    // (`repo.rs`), never by a fetch, so it must never carry the fetch-scoped
+    // `checkFailureMessage` sentence.
+    renderScreen(
+      [repo({ id: 1, localName: "gone-repo", lastErrorCode: "git.not_a_repo" })],
+      summary({
+        attentionCount: 1,
+        attention: [summaryItem({ repoId: 1, localName: "gone-repo", detail: "git.not_a_repo" })],
+      }),
+    );
+    await screen.findByText("gone-repo");
+    const row = screen.getByText("gone-repo").closest("li") as HTMLElement;
+
+    expect(within(row).getByText("Not a repository")).toBeDefined();
+    expect(within(row).getByText("Not a repository").title).toContain("could not open this folder");
+    expect(row.querySelector(".lucide-hard-drive")).not.toBeNull();
+    expect(row.querySelector(".lucide-cloud")).toBeNull();
+  });
+
+  it("classifies git.not_found (the git executable is missing) as LOCAL, not a fetch failure", async () => {
+    // `require_exe()` returns `AppError::GitNotFound` ("git.not_found") when
+    // the git binary itself cannot be located - a local machine-
+    // configuration problem, never a network round trip.
+    renderScreen(
+      [repo({ id: 1, localName: "no-git-repo", lastErrorCode: "git.not_found" })],
+      summary({
+        attentionCount: 1,
+        attention: [summaryItem({ repoId: 1, localName: "no-git-repo", detail: "git.not_found" })],
+      }),
+    );
+    await screen.findByText("no-git-repo");
+    const row = screen.getByText("no-git-repo").closest("li") as HTMLElement;
+
+    expect(within(row).getByText("Git not found")).toBeDefined();
+    expect(row.querySelector(".lucide-hard-drive")).not.toBeNull();
+    expect(row.querySelector(".lucide-cloud")).toBeNull();
+  });
+
+  it("renders an unresolved repo lookup as neutral, with no guessed local or remote glyph", async () => {
+    // The attention item's repoId (2) has no matching entry in `repos.data`
+    // (the repo dropped out of the list between fetches, here represented
+    // by a DIFFERENT repo, id 1, still being present so the screen is not
+    // in its empty-library state) - the row falls back to the backend's own
+    // detail string but must not guess a provenance for it (the old
+    // behaviour unconditionally guessed "remote", Codex review finding 2,
+    // confirmed).
+    renderScreen(
+      [repo({ id: 1, localName: "other-repo" })],
+      summary({
+        attentionCount: 1,
+        attention: [summaryItem({ repoId: 2, localName: "vanished-repo", detail: "git.auth_failed" })],
+      }),
+    );
+    await screen.findByText("vanished-repo");
+    const row = screen.getByText("vanished-repo").closest("li") as HTMLElement;
+
+    expect(within(row).getByText("git.auth_failed")).toBeDefined();
+    expect(row.querySelector(".lucide-hard-drive")).toBeNull();
+    expect(row.querySelector(".lucide-cloud")).toBeNull();
+  });
+
+  it("still classifies the three real fetch/network/auth codes as REMOTE", async () => {
+    renderScreen(
+      [repo({ id: 1, localName: "offline-repo", lastErrorCode: "net.offline" })],
+      summary({
+        attentionCount: 1,
+        attention: [summaryItem({ repoId: 1, localName: "offline-repo", detail: "net.offline" })],
+      }),
+    );
+    await screen.findByText("offline-repo");
+    const row = screen.getByText("offline-repo").closest("li") as HTMLElement;
+
+    expect(within(row).getByText("Offline")).toBeDefined();
+    expect(row.querySelector(".lucide-cloud")).not.toBeNull();
+    expect(row.querySelector(".lucide-hard-drive")).toBeNull();
   });
 });

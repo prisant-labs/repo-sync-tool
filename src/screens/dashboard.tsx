@@ -110,8 +110,39 @@ export function DashboardScreen({
    * scope for this `src/`-only slice per the shell-crate chokepoint. It
    * stays a GLOBAL count everywhere, and the one place it is shown (the
    * "Under watch" hint) says so explicitly rather than silently sitting
-   * under a scoped headline number - seeing "40 in sync" under a headline
-   * of "5" (a 5-repo group) would read as incoherent otherwise.
+   * under a scoped headline number - seeing "40 checked, no change" under a
+   * headline of "5" (a 5-repo group) would read as incoherent otherwise.
+   *
+   * WORDING (Codex adversarial review of PR #79, finding 1, confirmed):
+   * `noChangeCount` does NOT mean "currently in sync." Reading
+   * `summary_today`'s `classify_row` (`summary.rs`): a successful "check" or
+   * "fetch" action ALWAYS lands in the no-change bucket regardless of the
+   * resulting ahead/behind counts, and a "skipped" activity row does too. A
+   * repo that was fetched today, remains clean, but is now 40 commits
+   * behind is counted here - it is not "in sync," it is behind and simply
+   * was not touched today. The label below says only what is true:
+   * "checked, no change," never "in sync." The same reasoning applies to
+   * the All-clear callout beneath the tiles: the attention population
+   * deliberately excludes a clean-but-behind repo
+   * (`attention_excludes_a_repo_that_is_only_behind`), so an attention-free
+   * group can still contain repos that are meaningfully behind, and the
+   * callout must not claim "in sync" for them either - it states only the
+   * backend's own predicate, "No dirty or failed repositories."
+   *
+   * SCOPE LABELING (Codex adversarial review of PR #79, finding 3,
+   * confirmed): every scoped number below is keyed on `activeGroupId`, not
+   * on `activeGroup` (the resolved `GroupSummary` object) - `activeGroup`
+   * can be `null` while `activeGroupId` is still set, whenever `groups`
+   * (an independent async read, `AppShell`'s `useGroups`) has not yet
+   * caught up (still loading, or momentarily stale). Gating the scope
+   * caption, the "(all repos)" qualifier, or the All-clear wording on
+   * `activeGroup` instead would let the numbers stay scoped while every
+   * visible indicator saying so silently vanished - scoped numbers with
+   * unscoped labeling, exactly the class of defect this file exists to
+   * avoid. Every label below therefore branches on `activeGroupId !== null`
+   * first, and only prefers `activeGroup`'s name when it happens to be
+   * resolved, falling back to a degraded but still honest "a group" /
+   * "this group" phrasing otherwise.
    */
   const scopedCount = useCallback(
     (items: SummaryItem[]) => (activeGroupId === null ? items.length : items.filter((it) => inActiveGroup(it.repoId)).length),
@@ -172,13 +203,28 @@ export function DashboardScreen({
 
             return (
               <div className="flex flex-col gap-3">
-                {activeGroup && (
+                {activeGroupId !== null && (
                   <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                    <span
-                      className={cn("size-2 shrink-0 rounded-full", activeGroup.color === null && "bg-muted-foreground/50")}
-                      style={activeGroup.color ? { backgroundColor: activeGroup.color } : undefined}
-                    />
-                    Scoped to {activeGroup.name}
+                    {activeGroup ? (
+                      <>
+                        <span
+                          className={cn(
+                            "size-2 shrink-0 rounded-full",
+                            activeGroup.color === null && "bg-muted-foreground/50",
+                          )}
+                          style={activeGroup.color ? { backgroundColor: activeGroup.color } : undefined}
+                        />
+                        Scoped to {activeGroup.name}
+                      </>
+                    ) : (
+                      // The group list has not caught up with `activeGroupId` yet
+                      // (still loading, or momentarily stale) - the numbers below
+                      // are still correctly scoped (they key on `activeGroupId`
+                      // alone), so this degraded indicator says so rather than
+                      // silently disappearing and leaving scoped numbers looking
+                      // like global ones (Codex review finding 3, confirmed).
+                      "Scoped to a group"
+                    )}
                   </div>
                 )}
                 <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -193,7 +239,11 @@ export function DashboardScreen({
                   <Tile
                     label="Under watch"
                     value={underWatchCount ?? "-"}
-                    hint={activeGroup ? `${s.noChangeCount} in sync (all repos)` : `${s.noChangeCount} in sync`}
+                    hint={
+                      activeGroupId !== null
+                        ? `${s.noChangeCount} checked, no change (all repos)`
+                        : `${s.noChangeCount} checked, no change`
+                    }
                     onClick={onOpenRepos}
                   />
                   {/*
@@ -235,9 +285,11 @@ export function DashboardScreen({
                       <AllClearState
                         title="All clear"
                         description={
-                          activeGroup
-                            ? `Every repo in ${activeGroup.name} is in sync or intentionally paused.`
-                            : "Every watched repo is in sync or intentionally paused."
+                          activeGroupId === null
+                            ? "No dirty or failed repositories."
+                            : activeGroup
+                              ? `No dirty or failed repositories in ${activeGroup.name}.`
+                              : "No dirty or failed repositories in this group."
                         }
                       />
                     </CardContent>
@@ -318,9 +370,15 @@ function Tile({
   );
 }
 
-/** One reason a row is showing, tagged local or remote (see `attentionReasons`). */
+/**
+ * One reason a row is showing. `category` is the row's PROVENANCE glyph
+ * grouping (see `AttentionRow`) - "local" and "remote" get a `HardDrive`/
+ * `Cloud` marker, "neutral" gets none, because a guessed provenance is worse
+ * than admitting the code is not one this file has been taught (see
+ * `classifyErrorCode`).
+ */
 interface Reason {
-  category: "local" | "remote";
+  category: "local" | "remote" | "neutral";
   icon: typeof AlertTriangle;
   label: string;
   tone: string;
@@ -328,9 +386,49 @@ interface Reason {
 }
 
 /**
- * Short human labels for the frozen failure codes (mirrors
- * `checkFailureMessage`'s own switch, `lib/status.ts`). The row needs a
- * WORD, not `checkFailureMessage`'s full sentence, which rides the `title`
+ * Classify a `lastErrorCode` by provenance, from the STABLE WIRE CODE alone -
+ * never guessed from context (Codex adversarial review of PR #79, finding 2,
+ * confirmed). Verified against every write path that persists
+ * `repo_local_state.last_error_code`:
+ *
+ * - REMOTE (network / fetch / auth): `git.auth_failed`, `net.offline`,
+ *   `git.fetch_failed` - the only three codes a soft fetch failure can
+ *   produce (`repo.rs`'s `check_now_inner`, step 5's `why` match) or the
+ *   scheduler ever writes (`policy::status_error_code`, matched from
+ *   `scheduler.rs`'s `DbOutcomeWriter::record`).
+ * - LOCAL (filesystem / local git mechanics, never touches the network):
+ *   `git.not_a_repo` and `git.not_found`, written by `check_now`'s
+ *   `record_hard_failure_code` (`repo.rs`) when the working directory is
+ *   gone, is no longer a valid git repository, or the git executable itself
+ *   cannot be found. `check_now`'s own doc comment names three failure
+ *   modes - "git missing, the path gone, the directory no longer a working
+ *   tree" - and the last two collapse onto the single `git.not_a_repo` code:
+ *   `git/inspect.rs`'s `inspect` maps EVERY `Repository::open` failure to
+ *   `AppError::NotARepo` regardless of whether the path is missing or merely
+ *   not a repository, so this file cannot (and does not need to) tell those
+ *   two apart any further than the backend already does. Also local:
+ *   `git.ff_not_possible` and `git.command_failed`, written by
+ *   `update_now`'s fast-forward failure classifier (`repo.rs`, the
+ *   `PullClass` match) for a local git-mechanics problem - a diverged branch
+ *   or a non-fetch git invocation failure - that never touched the network
+ *   either.
+ * - Anything else renders NEUTRAL: a taxonomy entry this list has not been
+ *   taught, or one that should never reach this field at all. No provenance
+ *   glyph, rather than a guessed one.
+ */
+const REMOTE_ERROR_CODES = new Set(["git.auth_failed", "net.offline", "git.fetch_failed"]);
+const LOCAL_ERROR_CODES = new Set(["git.not_a_repo", "git.not_found", "git.ff_not_possible", "git.command_failed"]);
+
+function classifyErrorCode(code: string): "local" | "remote" | "neutral" {
+  if (REMOTE_ERROR_CODES.has(code)) return "remote";
+  if (LOCAL_ERROR_CODES.has(code)) return "local";
+  return "neutral";
+}
+
+/**
+ * Short human labels for the failure codes this row can show (mirrors
+ * `checkFailureMessage`'s own switch, `lib/status.ts`, for the three remote
+ * ones). The row needs a WORD, not a full sentence, which rides the `title`
  * tooltip instead - the same short-label-plus-tooltip idiom the Folder
  * column and Latest release section already use elsewhere in the app.
  */
@@ -340,19 +438,53 @@ function failureLabel(code: string): string {
       return "Auth failed";
     case "net.offline":
       return "Offline";
+    case "git.not_a_repo":
+      return "Not a repository";
+    case "git.not_found":
+      return "Git not found";
+    case "git.ff_not_possible":
+      return "Can't fast-forward";
+    case "git.command_failed":
+      return "Git command failed";
     default:
       return "Check failed";
   }
 }
 
 /**
+ * Full-sentence tooltip for a LOCAL or NEUTRAL failure code. Deliberately
+ * separate from `checkFailureMessage` (`lib/status.ts`), which is scoped by
+ * its own doc comment to "the frozen operational set the backend produces on
+ * a non-zero fetch" - reusing it here would tell the user "the fetch failed"
+ * for a failure that never reached the network, the same class of defect
+ * this function exists to avoid.
+ */
+function localFailureMessage(code: string): string {
+  switch (code) {
+    case "git.not_a_repo":
+      return "RepoSync could not open this folder as a git repository. It may have been moved, renamed, or had its .git directory removed.";
+    case "git.not_found":
+      return "RepoSync could not find the git executable. Check the git executable path in Settings.";
+    case "git.ff_not_possible":
+      return "The local branch has diverged from its upstream and cannot fast-forward automatically. See the repo's detail panel.";
+    case "git.command_failed":
+      return "A local git command failed. See Activity for the exact command and output.";
+    default:
+      return "See Activity for details.";
+  }
+}
+
+/**
  * WHY a repo is on the attention list (N6 Part B, coverage-matrix.md section
- * 5 REDESIGN #13; jp's 08-26 ask): local causes (uncommitted changes) versus
- * remote ones (a failed fetch, being behind, open PRs). `is_dirty` and
- * `last_error_code` are the same `repo_local_state` columns the backend's own
- * attention query reads (`summary.rs`), so this reproduces exactly which
- * cause(s) apply for a repo already known to be on the list - it does not
- * decide LIST MEMBERSHIP, only narrates it.
+ * 5 REDESIGN #13; jp's 08-26 ask): a local cause (uncommitted changes), a
+ * remote one (a failed fetch, being behind, open PRs), or - for a
+ * `lastErrorCode` this file has not been taught, or an unresolved repo
+ * lookup - a neutral one with no provenance glyph, rather than a guessed
+ * one (`classifyErrorCode`). `is_dirty` and `last_error_code` are the same
+ * `repo_local_state` columns the backend's own attention query reads
+ * (`summary.rs`), so this reproduces exactly which cause(s) apply for a
+ * repo already known to be on the list - it does not decide LIST
+ * MEMBERSHIP, only narrates it.
  *
  * `behindCount` and `openPrCount` are not attention causes on their own (a
  * repo that is only behind is deliberately excluded, see `summary.rs`'s
@@ -366,19 +498,26 @@ function attentionReasons(repo: RepoSummary | undefined, fallbackDetail: string 
     reasons.push({ category: "local", icon: AlertTriangle, label: "Uncommitted changes", tone: STATUS_STYLE.dirty.text });
   }
   if (repo?.lastErrorCode) {
+    const code = repo.lastErrorCode;
+    const category = classifyErrorCode(code);
     reasons.push({
-      category: "remote",
+      category,
       icon: XCircle,
-      label: failureLabel(repo.lastErrorCode),
+      label: failureLabel(code),
       tone: STATUS_STYLE.failed.text,
-      title: checkFailureMessage(repo.lastErrorCode),
+      // `checkFailureMessage` is scoped to the three REMOTE codes only (its
+      // own doc comment); a local or neutral code gets its own sentence
+      // instead, never the fetch-specific one.
+      title: category === "remote" ? checkFailureMessage(code) : localFailureMessage(code),
     });
   }
-  // The repo dropped out of `repos.data` between fetches (the lookup missed):
-  // fall back to the backend's own detail string rather than showing nothing,
-  // but do not guess which category it belongs to.
+  // The repo dropped out of `repos.data` between fetches (the lookup
+  // missed): fall back to the backend's own detail string rather than
+  // showing nothing, but this is an UNRESOLVED lookup, not a known cause -
+  // it renders neutral (no local/remote glyph) rather than guessing "remote"
+  // the way this branch used to (Codex review finding 2, confirmed).
   if (reasons.length === 0 && fallbackDetail) {
-    reasons.push({ category: "remote", icon: XCircle, label: fallbackDetail, tone: STATUS_STYLE.failed.text });
+    reasons.push({ category: "neutral", icon: XCircle, label: fallbackDetail, tone: STATUS_STYLE.failed.text });
   }
   if (repo && (repo.behindCount ?? 0) > 0) {
     reasons.push({
@@ -425,6 +564,7 @@ function AttentionRow({
   const reasons = attentionReasons(repo, item.detail);
   const local = reasons.filter((r) => r.category === "local");
   const remote = reasons.filter((r) => r.category === "remote");
+  const neutral = reasons.filter((r) => r.category === "neutral");
 
   return (
     <li>
@@ -445,7 +585,10 @@ function AttentionRow({
                 status-coloured icon+word vocabulary (`STATUS_ICON`,
                 `lib/status.ts` section 9's "one lucide icon per state"
                 constraint - HardDrive/Cloud are never substituted for it, only
-                added alongside it).
+                added alongside it). A NEUTRAL reason (an error code this file
+                has not been taught, or an unresolved repo lookup) gets
+                NEITHER glyph - a guessed provenance is worse than admitting
+                the code is unclassified (Codex review finding 2, confirmed).
               */}
               {local.length > 0 && (
                 <span className="inline-flex items-center gap-1.5">
@@ -459,6 +602,13 @@ function AttentionRow({
                 <span className="inline-flex items-center gap-1.5">
                   <Cloud aria-hidden className="size-3 shrink-0 text-muted-foreground" />
                   {remote.map((r) => (
+                    <ReasonPill key={r.label} {...r} />
+                  ))}
+                </span>
+              )}
+              {neutral.length > 0 && (
+                <span className="inline-flex items-center gap-1.5">
+                  {neutral.map((r) => (
                     <ReasonPill key={r.label} {...r} />
                   ))}
                 </span>
