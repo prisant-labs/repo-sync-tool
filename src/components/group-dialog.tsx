@@ -49,6 +49,11 @@ function isDuplicateNameError(e: unknown): boolean {
  * one atomic backend write. On success it toasts and calls `onSaved` so the caller
  * can refetch the group list.
  */
+// Single instance, driven entirely by `open`/`mode`/`group` props from its one
+// call site (`groups-nav.tsx`), so a fixed literal id is safe (BL-NI-95; same
+// reasoning as `AddReposDialog`'s `ADD_REPOS_DIALOG_TITLE_ID`).
+const GROUP_DIALOG_TITLE_ID = "group-dialog-title";
+
 export function GroupDialog({
   open,
   mode,
@@ -120,9 +125,11 @@ export function GroupDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose}>
+    <Dialog open={open} onClose={onClose} aria-labelledby={GROUP_DIALOG_TITLE_ID}>
       <div className="border-b border-border px-5 py-4">
-        <h2 className="text-base font-semibold">{mode === "create" ? "New group" : "Edit group"}</h2>
+        <h2 id={GROUP_DIALOG_TITLE_ID} className="text-base font-semibold">
+          {mode === "create" ? "New group" : "Edit group"}
+        </h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
           {mode === "create"
             ? "Name a group and pick a color to organize your repositories."

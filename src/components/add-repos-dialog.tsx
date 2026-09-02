@@ -10,6 +10,13 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
+// One instance is ever mounted at once (`AppShell` renders only one screen at
+// a time, and each of the two call sites - `screens/repos.tsx`,
+// `screens/dashboard.tsx` - owns its own `open` state), so a fixed literal id
+// is safe, the same reasoning `repo-detail.tsx`'s `REPO_DETAIL_TITLE_ID`
+// documents (BL-NI-95).
+const ADD_REPOS_DIALOG_TITLE_ID = "add-repos-dialog-title";
+
 export function AddReposDialog({
   open,
   onClose,
@@ -119,9 +126,11 @@ export function AddReposDialog({
   const adding = busy === "add";
 
   return (
-    <Dialog open={open} onClose={close}>
+    <Dialog open={open} onClose={close} aria-labelledby={ADD_REPOS_DIALOG_TITLE_ID}>
       <div className="border-b border-border px-5 py-4">
-        <h2 className="text-base font-semibold">Add repositories</h2>
+        <h2 id={ADD_REPOS_DIALOG_TITLE_ID} className="text-base font-semibold">
+          Add repositories
+        </h2>
         <p className="mt-0.5 text-sm text-muted-foreground">
           Browse for a folder or type a path, then scan it for git repositories or add a single repository directly.
         </p>

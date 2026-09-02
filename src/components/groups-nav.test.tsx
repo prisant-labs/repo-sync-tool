@@ -78,6 +78,9 @@ describe("GroupsNav", () => {
     await user.click(screen.getByRole("button", { name: "New group" }));
 
     expect(await screen.findByRole("heading", { name: "New group" })).toBeDefined();
+    // BL-NI-95: the dialog names itself from that same visible heading via
+    // aria-labelledby, mirroring the Drawer fix from PR #77.
+    expect(screen.getByRole("dialog", { name: "New group" })).toBeDefined();
   });
 
   it("shows the empty state and no rows when there are no groups", () => {
@@ -136,6 +139,8 @@ describe("GroupsNav", () => {
 
     expect(await screen.findByRole("heading", { name: "Edit group" })).toBeDefined();
     expect(screen.getByDisplayValue("Work")).toBeDefined();
+    // BL-NI-95: same aria-labelledby wiring in the dialog's other mode.
+    expect(screen.getByRole("dialog", { name: "Edit group" })).toBeDefined();
   });
 
   it("Delete shows an inline 'Delete?' confirm, not a modal; Cancel dismisses it without calling groupDelete", async () => {

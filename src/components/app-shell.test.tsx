@@ -234,3 +234,51 @@ describe("AppShell sidebar (N5)", () => {
     expect(await screen.findByRole("button", { name: "Clear Work filter" })).toBeDefined();
   });
 });
+
+/**
+ * Q1 -> 1A (ui-delivery-plan.md decision queue, N7 consistency sweep): the
+ * database-recovery banner moved off a full-fill `bg-status-dirty/12` region
+ * onto a thin left-edge stripe on a neutral surface. This banner had ZERO
+ * jsdom coverage before N7 (`mockShellCommands` always returned
+ * `recovered: false`), so these tests pin the wording and dismissal
+ * behaviour the restyle must not touch; the visual stripe treatment itself
+ * (computed background/border-left colours, both themes) is real-browser
+ * Playwright evidence, not jsdom's job (AGENTS.md: assert on meaning, not
+ * markup or styling).
+ */
+describe("AppShell database recovery banner (N7)", () => {
+  it("shows the recovery notice with the backup path, and dismisses on click", async () => {
+    mockShellCommands();
+    mockCommand(commands, "dbRecoveryNotice", async () =>
+      ok({ recovered: true, backupPath: "C:\\Users\\test\\AppData\\Local\\RepoSync\\reposync.db.bak" }),
+    );
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const user = userEvent.setup();
+
+    expect(await screen.findByText("Database was reset after a failed migration")).toBeDefined();
+    expect(screen.getByText(/could not migrate your existing database/i)).toBeDefined();
+    expect(screen.getByText("C:\\Users\\test\\AppData\\Local\\RepoSync\\reposync.db.bak")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss database recovery notice" }));
+
+    expect(screen.queryByText("Database was reset after a failed migration")).toBeNull();
+  });
+
+  it("falls back to generic wording when no backup path was recorded", async () => {
+    mockShellCommands();
+    mockCommand(commands, "dbRecoveryNotice", async () => ok({ recovered: true, backupPath: null }));
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    expect(await screen.findByText(/preserved alongside it/i)).toBeDefined();
+  });
+
+  it("shows no banner at all when the database was not recovered", async () => {
+    mockShellCommands();
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    expect(screen.queryByText("Database was reset after a failed migration")).toBeNull();
+  });
+});

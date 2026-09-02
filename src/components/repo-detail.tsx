@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowDownToLine,
+  Ban,
   CheckCircle2,
   ChevronRight,
   Clock,
@@ -23,7 +24,6 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Terminal,
-  Trash2,
   X,
   XCircle,
 } from "lucide-react";
@@ -1258,6 +1258,14 @@ function ActivityRow({ row, onClick }: { row: ActivityRecord; onClick: () => voi
  * first click, not behind it, because this is the one action in the drawer that
  * cannot be undone. Keyed on the repo id at the call site so switching repos
  * disarms a half-armed confirm.
+ *
+ * Icon (ledger B14, ratified 08-27 log decision 14): a `Ban` no-entry mark,
+ * never a trash can, because nothing on disk is deleted - only RepoSync's own
+ * tracking data. Verified during the N7 consistency sweep that this section
+ * had shipped with `Trash2` (a real trash can) on all three of its icons,
+ * contradicting the ratification; fixed here rather than left as a silent gap.
+ * `groups-nav.tsx`'s own delete keeps `Trash2` deliberately - that action
+ * really does delete the group record, so the same idiom does not apply.
  */
 function RemoveSection({
   name,
@@ -1290,7 +1298,7 @@ function RemoveSection({
 
   return (
     <section>
-      <SectionLabel icon={Trash2}>Remove</SectionLabel>
+      <SectionLabel icon={Ban}>Remove</SectionLabel>
       <div className="rounded-md border border-border px-3 py-2.5">
         <p className="text-xs text-foreground/80">
           Stops tracking <span className="font-semibold">{name}</span> and deletes its RepoSync
@@ -1310,7 +1318,7 @@ function RemoveSection({
               disabled={isBusy}
               onClick={onRemove}
             >
-              <Trash2 className={removing ? "animate-pulse" : undefined} /> Remove
+              <Ban className={removing ? "animate-pulse" : undefined} /> Remove
             </Button>
             <Button variant="ghost" size="sm" disabled={isBusy} onClick={() => setConfirming(false)}>
               Cancel
@@ -1325,7 +1333,7 @@ function RemoveSection({
             disabled={isBusy}
             onClick={() => setConfirming(true)}
           >
-            <Trash2 /> Remove from RepoSync
+            <Ban /> Remove from RepoSync
           </Button>
         )}
       </div>

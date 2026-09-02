@@ -13,10 +13,23 @@ export function Dialog({
   open,
   onClose,
   children,
+  "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
 }: {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  /**
+   * Accessible name for the `role="dialog"` element, mirroring `Drawer`'s own
+   * pair of props (BL-NI-95, found while fixing PR #77's Codex adversarial
+   * review finding 3 on `Drawer`): `aria-labelledby` when the content already
+   * renders a visible heading (preferred, so the name can never drift from
+   * what is on screen - see `AddReposDialog` and `GroupDialog`), `aria-label`
+   * otherwise. Neither is required, but without one a screen reader
+   * announces every dialog identically ("dialog").
+   */
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const onKeyDown = useModalA11y(open, onClose, containerRef);
@@ -29,6 +42,8 @@ export function Dialog({
       ref={containerRef}
       role="dialog"
       aria-modal="true"
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
       aria-hidden={!open || undefined}
       inert={!open}
       tabIndex={-1}
