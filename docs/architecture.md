@@ -142,6 +142,9 @@ CI gates (the boundary checkpoints), required green before any merge:
 - Dependency-hygiene gate: `cargo tree -p reposync-core` shows no `tauri`
 - Build matrix: Windows + macOS both build and bundle
 - `git` pinned in CI so porcelain output stays byte-stable for the fixture harness
+- Binary smoke gate (Windows): CI launches the built `reposync.exe` against a scratch data directory and fails unless the process is still alive, its log file is non-empty, and that log carries the startup line
+
+The smoke gate is the only gate that RUNS the product rather than reading it. Every other one reaches a library function, a rendered component, or source text, and none of them can reach `reposync_lib::run`, which has exactly one caller: the app's own startup. That gap is what let a panic on the single startup path survive 19 days of green gates and two installers, and closing it is [BL-NI-88 (no gate ever launches the built binary)](backlog.md), ruled a blocking CI gate on 2026-09-04. It is a STEP of the existing Windows `build` job rather than a job of its own, because branch protection requires four named checks and a new job would not be one of them. The load-bearing assertion is that the log is NON-EMPTY, not that it exists: the release profile sets `panic = "abort"`, which skips the log flush, so a zero-byte log is exactly what a crashed launch leaves behind.
 
 Source: [EXECUTION.md](../EXECUTION.md); [v1-architecture-and-decisions.md Section 2](internal/v1-architecture-and-decisions.md).
 

@@ -46,6 +46,7 @@ Anything that spends money, asserts a legal identity, publishes to the world, or
 - Dependency hygiene gate: `cargo tree -p reposync-core` must show no `tauri` dependency. `reposync-core` stays Tauri-free.
 - Build matrix: **Windows** (the real GA bar: launches + human-validated + signed-or-documented) and **macOS** (compiles + bundles in CI only, no human-validated or signed clause, until real Mac access exists).
 - Git is pinned in CI so `git` porcelain output stays stable for the fixture harness.
+- Binary smoke gate (Windows): CI launches the built `reposync.exe` with a scratch data directory and fails unless it is still alive, with a non-empty log carrying its startup line. Ruled a blocking CI gate (not a documented pre-release step) on 2026-09-04; see [BL-NI-88 (no gate ever launches the built binary)](docs/backlog.md). It runs as a step of the `build` job, so it blocks under the existing required check instead of adding a new one that branch protection would not require.
 
 ## Standing rules
 
