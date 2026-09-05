@@ -22,6 +22,51 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   Existing installs keep the previous behavior on upgrade. Tray **Quit** always
   exits either way.
 
+<!-- DRAFT (Claude, PRs #72-#80 / N1-N7 UI finalization): the entries below
+     are a first pass for the maintainer to edit before release. Release
+     note wording is human-owned. -->
+- **The Repos and Activity screens are now built as proper tables.** Repos
+  keeps its header and the Repository column in view while the rest of a
+  wide row scrolls, and gains Branch (showing "detached" when a checkout
+  isn't on any branch), Folder, and separate Ahead/Behind columns; group
+  membership is now its own column instead of chips under the repository
+  name, and the small per-row "lag" bar is gone from the list (it still
+  appears in a repository's own detail panel). Activity gets the same
+  treatment: Time, Repository, Action, Outcome, and Summary are now their
+  own labeled columns, replacing a dense row where the repository name used
+  to be the smallest, grayest thing in it.
+- **The sidebar is reordered: Dashboard, Activity, Repos, then Settings
+  pinned at the bottom.** Groups now nest underneath Repos instead of
+  sitting as their own list. On the Repos screen, the search box, the
+  status chips, and the active group filter now live together in one
+  toolbar pinned to the top of the screen, replacing a separate "Filtered
+  to X" banner that used to sit below it.
+- **The repository detail panel is wider and organized into three tabs:
+  Overview, Activity, and Settings.** Group membership shows as removable
+  pills with an inline control for adding the repository to another group.
+  The new Activity tab lists that one repository's own recent history and
+  opens the same full receipt available from the main Activity screen,
+  without leaving the panel.
+- **The dashboard's four tiles and its "Needs attention" list are more
+  scoped and more explicit.** Only "Under watch" is clickable (it opens
+  Repos); "Need attention," "Updated today," and "New releases" stay
+  informational for now, since the Repos screen has no way yet to filter by
+  what they would represent. When a group is selected in the sidebar, those
+  three tiles and the attention list below them narrow to that group; the
+  "checked, no change" figure next to "Under watch" always counts every
+  repository and says so, since narrowing it correctly would need a change
+  RepoSync does not have yet. Each row in "Needs attention" now states why
+  it is there - uncommitted local changes, a failed check, how far behind -
+  with an icon marking whether the cause is local (your machine) or remote
+  (GitHub); a cause RepoSync does not recognize shows with no guessed icon
+  at all.
+- **Warning banners and the Diagnostics panel have a more consistent
+  look.** The database-recovery notice and the Settings -> Diagnostics
+  warnings list moved from a tinted background to a left-edge accent
+  stripe, and Diagnostics rows now use the same label-and-value layout as
+  the repository detail panel. What they say and when they appear is
+  unchanged.
+
 ### Added
 - **Activity can be filtered by action and outcome.** Two rows of chips above the
   list narrow it to checks or updates, and to successes or failures, so finding
@@ -64,6 +109,26 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   variables adjust it: `REPOSYNC_LOG=debug` for more detail while reproducing a
   problem, and `REPOSYNC_LOG_DAYS` / `REPOSYNC_LOG_MAX_MB` if you need a longer
   history or a smaller footprint.
+
+<!-- DRAFT (Claude, PRs #72-#80 / N1-N7 UI finalization): the entries below
+     are a first pass for the maintainer to edit before release. Release
+     note wording is human-owned. -->
+- **The Repos table shows each GitHub repository's star and fork counts.**
+  RepoSync has fetched this metadata for a while; it is only now displayed,
+  as two new columns. A real zero renders as "0"; a dash means RepoSync has
+  not refreshed that repository yet, or it isn't hosted on GitHub. License,
+  size, and visibility are fetched the same way but are not shown anywhere
+  in the app yet.
+- **A "Check all" button on the Repos toolbar checks every enabled
+  repository at once.** It was previously reachable only from the tray
+  icon's menu. It reports what actually happened rather than a blanket
+  success message: every repository checked, how many failed (with
+  Activity as the place to see why), or that nothing produced a result at
+  all.
+- **The repository detail panel can now also open a project's homepage,
+  alongside its remote's web page.** When GitHub reports a homepage URL for
+  a repository, a second "Open in" button next to the existing remote-page
+  button opens it in your browser.
 
 ### Fixed
 - **A problem at GitHub no longer reports itself as a problem with your internet.**
@@ -156,6 +221,34 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 - **A momentarily busy database is no longer reported as a permanent failure.**
   SQLite lock contention is now classified as retryable, so it surfaces as "the
   database is busy, retry" instead of a hard error with no useful next step.
+
+<!-- DRAFT (Claude, PRs #72-#80 / N1-N7 UI finalization): the entries below
+     are a first pass for the maintainer to edit before release. Release
+     note wording is human-owned. -->
+- **The "Under watch" tile no longer claims repositories are "in sync."**
+  A repository checked today that is only behind - which it can be by
+  design, since the default update mode never touches your working tree -
+  was being counted toward "in sync." The hint now reads "N checked, no
+  change." The "All clear" message under "Needs attention" is narrowed the
+  same way, to "No dirty or failed repositories," rather than a broader
+  claim that everything is in sync or intentionally paused.
+- **Opening a repository's details from the keyboard was unreliable in the
+  Repos list.** Each row doubled as one button-like control with a second,
+  independently clickable button (Check now) nested inside it, which
+  confuses assistive technology and made Enter and Space behave
+  inconsistently. There is now exactly one keyboard path into a
+  repository's detail panel: the arrow button at the end of the row.
+  Clicking anywhere else on the row with a mouse still opens it too.
+- **The Remove-repository icon no longer looks like a trash can.**
+  Removing a repository only stops RepoSync from tracking it; it does not
+  touch the folder or the git repository on disk, which the confirmation
+  text already said. The button and its confirmation used a trash-can icon
+  that suggested otherwise. It is now a plain "no entry" mark (a circle
+  with a line through it), consistent with what the action actually does.
+- **The repository detail panel, the activity receipt, and the Add repos /
+  New group dialogs now identify themselves to screen readers.** None of
+  the four exposed an accessible name before, so a screen reader announced
+  each one only as "dialog," with no indication of which one.
 
 ### Security
 - **Captured git output is now bounded.** Each stored command, stdout, and
