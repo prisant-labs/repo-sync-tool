@@ -83,10 +83,10 @@
       list. This is the hang budget, and the phase that makes the gate mean anything: a
       deadlock in the setup closure leaves a process that is alive, has written its
       startup line, and will never write this one. Thirty seconds is generous against a
-      path that completes in about half a second locally and 2.55 s on a GitHub
-      windows-latest runner, because the cost of being wrong here is a flaky required
-      check, and because polling means a healthy run pays none of it. The runner being
-      five times slower than the developer machine is exactly why the headroom is large.
+      path that completes in 0.5 to 3 s locally and 2.55 s on a GitHub windows-latest
+      runner, because the cost of being wrong here is a flaky required check, and
+      because polling means a healthy run pays none of it. That the observed spread is
+      already six-fold on one machine is exactly why the headroom is large.
 
       Phase 3 - keep polling liveness for SettleSeconds (default 10) after readiness, then
       assert the process is still alive. Startup is complete by then, so this covers a
@@ -129,7 +129,22 @@ $StartupLine = 'RepoSync starting'
 # can liveness: a process that DEADLOCKS in any of that work stays alive forever, and a
 # gate that only asks "is it running" passes it. The absence of this line from a process
 # that is still running is the only way a startup hang is visible from outside.
+#
+# It is also CONDITIONAL. The app emits it only when windows::init reports a window the
+# user can actually see, and logs $WindowFailedEvent below instead when it does not. So
+# its absence covers two defects, not one: a startup that never finished, and a startup
+# that finished with nothing on screen. The app itself is unchanged in both cases - it
+# keeps running exactly as it always has - and this gate is what turns that silence into
+# a red check.
 $ReadyEvent = 'app.startup_completed'
+
+# The event the app logs INSTEAD of the readiness marker when startup finished but left
+# no usable main window. The gate needs no separate assertion for it - the readiness
+# marker is already absent, which already fails - but it changes what the failure MEANS,
+# and a maintainer reading a red CI log should not have to guess. Without this the one
+# message would have to cover both a deadlock and a window that never appeared, and
+# "never became ready" reads as a hang.
+$WindowFailedEvent = 'app.window_setup_failed'
 
 # Daily rolling files named LOG_FILE_PREFIX.YYYY-MM-DD.LOG_FILE_SUFFIX
 # (crates/reposync-core/src/logging.rs), written into logs/ under the data dir.
@@ -291,6 +306,7 @@ Write-Host "repository root : $repoRoot"
 Write-Host "binary          : $ExePath"
 Write-Host "startup line    : '$StartupLine'"
 Write-Host "readiness marker: event=$ReadyEvent"
+Write-Host "window failure  : event=$WindowFailedEvent"
 Write-Host "log file glob   : logs\$LogGlob"
 Write-Host "startup timeout : $StartupTimeoutSeconds s (polled every $PollMs ms)"
 Write-Host "ready timeout   : $ReadyTimeoutSeconds s after the startup line"
@@ -452,7 +468,19 @@ try {
         }
 
         if (-not $failed -and -not $sawReady) {
-            Write-Host "::error::Smoke gate: STARTED BUT NEVER BECAME READY. The app is STILL RUNNING $ReadyTimeoutSeconds s after writing its startup line, and never emitted event=$ReadyEvent. That marker is written after windows::init returns, so the app is wedged somewhere in the setup closure - the window build, the database open and migrations, the activity sweep, the settings read, the autostart reconcile, the scheduler spawn, the tray build, or the window lifecycle. This is a startup HANG: nothing crashed, so a liveness-only check would have passed it. The log below is everything it managed to write."
+            # Two different defects reach this point, and they want different words. The
+            # app either never got to the end of startup (a hang), or it got there and
+            # deliberately withheld the marker because the window it produced was not
+            # usable. The log says which, so read it rather than guessing.
+            $logs = @(Get-LogFiles -LogDir $logDir)
+            $tail = if ($logs.Count -gt 0) { Read-LogText -Path $logs[0].FullName } else { '' }
+
+            if ($tail.Contains($WindowFailedEvent)) {
+                Write-Host "::error::Smoke gate: STARTED BUT THE WINDOW NEVER CAME UP. The app finished its startup path and then logged event=$WindowFailedEvent instead of event=$ReadyEvent, which it does when there is no usable main window - either no 'main' window at all, or a launch that could not show the one it had. The process is alive and nothing crashed, so it would have passed a liveness check while presenting the user with nothing on screen. This is NOT a hang; the log line below names which part failed and carries the OS error."
+            }
+            else {
+                Write-Host "::error::Smoke gate: STARTED BUT NEVER BECAME READY. The app is STILL RUNNING $ReadyTimeoutSeconds s after writing its startup line, and logged neither event=$ReadyEvent nor event=$WindowFailedEvent. Reaching the end of startup produces one or the other, so it never got there: it is wedged somewhere in the setup closure - the window build, the database open and migrations, the activity sweep, the settings read, the autostart reconcile, the scheduler spawn, the tray build, or the window lifecycle. This is a startup HANG. Nothing crashed, so a liveness-only check would have passed it. The log below is everything it managed to write."
+            }
             $failed = $true
         }
     }

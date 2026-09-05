@@ -858,36 +858,66 @@ pub fn run() {
                 // the close - even an autostart launch ends visible and quittable
                 // (finding 2). The window was created hidden (`visible(false)`) in setup
                 // (BL-NI-59), so it stays hidden until this shows it, avoiding a flash.
-                windows::init(&handle, tray_available, close_minimizes_to_tray_flag);
+                let window_startup =
+                    windows::init(&handle, tray_available, close_minimizes_to_tray_flag);
 
                 // The readiness marker the CI binary smoke gate asserts on (BL-NI-88 -
-                // no gate ever launches the built binary). ITS POSITION IS LOAD-BEARING,
-                // in both directions, so do not move it.
+                // no gate ever launches the built binary). It is CONDITIONAL, and its
+                // POSITION IS LOAD-BEARING in both directions. Both properties are the
+                // whole value of the line, so do not weaken either.
                 //
-                // Not earlier: everything above this line - the pool open and
+                // POSITION, not earlier: everything above this - the pool open and
                 // migrations, the activity sweep, the settings read, the autostart
                 // reconcile, the scheduler spawn, the tray, the window lifecycle - is
                 // startup work that can HANG rather than panic. A marker emitted above
                 // any of it would be written by a process that then deadlocks, and the
-                // gate would pass a build that never finishes starting. That gap is the
-                // whole reason this line exists: `logging::init` emits "RepoSync
-                // starting" before the Tauri builder even runs, so it proves only that
-                // logging came up, and a hung setup keeps the process alive, so a
-                // liveness check passes it too. This line is the only thing that can
-                // tell a healthy launch from a hung one from outside the process.
+                // gate would pass a build that never finishes starting. `logging::init`
+                // emits "RepoSync starting" before the Tauri builder even runs, so that
+                // line proves only that logging came up, and a hung setup keeps the
+                // process alive, so a liveness check passes it too. This is the only
+                // signal that separates a healthy launch from a hung one from outside.
                 //
-                // Not later either: the only work after it is the DETACHED auto-update
-                // check, which does network I/O. Gating readiness on that would let a
-                // slow or unreachable network fail CI for a perfectly healthy app.
+                // POSITION, not later: the only work after it is the DETACHED
+                // auto-update check, which does network I/O. Gating readiness on that
+                // would let a slow or unreachable network fail CI for a healthy app.
                 //
-                // So: after `windows::init` returns, before the update spawn. Moving it
-                // breaks `scripts/smoke-launch.ps1`, and in the earlier direction it
-                // breaks it SILENTLY - the gate stays green and stops meaning anything.
-                tracing::info!(
-                    event = reposync_core::logging::event::APP_STARTUP_COMPLETED,
-                    tray_available,
-                    "startup finished: state is managed, the tray is resolved, the window is wired"
-                );
+                // CONDITIONAL on the window the user actually got. `windows::init` used
+                // to swallow every window failure - a missing `main` window was a bare
+                // return, and show/hide/set_focus were all `let _ =` - so an app that
+                // came up with nothing on screen logged exactly what a perfect launch
+                // logged. Emitting readiness unconditionally would therefore have been
+                // green for a launch the user cannot see, which is the same false-green
+                // shape as the hang, one layer in. So the marker fires only when
+                // `WindowStartup::is_usable()` says a window came up, and the failure
+                // path emits an ERROR instead.
+                //
+                // What does NOT change is what the app DOES. Neither branch panics,
+                // exits, or alters the lifecycle: a window failure has never been fatal
+                // here, and making it fatal now could brick an install over a condition
+                // nobody can reproduce. This is observability only. CI goes red because
+                // the readiness marker is ABSENT, never because the app died.
+                //
+                // The rule for what counts as a usable window lives in
+                // `WindowStartup::is_usable`, not here, so it is stated once and unit
+                // tested without a Tauri runtime. Both branches log the whole outcome
+                // through `Debug`, so a reader gets the variant AND its detail: the OS
+                // error text on `ShowFailed`, and on a healthy launch the two cosmetic
+                // flags (`focus_failed`, `hide_failed`) that were judged not to block.
+                if window_startup.is_usable() {
+                    tracing::info!(
+                        event = reposync_core::logging::event::APP_STARTUP_COMPLETED,
+                        tray_available,
+                        window = ?window_startup,
+                        "startup finished: state is managed, the tray is resolved, the window is up"
+                    );
+                } else {
+                    tracing::error!(
+                        event = reposync_core::logging::event::APP_WINDOW_SETUP_FAILED,
+                        tray_available,
+                        window = ?window_startup,
+                        "startup finished with no usable main window; the app is running with nothing on screen"
+                    );
+                }
 
                 // E-18 auto-update: spawn the on-launch update check in the
                 // background, gated by the `auto_update_check` toggle AND the

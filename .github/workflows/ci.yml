@@ -283,9 +283,13 @@ jobs:
       # `[profile.release] panic = "abort"` a panic skips the log flush, so a zero-byte log
       # is precisely what a dead app leaves behind. The readiness marker catches a HANG,
       # which nothing else here can see - a process deadlocked in the setup closure stays
-      # alive and keeps its startup line, so liveness passes it. See the script header for
-      # the wait-interval reasoning and the failure-injection evidence in the PR that added
-      # it. What the gate does NOT yet prove is that the React root mounted (BL-NI-99).
+      # alive and keeps its startup line, so liveness passes it. The marker is also
+      # CONDITIONAL on the window being usable, so it catches a launch that finished with
+      # nothing on screen - the app logs `app.window_setup_failed` instead and keeps
+      # running, and CI fails on the ABSENT marker rather than on a dead process. See the
+      # script header for the wait-interval reasoning and the failure-injection evidence in
+      # the PR that added it. What the gate does NOT prove is that the React root mounted
+      # inside that window (BL-NI-99).
       #
       # Windows-only. The isolation mechanism (%LOCALAPPDATA%) and the liveness/terminate calls
       # are Windows-specific, and Windows is the platform carrying the human-validated GA bar;

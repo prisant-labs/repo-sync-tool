@@ -28,17 +28,83 @@
 
 use tauri::{AppHandle, Manager, WindowEvent};
 
+/// What [`init`] actually accomplished, reported back so the CALLER can decide what to
+/// log. `init` itself never decides that, and never changes what the app does.
+///
+/// This exists because every one of these outcomes used to be silent: a missing main
+/// window was a bare `return`, and `show`, `hide` and `set_focus` were all `let _ =`.
+/// The app behaved identically in each case and nothing recorded which had happened, so
+/// a launch that ended with no window on screen was indistinguishable in the log from a
+/// perfect one. That is a false green for the binary smoke gate (BL-NI-88 - no gate ever
+/// launches the built binary), which is why this is returned now rather than dropped.
+///
+/// What it deliberately does NOT do is change behavior. None of these conditions has
+/// ever been fatal, and making one fatal now would risk bricking an install over
+/// something nobody can reproduce. Every variant leaves the app running exactly as it
+/// runs today; only the log differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowStartup {
+    /// The lifecycle applied to a real window. The two flags record imperfections that
+    /// do NOT make the app unusable, so they are reported and do not block readiness.
+    Applied {
+        /// Whether this launch was meant to stay hidden in the tray.
+        start_hidden: bool,
+        /// `set_focus()` failed. The window is up, it just is not in front.
+        focus_failed: bool,
+        /// `hide()` failed on an autostart launch, so the window is VISIBLE when it
+        /// should have stayed in the tray. Wrong, and worth seeing in a log, but the
+        /// app is entirely usable, and it lands in precisely the state the no-tray
+        /// fallback in [`decide_window_lifecycle`] chooses on purpose.
+        hide_failed: bool,
+    },
+    /// There is no `main` window to apply the lifecycle to. The app is running with no
+    /// UI at all and no way to get one.
+    MainWindowMissing,
+    /// A launch that was supposed to show its window could not. The window is created
+    /// hidden (`visible(false)`, BL-NI-59), so a failed `show()` means the user started
+    /// the app and nothing appeared.
+    ShowFailed(String),
+}
+
+impl WindowStartup {
+    /// Whether this outcome left the user with a window they can actually use.
+    ///
+    /// The line between blocking and cosmetic is drawn at "can the person who just
+    /// launched this app see and use it":
+    ///
+    ///   * [`WindowStartup::MainWindowMissing`] and [`WindowStartup::ShowFailed`] both
+    ///     end with nothing on screen on a launch that was supposed to put something
+    ///     there. Not usable.
+    ///   * A failed `set_focus` leaves a visible window that is merely not in front,
+    ///     and focus is also the one operation a CI session can plausibly refuse for
+    ///     reasons that say nothing about the build. Cosmetic.
+    ///   * A failed `hide` on an autostart launch leaves the window VISIBLE. That is
+    ///     the wrong behavior, but it is MORE visibility rather than less, and it is
+    ///     the same end state [`decide_window_lifecycle`] deliberately chooses when
+    ///     there is no tray. Blocking on it would fail the gate for a condition the
+    ///     design already tolerates on purpose. Cosmetic.
+    ///
+    /// Pure, so the rule is unit-testable with no Tauri window or runtime.
+    pub fn is_usable(&self) -> bool {
+        matches!(self, WindowStartup::Applied { .. })
+    }
+}
+
 /// Reconcile the main window's initial visibility with how the app was launched and
 /// wire close-to-tray, gated on whether a system tray was successfully built
-/// (`tray_available`). Called once from `lib.rs` setup AFTER `tray::init`. A missing
-/// main window is a no-op.
+/// (`tray_available`). Called once from `lib.rs` setup AFTER `tray::init`.
+///
+/// Returns a [`WindowStartup`] describing what happened. Behavior is unchanged from
+/// when this returned `()`: a missing main window is still a no-op for the app, and a
+/// failed visibility call still never stops anything. The difference is that the caller
+/// can now SEE which of those occurred and withhold the startup readiness marker.
 pub fn init(
     app: &AppHandle,
     tray_available: bool,
     close_minimizes_to_tray: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) {
+) -> WindowStartup {
     let Some(window) = app.get_webview_window("main") else {
-        return;
+        return WindowStartup::MainWindowMissing;
     };
 
     let lifecycle =
@@ -48,11 +114,23 @@ pub fn init(
     // launch must explicitly show + focus it. Only an autostart launch WITH a tray to
     // restore from stays hidden; with no tray we always show, so an autostart launch
     // never ends up invisible with no way back (finding 2).
+    //
+    // The results are CAPTURED now rather than dropped. They still do not change what
+    // the app does - the close-to-tray wiring below runs exactly as it did before - but
+    // a `show` that failed is the difference between an app the user can see and one
+    // they cannot, and it used to leave no trace anywhere.
+    let mut focus_failed = false;
+    let mut hide_failed = false;
     if lifecycle.start_hidden {
-        let _ = window.hide();
+        hide_failed = window.hide().is_err();
     } else {
-        let _ = window.show();
-        let _ = window.set_focus();
+        if let Err(e) = window.show() {
+            // Returning here changes nothing a user experiences: the close-to-tray
+            // wiring below only matters for a window they can reach, and on this path
+            // the launch did not produce one.
+            return WindowStartup::ShowFailed(e.to_string());
+        }
+        focus_failed = window.set_focus().is_err();
     }
 
     // Close-to-tray (E-13 AC3): intercept the close request so the close button hides
@@ -83,6 +161,12 @@ pub fn init(
                 // the app exits (this is the only window).
             }
         });
+    }
+
+    WindowStartup::Applied {
+        start_hidden: lifecycle.start_hidden,
+        focus_failed,
+        hide_failed,
     }
 }
 
@@ -206,6 +290,43 @@ mod tests {
             "no tray: close must exit even with minimize-to-tray ON"
         );
         assert_eq!(decide_close_action(false, false), CloseAction::Exit);
+    }
+
+    #[test]
+    fn only_a_window_the_user_cannot_see_blocks_readiness() {
+        // The two outcomes that leave nothing on screen block the readiness marker.
+        assert!(!WindowStartup::MainWindowMissing.is_usable());
+        assert!(!WindowStartup::ShowFailed("os error".to_string()).is_usable());
+
+        // A window that came up is usable, cosmetic imperfections included.
+        assert!(WindowStartup::Applied {
+            start_hidden: false,
+            focus_failed: false,
+            hide_failed: false,
+        }
+        .is_usable());
+        assert!(
+            WindowStartup::Applied {
+                start_hidden: false,
+                focus_failed: true,
+                hide_failed: false,
+            }
+            .is_usable(),
+            "an unfocused window is still a window the user can see and click"
+        );
+        // The interesting one. An autostart launch that ends VISIBLE is wrong, but it
+        // is MORE visibility rather than less, and it is the same end state
+        // `decide_window_lifecycle` picks on purpose when there is no tray. Making it
+        // block would fail a CI gate for a condition the design already tolerates.
+        assert!(
+            WindowStartup::Applied {
+                start_hidden: true,
+                focus_failed: false,
+                hide_failed: true,
+            }
+            .is_usable(),
+            "a hide that failed leaves a usable app, just a more visible one"
+        );
     }
 
     /// The setting is read from a shared `AtomicBool` on every close rather than

@@ -57,6 +57,24 @@ pub mod event {
     /// blank WebView).
     pub const APP_STARTUP_COMPLETED: &str = "app.startup_completed";
 
+    /// Startup produced no usable main window, so [`APP_STARTUP_COMPLETED`] was
+    /// deliberately NOT emitted.
+    ///
+    /// The app keeps running. That is the point: a window the lifecycle could not
+    /// show has never been fatal here, and making it fatal now could brick an
+    /// install over a condition nobody can reproduce. So this changes what is
+    /// OBSERVABLE, not what the app does. The consequence is felt in CI, where the
+    /// binary smoke gate fails on the ABSENCE of the readiness marker rather than
+    /// on anything the process did.
+    ///
+    /// Fires for the two conditions that leave a user with nothing to look at:
+    /// there is no `main` window at all, or a normal launch could not `show()` the
+    /// window (which is created hidden, so a failed show leaves the app invisible).
+    /// It deliberately does NOT fire for a failed `set_focus` or a failed `hide` on
+    /// an autostart launch: both leave a usable app, and the second lands in exactly
+    /// the visible state the no-tray fallback already chooses on purpose.
+    pub const APP_WINDOW_SETUP_FAILED: &str = "app.window_setup_failed";
+
     // --- scheduler ---
     /// A scheduled job could not persist its outcome. The repo stays due and
     /// retries, so the user sees nothing; that is exactly why it needs a log.
