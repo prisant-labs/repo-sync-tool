@@ -238,6 +238,12 @@ export function ActivityScreen() {
               rows={paginate(rows).visible}
               rowKey={(r) => r.id}
               onRowClick={(r) => setSelectedId(r.id)}
+              // D2: the row behind an open receipt gets the baseline's
+              // highlight back (`9a254c2`'s `selectedId === row.id &&
+              // "bg-muted"`), via the shared primitive's optional
+              // `currentKey`. Repos never had this treatment and does not
+              // pass it - see `data-table.tsx`'s doc comment on the prop.
+              currentKey={selectedId}
               // A single unlabeled action (the receipt chevron), unlike Repos'
               // two, so `actionsWidth` is narrowed from the primitive's
               // two-button default (112px) to fit one 36px button plus the
@@ -249,6 +255,15 @@ export function ActivityScreen() {
                   variant="ghost"
                   size="icon"
                   aria-label="Open receipt"
+                  // D1: restores `9a254c2`'s `aria-haspopup="dialog"` (then on
+                  // the row, which WAS the whole activation target - a single
+                  // `<button>`). The DataTable migration split that one button
+                  // into a mouse-only row plus this chevron, which is now the
+                  // row's only real (keyboard-reachable) activation target -
+                  // see `data-table.tsx`'s `onRowClick` doc comment and
+                  // DESIGN.md's "Activity table row" entry - so the attribute
+                  // belongs here. `Drawer` renders `role="dialog"`.
+                  aria-haspopup="dialog"
                   onClick={() => setSelectedId(r.id)}
                 >
                   <ChevronRight aria-hidden />

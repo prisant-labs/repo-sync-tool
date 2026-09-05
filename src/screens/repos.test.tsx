@@ -490,6 +490,33 @@ describe("ReposScreen table", () => {
     await waitFor(() => expect(repoGet).toHaveBeenCalledTimes(2));
     expect(repoGet).toHaveBeenLastCalledWith(10);
   });
+
+  /**
+   * Scope boundary for D2 (`data-table.tsx`'s optional `currentKey`, added to
+   * restore the Activity-only "row behind an open receipt" highlight):
+   * baseline `9a254c2` never painted a Repos row this way, and Repos does not
+   * pass `currentKey` to `DataTable`. Opening the repo detail drawer must not
+   * mark any row current.
+   */
+  it("opening the repo detail drawer marks no row current - Repos never had that highlight and does not opt in", async () => {
+    const repoGet = mockCommand(commands, "repoGet", async () => ok(MINIMAL_DETAIL));
+    mockCommand(commands, "groupList", async () => ok([]));
+    mockCommand(commands, "groupsForRepo", async () => ok([]));
+    mockCommand(commands, "settingsGet", async () => ok(MINIMAL_SETTINGS));
+    for (const ev of [events.repoStateChanged]) {
+      vi.spyOn(ev, "listen").mockResolvedValue(() => {});
+    }
+    renderScreen([repo()]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open details" }));
+    await waitFor(() => expect(repoGet).toHaveBeenCalledTimes(1));
+
+    for (const row of screen.getAllByRole("row")) {
+      expect(row.hasAttribute("aria-current")).toBe(false);
+    }
+  });
 });
 
 // N5 (sidebar restructure and toolbar consolidation; ui-delivery-plan.md

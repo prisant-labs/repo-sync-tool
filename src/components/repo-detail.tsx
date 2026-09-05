@@ -409,16 +409,29 @@ function DetailBody({
         <TabList aria-label="Repository sections" tabs={PANEL_TABS} className="px-5" />
         {/*
           `overflow-auto` lives on EACH TabPanel, not on a shared wrapper
-          around all three. A shared scroll container would persist its own
-          `scrollTop` across a tab switch even though `TabPanel` unmounts the
-          CONTENT inside it - the container itself never goes away, so
-          scrolling down in Settings and switching to Overview would land on
-          Overview already scrolled (caught by a real-browser check during
-          verification: the Focal card was clipped off the top after
-          switching in from a scrolled tab). Scoping the scroll region to the
-          panel that unmounts means a fresh mount always starts at the top,
-          which is also the ARIA-correct shape: a focusable (`tabIndex=0`)
-          `tabpanel` that owns its own scrolling.
+          around all three, and that is what keeps each tab's scroll position
+          its OWN.
+
+          `TabPanel` keeps every panel mounted and toggles the native `hidden`
+          attribute rather than unmounting (see `ui/tabs.tsx`'s file doc
+          comment). A panel therefore never loses its `scrollTop`: leave
+          Settings scrolled, switch away, come back, and Settings is where you
+          left it. Per-panel scroll regions are what stop that from leaking
+          across tabs. With ONE shared scroll container the single `scrollTop`
+          would be shared by all three, so switching in from a scrolled tab
+          would land on Overview already scrolled - caught by a real-browser
+          check during verification, with the Focal card clipped off the top.
+
+          This is also the ARIA-correct shape: a focusable (`tabIndex=0`)
+          `tabpanel` owning its own scrolling.
+
+          HISTORY, because this comment said the opposite until 2026-09-04: it
+          was written when `TabPanel` unmounted its content, and argued that a
+          fresh mount always starts at the top. A later commit in the same pull
+          request switched to mounted-and-hidden - its own message calls the
+          resulting scroll retention "a discovered behavior change" - and the
+          comment was never updated. Per-panel scrolling stayed correct
+          throughout; only the reason changed.
         */}
           <TabPanel value="overview" className="min-h-0 flex-1 overflow-auto flex flex-col gap-5 p-5">
             <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
