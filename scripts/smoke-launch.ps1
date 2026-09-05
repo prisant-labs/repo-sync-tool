@@ -947,7 +947,20 @@ try {
             Write-Host "PASS  the running instance logged event=$DeferralEvent, so the second launch was DEFERRED to it rather than merely dying"
         }
         else {
-            Write-Host "::error::Smoke gate: the second process is gone but the running instance never logged event=$DeferralEvent. Every assertion above is also satisfied by a second instance that CRASHED on startup, so without this line there is no evidence the guard did anything. Either the single-instance callback did not fire, or it fired and the running instance's log writer is no longer reaching disk."
+            # Two different situations reach this point and they mean different things.
+            # If the second process is STILL RUNNING, the absent deferral line is simply
+            # the same failure the phase already reported, restated - the guard did not
+            # fire, so of course nothing logged that it did. If the second process is
+            # GONE, this is the interesting case: something turned it away, or it died,
+            # and the missing line is the only thing that could have told them apart.
+            # Saying "the second process is gone" in both would be the gate asserting a
+            # fact it did not check.
+            if ($proc2.HasExited) {
+                Write-Host "::error::Smoke gate: the second process EXITED but the running instance never logged event=$DeferralEvent. Every assertion above is also satisfied by a second instance that CRASHED on startup, so without this line there is no evidence the guard did anything. Either the single-instance callback did not fire, or it fired and the running instance's log writer is no longer reaching disk."
+            }
+            else {
+                Write-Host "::error::Smoke gate: the running instance never logged event=$DeferralEvent, which follows from the second instance still running above: nothing was deferred to it. Reported separately because this line is what distinguishes a guard that fired from a second process that merely died, and it is absent."
+            }
             $failed = $true
         }
 
