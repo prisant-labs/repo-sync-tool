@@ -5,8 +5,15 @@ import { cn } from "@/lib/utils";
 /**
  * Shared table primitive (N2, ui-delivery-plan.md ledger B5), built to the
  * table lab's settled values (`_local/gui/2026-08-28_iterations/README.md` and
- * `_generators/gen_lab2.py`). Presentational only: no sorting, no selection, no
- * column show/hide (all deliberately deferred, ledger C).
+ * `_generators/gen_lab2.py`). Presentational only: no sorting, no interactive
+ * row/column selection, no column show/hide (all deliberately deferred,
+ * ledger C).
+ *
+ * `currentKey` (D2, restoring a highlight the pre-DataTable Activity screen
+ * had) is NOT that deferred selection model: it does not let the table track
+ * or emit which row a user picked, it only lets a caller that already knows
+ * which row it has open elsewhere (a drawer, a receipt) mark that one row.
+ * See the prop's own doc comment.
  *
  * Extracted lab defaults this file is built to (all of them stated in the N2
  * PR body for veto):
@@ -137,6 +144,19 @@ export interface DataTableProps<T> {
   className?: string;
   /** Accessible label for the table region, e.g. "Tracked repositories". */
   "aria-label"?: string;
+  /**
+   * Optional: the `rowKey` of the row to mark as the one a caller's own UI
+   * currently has open elsewhere (D2 - the Activity row behind an open
+   * receipt drawer). Compared against each row's `rowKey(row)` with `===`,
+   * so `0` is a legitimate key and matches correctly; `undefined`/`null`
+   * (the default) marks no row. The matching row gets `aria-current="true"`
+   * plus the baseline's `bg-muted` fill across the whole row - not a new
+   * visual, and not the deferred selection model described in the file doc
+   * comment, since the table itself never decides or emits this value.
+   * Only Activity passes it today; Repos never highlighted a row this way
+   * (baseline `9a254c2`) and does not opt in.
+   */
+  currentKey?: string | number | null;
 }
 
 export function DataTable<T>({
@@ -149,6 +169,7 @@ export function DataTable<T>({
   actionsWidth = DEFAULT_ACTIONS_WIDTH,
   className,
   "aria-label": ariaLabel,
+  currentKey,
 }: DataTableProps<T>) {
   const rowHeight = ROW_HEIGHT[density];
   const clickable = onRowClick !== undefined;
@@ -236,14 +257,19 @@ export function DataTable<T>({
           <div role="rowgroup" className="contents">
             {rows.map((row) => {
               const key = rowKey(row);
+              // `!= null` (not bare truthiness) so a falsy-but-real key like
+              // `0` still matches - see the prop's own doc comment.
+              const isCurrent = currentKey !== undefined && currentKey !== null && key === currentKey;
               return (
                 <div
                   key={key}
                   role="row"
                   onClick={clickable ? () => onRowClick(row) : undefined}
+                  aria-current={isCurrent ? "true" : undefined}
                   className={cn(
                     "group grid border-b border-border last:border-b-0",
                     clickable && "cursor-pointer hover:bg-muted",
+                    isCurrent && "bg-muted",
                   )}
                   style={{ gridTemplateColumns: template, minHeight: rowHeight }}
                 >
@@ -260,6 +286,7 @@ export function DataTable<T>({
                           i > 0 && "border-l border-border",
                           col.align === "right" && !empty ? "justify-end text-right" : "justify-start text-left",
                           col.frozen && "group-hover:bg-muted",
+                          isCurrent && "bg-muted",
                         )}
                         style={{
                           padding: `0 ${CELL_PADDING}px`,
@@ -283,11 +310,14 @@ export function DataTable<T>({
                       </div>
                     );
                   })}
-                  <div aria-hidden className="min-w-0 bg-card group-hover:bg-muted" />
+                  <div aria-hidden className={cn("min-w-0 bg-card group-hover:bg-muted", isCurrent && "bg-muted")} />
                   {actions && (
                     <div
                       role="cell"
-                      className="flex items-center justify-end gap-1 bg-card group-hover:bg-muted"
+                      className={cn(
+                        "flex items-center justify-end gap-1 bg-card group-hover:bg-muted",
+                        isCurrent && "bg-muted",
+                      )}
                       style={{ padding: `0 ${CELL_PADDING}px`, position: "sticky", right: 0, zIndex: 2, minWidth: 0 }}
                       onClick={(e) => e.stopPropagation()}
                     >
