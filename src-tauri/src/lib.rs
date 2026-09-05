@@ -860,6 +860,35 @@ pub fn run() {
                 // (BL-NI-59), so it stays hidden until this shows it, avoiding a flash.
                 windows::init(&handle, tray_available, close_minimizes_to_tray_flag);
 
+                // The readiness marker the CI binary smoke gate asserts on (BL-NI-88 -
+                // no gate ever launches the built binary). ITS POSITION IS LOAD-BEARING,
+                // in both directions, so do not move it.
+                //
+                // Not earlier: everything above this line - the pool open and
+                // migrations, the activity sweep, the settings read, the autostart
+                // reconcile, the scheduler spawn, the tray, the window lifecycle - is
+                // startup work that can HANG rather than panic. A marker emitted above
+                // any of it would be written by a process that then deadlocks, and the
+                // gate would pass a build that never finishes starting. That gap is the
+                // whole reason this line exists: `logging::init` emits "RepoSync
+                // starting" before the Tauri builder even runs, so it proves only that
+                // logging came up, and a hung setup keeps the process alive, so a
+                // liveness check passes it too. This line is the only thing that can
+                // tell a healthy launch from a hung one from outside the process.
+                //
+                // Not later either: the only work after it is the DETACHED auto-update
+                // check, which does network I/O. Gating readiness on that would let a
+                // slow or unreachable network fail CI for a perfectly healthy app.
+                //
+                // So: after `windows::init` returns, before the update spawn. Moving it
+                // breaks `scripts/smoke-launch.ps1`, and in the earlier direction it
+                // breaks it SILENTLY - the gate stays green and stops meaning anything.
+                tracing::info!(
+                    event = reposync_core::logging::event::APP_STARTUP_COMPLETED,
+                    tray_available,
+                    "startup finished: state is managed, the tray is resolved, the window is wired"
+                );
+
                 // E-18 auto-update: spawn the on-launch update check in the
                 // background, gated by the `auto_update_check` toggle AND the
                 // ship-dark state (a build with no production signing key does not

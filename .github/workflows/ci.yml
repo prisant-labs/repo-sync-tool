@@ -9,7 +9,7 @@
 #   - reposync-core has NO tauri dependency, even transitively   (E-01 AC2: dependency hygiene)
 #   - both Windows and macOS runners build AND bundle            (E-01 AC4: matrix green)
 #   - git meets the >= 2.30 floor (exact pin deferred to E-04)   (E-01 AC8 / E-04 fixture harness)
-#   - the built binary LAUNCHES and stays up (Windows only)      (BL-NI-88 binary smoke gate)
+#   - the built binary LAUNCHES, becomes READY, and stays up     (BL-NI-88 binary smoke gate)
 #
 # The binary smoke gate (BL-NI-88, no gate ever launches the built binary) is a STEP of the
 # `build` job rather than a job of its own, and that placement is the whole point. Branch
@@ -275,17 +275,24 @@ jobs:
       # So: launch the exe `pnpm tauri build` just produced, with %LOCALAPPDATA% pointed at a
       # scratch directory (the app's whole data seam hangs off that one variable, so it gets
       # its own database and its own logs), then assert it is still alive, that its log file
-      # is NON-EMPTY, and that the log carries the startup line. Non-empty is the assertion
-      # that matters: under `[profile.release] panic = "abort"` a crash skips the flush, so a
-      # zero-byte log is precisely what a dead app leaves behind. See the script header for
-      # the wait-interval reasoning and the failure-injection evidence in the PR that added it.
+      # is NON-EMPTY, that the log carries the startup line, AND that it carries the
+      # readiness marker `app.startup_completed`, which the app emits only after
+      # `windows::init` returns at the end of the setup closure.
+      #
+      # Two assertions doing two different jobs. Non-empty catches a CRASH: under
+      # `[profile.release] panic = "abort"` a panic skips the log flush, so a zero-byte log
+      # is precisely what a dead app leaves behind. The readiness marker catches a HANG,
+      # which nothing else here can see - a process deadlocked in the setup closure stays
+      # alive and keeps its startup line, so liveness passes it. See the script header for
+      # the wait-interval reasoning and the failure-injection evidence in the PR that added
+      # it. What the gate does NOT yet prove is that the React root mounted (BL-NI-99).
       #
       # Windows-only. The isolation mechanism (%LOCALAPPDATA%) and the liveness/terminate calls
       # are Windows-specific, and Windows is the platform carrying the human-validated GA bar;
       # macOS is compiles-and-bundles-in-CI only (see the macOS posture note in the header).
       #
       # `timeout-minutes` caps the step so a hung launch fails loudly instead of stalling the
-      # runner. The script's own budget is about 40 s worst case, so 5 minutes is slack rather
+      # runner. The script's own budget is about 70 s worst case, so 5 minutes is slack rather
       # than a second budget anyone has to reason about.
       - name: Smoke test the built binary (BL-NI-88)
         if: matrix.os == 'windows-latest'

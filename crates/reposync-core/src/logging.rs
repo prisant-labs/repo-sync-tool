@@ -31,6 +31,32 @@ use std::path::{Path, PathBuf};
 /// The naming is `area.what_happened`, past tense, because a log line records
 /// something that already occurred.
 pub mod event {
+    // --- app lifecycle ---
+    /// Startup ran to completion: state is managed, the tray outcome is known, and
+    /// the window lifecycle is wired.
+    ///
+    /// The ONE success event in a vocabulary that is otherwise entirely failures,
+    /// and it earns the exception by being load-bearing rather than informational.
+    /// The CI binary smoke gate (`scripts/smoke-launch.ps1`, BL-NI-88 - no gate
+    /// ever launches the built binary) asserts this exact name, because nothing
+    /// else could tell a healthy launch apart from a HUNG one. The gate's other
+    /// signals cannot: `logging::init` writes "RepoSync starting" before the Tauri
+    /// builder even runs, so it proves only that logging came up, and a process
+    /// deadlocked in `setup` stays alive, so a liveness check passes it. The
+    /// absence of this line, from a process that is still running, is the only way
+    /// a startup hang is visible from outside.
+    ///
+    /// It is emitted from ONE place, at the end of the setup closure in
+    /// `src-tauri/src/lib.rs`. Moving that call earlier re-opens the gap it was
+    /// added to close, and does so silently - CI stays green.
+    ///
+    /// Scope, stated because the name could be read wider than it is: this marks
+    /// the RUST startup path only. It does not claim the React root mounted or
+    /// that the WebView rendered anything, which needs a frontend-to-backend
+    /// signal that does not exist yet (BL-NI-99 - the smoke gate cannot see a
+    /// blank WebView).
+    pub const APP_STARTUP_COMPLETED: &str = "app.startup_completed";
+
     // --- scheduler ---
     /// A scheduled job could not persist its outcome. The repo stays due and
     /// retries, so the user sees nothing; that is exactly why it needs a log.

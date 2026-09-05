@@ -49,6 +49,10 @@
 .PARAMETER StartupTimeoutSeconds
     How long to poll for the startup line before giving up. See the timing note below.
 
+.PARAMETER ReadyTimeoutSeconds
+    How long to poll for the readiness marker after the startup line appears. This is the
+    hang budget: a process still running with no readiness marker after this fails.
+
 .PARAMETER SettleSeconds
     How long to keep watching the process AFTER the startup line appears. See below.
 
@@ -66,7 +70,7 @@
     scheduler spawn, the tray build, and windows::init. Asserting liveness at the moment
     the line appears would assert almost nothing.
 
-    Hence two phases rather than one fixed sleep:
+    Hence three phases rather than one fixed sleep:
 
       Phase 1 - poll every 500 ms for up to StartupTimeoutSeconds (default 30) for the
       log file to exist, be non-empty, and contain the startup line, failing IMMEDIATELY
@@ -74,13 +78,19 @@
       headroom for a cold CI runner, and because it polls, the common case costs about a
       second rather than the whole budget.
 
-      Phase 2 - keep polling liveness for SettleSeconds (default 10) after the line
-      appears, then assert the process is still alive. This is the window that covers the
-      synchronous setup closure listed above. Ten seconds is comfortably longer than that
-      work takes (sub-second locally) and also spans WebView2's first-run initialization,
-      which is the slowest part of a Tauri startup on a cold machine.
+      Phase 2 - poll for up to ReadyTimeoutSeconds (default 30) for the readiness marker,
+      which is emitted after windows::init returns and therefore after every item in that
+      list. This is the hang budget, and the phase that makes the gate mean anything: a
+      deadlock in the setup closure leaves a process that is alive, has written its
+      startup line, and will never write this one. Thirty seconds is generous against a
+      path that completes in about half a second, because the cost of being wrong here is
+      a flaky required check, and because polling means a healthy run pays none of it.
 
-    Typical cost is about 11 seconds; worst case about 40. The build job it runs in
+      Phase 3 - keep polling liveness for SettleSeconds (default 10) after readiness, then
+      assert the process is still alive. Startup is complete by then, so this covers a
+      death just after it: the detached auto-update check, the first scheduler cycle.
+
+    Typical cost is about 11 seconds; worst case about 70. The build job it runs in
     already spends minutes compiling and bundling, so this is not a meaningful tax on a
     pull request. Both values are parameters so a slow runner can be accommodated without
     editing logic. Measured on a GitHub windows-latest runner: the startup line appeared at
@@ -90,6 +100,7 @@
 param(
     [string]$ExePath,
     [int]$StartupTimeoutSeconds = 30,
+    [int]$ReadyTimeoutSeconds = 30,
     [int]$SettleSeconds = 10,
     [switch]$KeepScratch
 )
@@ -104,6 +115,18 @@ $ErrorActionPreference = 'Stop'
 # condition. If init returns Err instead, the app deliberately continues WITHOUT logging,
 # so there is no log file at all and this gate fails on the missing file.
 $StartupLine = 'RepoSync starting'
+
+# The readiness marker, and the assertion that makes this gate mean something.
+#
+# Emitted once, after windows::init returns at the end of the setup closure in
+# src-tauri/src/lib.rs, from the event vocabulary in crates/reposync-core/src/logging.rs.
+# The startup line above cannot stand in for it: logging::init runs before the Tauri
+# builder, so "RepoSync starting" is written by a process that has not yet opened the
+# database, built the window, resolved the tray, or wired the window lifecycle. Neither
+# can liveness: a process that DEADLOCKS in any of that work stays alive forever, and a
+# gate that only asks "is it running" passes it. The absence of this line from a process
+# that is still running is the only way a startup hang is visible from outside.
+$ReadyEvent = 'app.startup_completed'
 
 # Daily rolling files named LOG_FILE_PREFIX.YYYY-MM-DD.LOG_FILE_SUFFIX
 # (crates/reposync-core/src/logging.rs), written into logs/ under the data dir.
@@ -264,9 +287,11 @@ Write-Section 'RepoSync binary smoke gate (BL-NI-88)'
 Write-Host "repository root : $repoRoot"
 Write-Host "binary          : $ExePath"
 Write-Host "startup line    : '$StartupLine'"
+Write-Host "readiness marker: event=$ReadyEvent"
 Write-Host "log file glob   : logs\$LogGlob"
 Write-Host "startup timeout : $StartupTimeoutSeconds s (polled every $PollMs ms)"
-Write-Host "settle window   : $SettleSeconds s after the startup line"
+Write-Host "ready timeout   : $ReadyTimeoutSeconds s after the startup line"
+Write-Host "settle window   : $SettleSeconds s after the readiness marker"
 
 # A missing binary is a HARD failure, never a skip. A skip here would recreate exactly
 # the problem this gate exists to fix: a green check that never launched the app. If the
@@ -384,14 +409,58 @@ try {
         $failed = $true
     }
 
-    # --- Phase 2: settle, then assert the app survived the rest of startup ------------
+    # --- Phase 2: poll for the readiness marker ---------------------------------------
+    #
+    # This is the phase the first version of this gate did not have, and the one that
+    # catches a HANG. A process wedged anywhere in the setup closure stays alive and keeps
+    # its startup line on disk, so phase 1 and a liveness check both pass it. Only the
+    # absence of this marker, from a process that is still running, says "it started and
+    # never finished starting".
+
+    $sawReady = $false
+
+    if (-not $failed) {
+        Write-Section "Readiness (up to $ReadyTimeoutSeconds s)"
+        Write-Host "Waiting for event=$ReadyEvent, emitted after windows::init returns. Everything"
+        Write-Host 'that can hang lies between the startup line and this marker: the WebView2 window'
+        Write-Host 'build, the database open and migrations, the activity sweep, the settings read,'
+        Write-Host 'the autostart reconcile, the scheduler spawn, the tray build, and the window'
+        Write-Host 'lifecycle.'
+
+        $ready = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($ready.Elapsed.TotalSeconds -lt $ReadyTimeoutSeconds) {
+            if ($proc.HasExited) {
+                Write-Host "::error::Smoke gate: DIED DURING STARTUP. The app wrote its startup line and then EXITED $([math]::Round($ready.Elapsed.TotalSeconds, 2)) s later, before reaching readiness (event=$ReadyEvent). Exit code $(Format-ExitCode -Code $proc.ExitCode). The captured stderr below carries the panic text if there was one."
+                $failed = $true
+                break
+            }
+
+            $logs = @(Get-LogFiles -LogDir $logDir)
+            if ($logs.Count -gt 0) {
+                $content = Read-LogText -Path $logs[0].FullName
+                if ($content.Contains($ReadyEvent)) {
+                    $sawReady = $true
+                    Write-Host "readiness marker seen after $([math]::Round($ready.Elapsed.TotalSeconds, 2)) s"
+                    break
+                }
+            }
+
+            Start-Sleep -Milliseconds $PollMs
+        }
+
+        if (-not $failed -and -not $sawReady) {
+            Write-Host "::error::Smoke gate: STARTED BUT NEVER BECAME READY. The app is STILL RUNNING $ReadyTimeoutSeconds s after writing its startup line, and never emitted event=$ReadyEvent. That marker is written after windows::init returns, so the app is wedged somewhere in the setup closure - the window build, the database open and migrations, the activity sweep, the settings read, the autostart reconcile, the scheduler spawn, the tray build, or the window lifecycle. This is a startup HANG: nothing crashed, so a liveness-only check would have passed it. The log below is everything it managed to write."
+            $failed = $true
+        }
+    }
+
+    # --- Phase 3: settle, then assert it did not die immediately after becoming ready --
 
     if (-not $failed) {
         Write-Section "Settle ($SettleSeconds s)"
-        Write-Host 'Everything that can kill this app happens AFTER the startup line: the WebView2'
-        Write-Host 'window build, the database open and migrations, the activity sweep, the settings'
-        Write-Host 'read, the autostart reconcile, the scheduler spawn, the tray build, and the'
-        Write-Host 'window lifecycle. This window is what covers them.'
+        Write-Host 'The Rust startup path is complete at this point. This window catches a death'
+        Write-Host 'just AFTER readiness: the detached auto-update check, the first scheduler'
+        Write-Host 'cycle, or anything else that only runs once the app is up.'
 
         $settle = [System.Diagnostics.Stopwatch]::StartNew()
         while ($settle.Elapsed.TotalSeconds -lt $SettleSeconds) {
@@ -448,6 +517,13 @@ try {
             elseif ($content.Contains($StartupLine)) {
                 Write-Host "PASS  log file $($logs[0].Name) is non-empty ($($content.Length) chars read)"
                 Write-Host "PASS  log contains the startup line '$StartupLine'"
+                if ($content.Contains($ReadyEvent)) {
+                    Write-Host "PASS  log contains the readiness marker event=$ReadyEvent"
+                }
+                else {
+                    Write-Host "::error::Smoke gate: the log no longer contains the readiness marker event=$ReadyEvent."
+                    $failed = $true
+                }
             }
             else {
                 Write-Host "::error::Smoke gate: the log file '$($logs[0].Name)' is non-empty ($($content.Length) chars) but does NOT contain the startup line '$StartupLine'."
@@ -482,8 +558,8 @@ try {
     }
 
     Write-Section 'RESULT'
-    Write-Host 'Smoke gate PASSED: the built binary launched, wrote its startup line, and was'
-    Write-Host 'still alive after the settle window.'
+    Write-Host 'Smoke gate PASSED: the built binary launched, wrote its startup line, reached'
+    Write-Host 'readiness, and was still alive after the settle window.'
     exit 0
 }
 finally {
