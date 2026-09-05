@@ -31,6 +31,50 @@ use std::path::{Path, PathBuf};
 /// The naming is `area.what_happened`, past tense, because a log line records
 /// something that already occurred.
 pub mod event {
+    // --- app lifecycle ---
+    /// Startup ran to completion: state is managed, the tray outcome is known, and
+    /// the window lifecycle is wired.
+    ///
+    /// The ONE success event in a vocabulary that is otherwise entirely failures,
+    /// and it earns the exception by being load-bearing rather than informational.
+    /// The CI binary smoke gate (`scripts/smoke-launch.ps1`, BL-NI-88 - no gate
+    /// ever launches the built binary) asserts this exact name, because nothing
+    /// else could tell a healthy launch apart from a HUNG one. The gate's other
+    /// signals cannot: `logging::init` writes "RepoSync starting" before the Tauri
+    /// builder even runs, so it proves only that logging came up, and a process
+    /// deadlocked in `setup` stays alive, so a liveness check passes it. The
+    /// absence of this line, from a process that is still running, is the only way
+    /// a startup hang is visible from outside.
+    ///
+    /// It is emitted from ONE place, at the end of the setup closure in
+    /// `src-tauri/src/lib.rs`. Moving that call earlier re-opens the gap it was
+    /// added to close, and does so silently - CI stays green.
+    ///
+    /// Scope, stated because the name could be read wider than it is: this marks
+    /// the RUST startup path only. It does not claim the React root mounted or
+    /// that the WebView rendered anything, which needs a frontend-to-backend
+    /// signal that does not exist yet (BL-NI-99 - the smoke gate cannot see a
+    /// blank WebView).
+    pub const APP_STARTUP_COMPLETED: &str = "app.startup_completed";
+
+    /// Startup produced no usable main window, so [`APP_STARTUP_COMPLETED`] was
+    /// deliberately NOT emitted.
+    ///
+    /// The app keeps running. That is the point: a window the lifecycle could not
+    /// show has never been fatal here, and making it fatal now could brick an
+    /// install over a condition nobody can reproduce. So this changes what is
+    /// OBSERVABLE, not what the app does. The consequence is felt in CI, where the
+    /// binary smoke gate fails on the ABSENCE of the readiness marker rather than
+    /// on anything the process did.
+    ///
+    /// Fires for the two conditions that leave a user with nothing to look at:
+    /// there is no `main` window at all, or a normal launch could not `show()` the
+    /// window (which is created hidden, so a failed show leaves the app invisible).
+    /// It deliberately does NOT fire for a failed `set_focus` or a failed `hide` on
+    /// an autostart launch: both leave a usable app, and the second lands in exactly
+    /// the visible state the no-tray fallback already chooses on purpose.
+    pub const APP_WINDOW_SETUP_FAILED: &str = "app.window_setup_failed";
+
     // --- scheduler ---
     /// A scheduled job could not persist its outcome. The repo stays due and
     /// retries, so the user sees nothing; that is exactly why it needs a log.

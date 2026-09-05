@@ -9,6 +9,15 @@
 #   - reposync-core has NO tauri dependency, even transitively   (E-01 AC2: dependency hygiene)
 #   - both Windows and macOS runners build AND bundle            (E-01 AC4: matrix green)
 #   - git meets the >= 2.30 floor (exact pin deferred to E-04)   (E-01 AC8 / E-04 fixture harness)
+#   - the built binary LAUNCHES, becomes READY, and stays up     (BL-NI-88 binary smoke gate)
+#
+# The binary smoke gate (BL-NI-88, no gate ever launches the built binary) is a STEP of the
+# `build` job rather than a job of its own, and that placement is the whole point. Branch
+# protection requires four named checks - "build (windows-latest)", "build (macos-latest)",
+# "slow git-fixture tests (windows)" and "dependency advisories" - so a new job would report
+# a status nothing requires and would block nothing until someone edited the protection rule.
+# As a step it blocks the day it lands, and no check NAME changes, so the protection config
+# keeps matching. Renaming any job here silently breaks that config; do not.
 #
 # Two-tier test model (ci-plan.md Section 3):
 #   - FAST tier (this PR gate, the `build` job): `cargo test --workspace` runs every test that
@@ -254,6 +263,59 @@ jobs:
       - name: Build and bundle
         run: pnpm tauri build
         shell: bash
+
+      # --- Binary smoke gate (BL-NI-88) ---------------------------------------------------
+      # Every other gate above tests code WITHOUT running the app: cargo test calls library
+      # functions, vitest renders components, clippy and fmt read source. None of them can
+      # reach `reposync_lib::run`, which has exactly one caller - the app's own startup. That
+      # is how BL-NI-87 (an `unreachable!` in `logging::init` that was always reachable)
+      # survived 19 days of green gates and two installers: the only thing that could catch
+      # it was a human double-clicking the binary.
+      #
+      # So: launch the exe `pnpm tauri build` just produced, with %LOCALAPPDATA% pointed at a
+      # scratch directory (the app's whole data seam hangs off that one variable, so it gets
+      # its own database and its own logs), then assert it is still alive, that its log file
+      # is NON-EMPTY, that the log carries the startup line, AND that it carries the
+      # readiness marker `app.startup_completed`, which the app emits only after
+      # `windows::init` returns at the end of the setup closure.
+      #
+      # Two assertions doing two different jobs. Non-empty catches a CRASH: under
+      # `[profile.release] panic = "abort"` a panic skips the log flush, so a zero-byte log
+      # is precisely what a dead app leaves behind. The readiness marker catches a HANG,
+      # which nothing else here can see - a process deadlocked in the setup closure stays
+      # alive and keeps its startup line, so liveness passes it. The marker is also
+      # CONDITIONAL on the window being usable, so it catches a launch that finished with
+      # nothing on screen - the app logs `app.window_setup_failed` instead and keeps
+      # running, and CI fails on the ABSENT marker rather than on a dead process. See the
+      # script header for the wait-interval reasoning and the failure-injection evidence in
+      # the PR that added it. What the gate does NOT prove is that the React root mounted
+      # inside that window (BL-NI-99).
+      #
+      # Windows-only. The isolation mechanism (%LOCALAPPDATA%) and the liveness/terminate calls
+      # are Windows-specific, and Windows is the platform carrying the human-validated GA bar;
+      # macOS is compiles-and-bundles-in-CI only (see the macOS posture note in the header).
+      #
+      # `timeout-minutes` caps the step so a hung launch fails loudly instead of stalling the
+      # runner. The script's own budget is about 70 s worst case, so 5 minutes is slack rather
+      # than a second budget anyone has to reason about.
+      # The gate's OWN log-reading logic, against synthesized fixtures, launching nothing.
+      # It runs in about a second and needs no build, and it exists for one case that is
+      # easy to reason past: the appender rolls daily on UTC midnight, so a launch that
+      # straddles that instant splits its two markers across two files. A gate reading
+      # only the newest would fail a healthy binary once a day, on a required check,
+      # which is the most corrosive kind of flake there is. Gating the assertions the
+      # gate is built on keeps that from being taken on faith.
+      - name: Smoke gate self-test (BL-NI-88)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 2
+        run: ./scripts/smoke-launch.ps1 -SelfTest
+
+      - name: Smoke test the built binary (BL-NI-88)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 5
+        run: ./scripts/smoke-launch.ps1
 
   # ------------------------------------------------------------------------------------------
   # SLOW git-fixture test tier (ci-plan.md Section 3). Its own job so it never blocks the fast
