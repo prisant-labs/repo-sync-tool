@@ -83,8 +83,10 @@
       list. This is the hang budget, and the phase that makes the gate mean anything: a
       deadlock in the setup closure leaves a process that is alive, has written its
       startup line, and will never write this one. Thirty seconds is generous against a
-      path that completes in about half a second, because the cost of being wrong here is
-      a flaky required check, and because polling means a healthy run pays none of it.
+      path that completes in about half a second locally and 2.55 s on a GitHub
+      windows-latest runner, because the cost of being wrong here is a flaky required
+      check, and because polling means a healthy run pays none of it. The runner being
+      five times slower than the developer machine is exactly why the headroom is large.
 
       Phase 3 - keep polling liveness for SettleSeconds (default 10) after readiness, then
       assert the process is still alive. Startup is complete by then, so this covers a
@@ -94,7 +96,8 @@
     already spends minutes compiling and bundling, so this is not a meaningful tax on a
     pull request. Both values are parameters so a slow runner can be accommodated without
     editing logic. Measured on a GitHub windows-latest runner: the startup line appeared at
-    0.46 s and the whole step took 13 seconds.
+    0.46 s, the readiness marker 2.55 s after it, and the whole step took 13 to 18 seconds
+    across runs.
 #>
 [CmdletBinding()]
 param(
