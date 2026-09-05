@@ -18,6 +18,7 @@ mod localtime;
 mod logging;
 mod notify;
 mod opener;
+mod single_instance;
 mod tray;
 mod updates;
 mod windows;
@@ -312,6 +313,37 @@ pub fn run() {
     export_bindings("../src/lib/bindings.ts").expect("failed to export typescript bindings");
 
     tauri::Builder::default()
+        // BL-NI-73 (nothing stops two RepoSync instances sharing one database): the
+        // startup singleton. A second launch hands its argv to THIS process and exits;
+        // the callback in `crate::single_instance` brings the existing window to the
+        // front, which is what a tray user expects a second launch to do.
+        //
+        // REGISTERED FIRST, and the order is load-bearing rather than stylistic. The
+        // plugin README states it plainly ("plugins run in the order they were added in
+        // to the builder, so make sure that this plugin is registered first"), and the
+        // source says why: the detection lives in the plugin's own `setup` hook and the
+        // second process leaves it through `std::process::exit(0)`. Tauri runs plugin
+        // setup hooks in registration order, so every plugin registered ABOVE this one
+        // would have its setup run by a process that is about to be turned away. That is
+        // not hypothetical for this app: the autostart plugin reconciles a launch-on-
+        // login registration and the updater plugin builds its client, both on behalf of
+        // a process that will not exist a moment later. Registered first, the doomed
+        // instance touches nothing but this mutex.
+        //
+        // SCOPE: the guard keys on the BUNDLE IDENTIFIER (`com.reposync.app`), not on
+        // the data directory, and that is deliberate. A data-directory-keyed guard would
+        // let two instances with separate databases coexist while they ran concurrent
+        // `git` in the same working trees - the more dangerous half of the harm, left
+        // wide open. See `crate::single_instance` for the full reasoning and the two
+        // recorded limitations.
+        //
+        // CONSEQUENCE, correct rather than regrettable: `pnpm tauri dev` shares this
+        // identifier with the installed app, so it will refuse to start while RepoSync
+        // is running. Close the tray app first. The same applies to
+        // `scripts/smoke-launch.ps1` run locally.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            crate::single_instance::on_second_launch(app, argv, cwd);
+        }))
         // E-14 desktop notifications: the OS-toast plugin (one API; the plugin maps
         // to the Windows toast vs macOS Notification Center). The firing DECISION is
         // in the Tauri-free core; this plugin is the only platform-specific piece.

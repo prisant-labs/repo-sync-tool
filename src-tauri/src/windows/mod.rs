@@ -12,6 +12,12 @@
 //!     explicitly on a normal launch avoids the startup flash the earlier
 //!     hide-after-show approach could cause (see the handoff note on
 //!     [`crate::autostart::AUTOSTART_LAUNCH_FLAG`]).
+//!   - **Raising the window on request ([`raise_main_window`]):** the one definition
+//!     of "surface the app", shared by the tray's "Show RepoSync" item, a left-click on
+//!     the tray icon, and the single-instance callback that runs when RepoSync is
+//!     launched a second time (BL-NI-73 - nothing stops two RepoSync instances sharing
+//!     one database). Those are the three ways a user asks for a window that is sitting
+//!     in the tray, and they must not drift apart.
 //!   - **Close-to-tray (E-13 AC3), user-configurable:** when the
 //!     `close_minimizes_to_tray` setting is ON (the default), the window's close
 //!     button HIDES it to the tray instead of exiting, and only the tray "Quit"
@@ -182,6 +188,100 @@ pub fn init(
         focus_failed,
         hide_failed,
     )
+}
+
+/// What [`raise_main_window`] accomplished, reported back so the CALLER decides what to
+/// log - the same contract [`WindowStartup`] has, for the same reason.
+///
+/// Separate from [`WindowStartup`] on purpose. That type describes the ONE-TIME startup
+/// decision (a launch that was meant to stay hidden in the tray is a success there);
+/// this one describes a deliberate "bring the app to the front" request, where staying
+/// hidden is exactly the failure. Folding them into one enum would need a "was this
+/// supposed to be visible" flag threaded through both call sites, which is how the two
+/// rules drift apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RaiseOutcome {
+    /// The window is up and in front, give or take the two cosmetic flags.
+    Raised {
+        /// `unminimize()` failed. Only meaningful if the window WAS minimized, which
+        /// this code cannot cheaply know; on an already-restored window the call is a
+        /// no-op that succeeds, so a failure here is worth recording rather than
+        /// blocking on.
+        unminimize_failed: bool,
+        /// `set_focus()` failed. The window is visible, it just is not in front.
+        ///
+        /// Reported and NOT treated as a failure, and on Windows that is more than a
+        /// tolerance: a process only gets to call `SetForegroundWindow` successfully
+        /// when Windows considers it entitled to the foreground, and the process the
+        /// user just launched is the SECOND instance, not this one. So a perfectly
+        /// working guard can legitimately end with a flashing taskbar button instead
+        /// of a raised window, and `set_focus()` can even return `Ok` in that case.
+        focus_failed: bool,
+    },
+    /// The window could not be shown. It is created hidden (`visible(false)`,
+    /// BL-NI-59) and hides to the tray on close, so a failed `show()` means the user
+    /// asked for the app and nothing appeared.
+    ShowFailed(String),
+    /// There is no `main` window to raise.
+    MainWindowMissing,
+}
+
+impl RaiseOutcome {
+    /// Whether the user who asked for the app got it.
+    ///
+    /// Same line [`WindowStartup::is_usable`] draws, for the same reason: nothing on
+    /// screen is a failure, a window that is merely not in front is cosmetic.
+    pub fn is_usable(&self) -> bool {
+        matches!(self, RaiseOutcome::Raised { .. })
+    }
+}
+
+/// Bring the main window to the front: unminimize, show, focus.
+///
+/// ONE definition of "surface the app", shared by the tray's "Show RepoSync" item, a
+/// left-click on the tray icon, and the single-instance callback (BL-NI-73 - nothing
+/// stops two RepoSync instances sharing one database). Those are the three ways a user
+/// asks for a window that is hidden in the tray, and they must not drift apart.
+///
+/// All three calls run UNCONDITIONALLY and none of them is fatal, which is exactly what
+/// the tray has always done. The change is that the results are CAPTURED rather than
+/// dropped into `let _ =`, so a caller can log what actually happened. `unminimize`
+/// first, because `show()` on a minimized window leaves it minimized - the user would
+/// see nothing change, which is the whole failure this is meant to prevent.
+///
+/// Deliberately cheap and synchronous. On Windows the single-instance callback runs
+/// inside a `WM_COPYDATA` window procedure while the SECOND process blocks in
+/// `SendMessageW`, so anything slow here would hang the process that is trying to exit.
+pub fn raise_main_window(app: &AppHandle) -> RaiseOutcome {
+    let Some(window) = app.get_webview_window("main") else {
+        return RaiseOutcome::MainWindowMissing;
+    };
+
+    let unminimize_failed = window.unminimize().is_err();
+    let show_error = window.show().err().map(|e| e.to_string());
+    let focus_failed = window.set_focus().is_err();
+
+    classify_raise(show_error, unminimize_failed, focus_failed)
+}
+
+/// Fold what [`raise_main_window`]'s three calls reported into one outcome.
+///
+/// Pure, so the rule is unit-testable without a Tauri window or runtime, and split out
+/// for the same structural reason [`classify_startup`] is: it leaves `raise_main_window`
+/// with a single exit after every call has run, so no later edit can turn a failed
+/// `show` into a skipped `set_focus`.
+fn classify_raise(
+    show_error: Option<String>,
+    unminimize_failed: bool,
+    focus_failed: bool,
+) -> RaiseOutcome {
+    match show_error {
+        Some(error) => RaiseOutcome::ShowFailed(error),
+        None => RaiseOutcome::Raised {
+            unminimize_failed,
+            focus_failed,
+        },
+    }
 }
 
 /// Fold what the visibility calls reported into the outcome the caller sees.
@@ -398,6 +498,52 @@ mod tests {
                 hide_failed: true,
             },
             "an autostart launch whose hide failed still reports as applied"
+        );
+    }
+
+    #[test]
+    fn raising_the_window_reports_cosmetic_failures_without_calling_them_failures() {
+        // The line RaiseOutcome draws is the same one WindowStartup draws: nothing on
+        // screen is a failure, a window that is up but not in front is not.
+        assert!(RaiseOutcome::Raised {
+            unminimize_failed: false,
+            focus_failed: false,
+        }
+        .is_usable());
+        assert!(
+            RaiseOutcome::Raised {
+                unminimize_failed: false,
+                focus_failed: true,
+            }
+            .is_usable(),
+            "on Windows the foreground right belongs to the process the user just              launched, so a working guard can legitimately fail to focus"
+        );
+        assert!(RaiseOutcome::Raised {
+            unminimize_failed: true,
+            focus_failed: false,
+        }
+        .is_usable());
+
+        assert!(!RaiseOutcome::ShowFailed("os error 5".to_string()).is_usable());
+        assert!(!RaiseOutcome::MainWindowMissing.is_usable());
+    }
+
+    #[test]
+    fn a_failed_show_wins_the_raise_outcome_without_discarding_the_other_results() {
+        // Same shape as `a_failed_show_is_reported_without_discarding_the_other_results`
+        // above, and for the same reason: `classify_raise` is only reachable with a
+        // `focus_failed` value, which comes from a `set_focus` made AFTER the failing
+        // `show`. That is the unit-testable proof that nothing returns early.
+        assert_eq!(
+            classify_raise(Some("os error 5".to_string()), true, true),
+            RaiseOutcome::ShowFailed("os error 5".to_string())
+        );
+        assert_eq!(
+            classify_raise(None, true, false),
+            RaiseOutcome::Raised {
+                unminimize_failed: true,
+                focus_failed: false,
+            }
         );
     }
 
