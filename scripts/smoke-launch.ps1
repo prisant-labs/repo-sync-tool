@@ -32,10 +32,14 @@
     database, its own logs/, and no contact with the developer's real data. No code
     change was needed to make the app testable this way.
 
-    NOTE on isolation scope: the scratch LOCALAPPDATA isolates RepoSync's own data dir.
-    It does not isolate WebView2's browser profile, which WebView2 places relative to the
-    executable. That is harmless here (an ephemeral runner, or a build output directory
-    locally) and is called out so nobody later mistakes this for full sandboxing.
+    NOTE on isolation scope, checked rather than assumed. The scratch LOCALAPPDATA isolates
+    RepoSync's own data dir completely: across a full local run of this gate the developer's
+    real %LOCALAPPDATA%\RepoSync was untouched, its newest file older than the run. It does
+    NOT isolate WebView2's browser profile. Tauri points that at app_local_data_dir(), which
+    resolves through the Windows known-folder API and not through the environment variable, so
+    it lands in the REAL %LOCALAPPDATA%\com.reposync.app\EBWebView regardless of what this
+    script sets. Harmless - it is a browser cache, not app state - and stated here so nobody
+    later mistakes this for full sandboxing.
 
 .PARAMETER ExePath
     Path to the built binary. Defaults to target/release/reposync.exe relative to the
@@ -79,7 +83,8 @@
     Typical cost is about 11 seconds; worst case about 40. The build job it runs in
     already spends minutes compiling and bundling, so this is not a meaningful tax on a
     pull request. Both values are parameters so a slow runner can be accommodated without
-    editing logic.
+    editing logic. Measured on a GitHub windows-latest runner: the startup line appeared at
+    0.46 s and the whole step took 13 seconds.
 #>
 [CmdletBinding()]
 param(
