@@ -224,4 +224,54 @@ describe("ActivityScreen table", () => {
 
     expect(await screen.findByRole("button", { name: /copy/i })).toBeDefined();
   });
+
+  /**
+   * D1 (aria-haspopup: dialog on Activity rows) - baseline `9a254c2` had this
+   * on the row's own `<button>`, back when the whole row WAS one button. The
+   * DataTable migration split that into a mouse-only row plus this chevron,
+   * the row's only real (keyboard-reachable) activation target, and dropped
+   * the attribute in the process with no replacement. Restored here on the
+   * chevron, which opens the same `role="dialog"` drawer the old button did.
+   */
+  it("D1: the receipt button announces that activating it opens a dialog", async () => {
+    renderScreen([record()]);
+    await screen.findByText("success");
+
+    expect(screen.getByRole("button", { name: "Open receipt" }).getAttribute("aria-haspopup")).toBe(
+      "dialog",
+    );
+  });
+
+  /**
+   * D2 (the row behind an open receipt loses its highlight) - baseline
+   * `9a254c2` painted the open row with `selectedId === row.id && "bg-muted"`.
+   * The DataTable migration has no equivalent, so opening a receipt gives no
+   * indication which row it came from once the drawer covers part of the
+   * table. Restored via the primitive's optional `currentKey`.
+   *
+   * Asserted on `aria-current`, not a class name (AGENTS.md: assert on
+   * meaning, not markup) - `aria-current="true"` is this codebase's existing
+   * idiom for "the one that is current" (see `app-shell.tsx`'s nav links),
+   * and unlike a Tailwind class string it survives a restyle of whatever
+   * paints the highlight.
+   */
+  it("D2: the row behind an open receipt is marked current, and no other row is", async () => {
+    renderScreen([
+      record({ id: 1, summary: "First row" }),
+      record({ id: 2, summary: "Second row" }),
+    ]);
+    await screen.findByText("First row");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByText("First row"));
+    await screen.findByRole("button", { name: /copy/i }); // receipt open
+
+    // Scoped to the table: with the receipt open, the drawer renders the same
+    // summary text, so an unscoped `getByText` matches twice.
+    const table = within(screen.getByRole("table", { name: "Activity log" }));
+    const openedRow = table.getByText("First row").closest('[role="row"]') as HTMLElement;
+    const otherRow = table.getByText("Second row").closest('[role="row"]') as HTMLElement;
+    expect(openedRow.getAttribute("aria-current")).toBe("true");
+    expect(otherRow.hasAttribute("aria-current")).toBe(false);
+  });
 });

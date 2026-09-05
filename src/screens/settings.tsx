@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { Loader2, RefreshCw, RotateCcw, Save } from "lucide-react";
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { FieldLabelContext } from "@/components/ui/field-label";
 import { AsyncPanel } from "@/components/async-panel";
 import { DiagnosticsCard } from "@/components/diagnostics-card";
 import { PageShell } from "@/components/page-shell";
@@ -40,11 +41,7 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
             label="Dark theme"
             hint="Applies immediately. Not saved yet - RepoSync starts in light theme each launch."
           >
-            <Switch
-              checked={dark}
-              onCheckedChange={() => onToggleTheme()}
-              aria-label="Dark theme"
-            />
+            <Switch checked={dark} onCheckedChange={() => onToggleTheme()} />
           </Field>
         </CardContent>
       </Card>
@@ -146,10 +143,16 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
         </CardHeader>
         <CardContent className="p-0">
           <Field label="Notify on new release" hint="A tray notification when an upstream release appears.">
-            <Switch checked={draft.notifyOnRelease} onCheckedChange={(v) => set("notifyOnRelease", v)} />
+            <Switch
+              checked={draft.notifyOnRelease}
+              onCheckedChange={(v) => set("notifyOnRelease", v)}
+            />
           </Field>
           <Field label="Notify on failure" hint="A tray notification when a check or update fails.">
-            <Switch checked={draft.notifyOnFailure} onCheckedChange={(v) => set("notifyOnFailure", v)} />
+            <Switch
+              checked={draft.notifyOnFailure}
+              onCheckedChange={(v) => set("notifyOnFailure", v)}
+            />
           </Field>
         </CardContent>
       </Card>
@@ -160,7 +163,10 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
         </CardHeader>
         <CardContent className="p-0">
           <Field label="Launch on login" hint="Start RepoSync automatically when you sign in.">
-            <Switch checked={draft.autostart} onCheckedChange={(v) => set("autostart", v)} />
+            <Switch
+              checked={draft.autostart}
+              onCheckedChange={(v) => set("autostart", v)}
+            />
           </Field>
           <Field
             label="Close button minimizes to tray"
@@ -413,14 +419,29 @@ function UpdateOutcome({
   );
 }
 
+// Owns the accessible-name association for whatever control it wraps
+// (BL-NI-90). The label text carries a generated id and every descendant
+// control reads it through `FieldLabelContext`, so a control placed in a
+// `Field` is named without its call site doing anything - see
+// `ui/field-label.tsx` for why the association is `aria-labelledby` rather
+// than a `<label htmlFor>`.
+//
+// The hint is deliberately NOT part of the name. It is a sentence of
+// explanation, and gluing it to the name would make a screen reader read the
+// whole paragraph before saying on or off.
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  const labelId = useId();
   return (
     <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3 last:border-b-0">
       <div className="min-w-0">
-        <div className="text-sm font-medium">{label}</div>
+        <div id={labelId} className="text-sm font-medium">
+          {label}
+        </div>
         {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
       </div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
+      <div className="flex shrink-0 items-center gap-2">
+        <FieldLabelContext.Provider value={labelId}>{children}</FieldLabelContext.Provider>
+      </div>
     </div>
   );
 }
