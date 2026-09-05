@@ -59,6 +59,23 @@ describe("field label association", () => {
     expect(screen.getByRole("switch", { name: "Explicit name" })).toBeTruthy();
   });
 
+  it("keeps two controls in one field distinguishable, since the field names them alike", () => {
+    // The Codex review's finding on this mechanism: a `Field` hands one label
+    // id to every control inside it, so a two-control field (Settings' quiet
+    // window, a start and an end) names both the same unless each is given an
+    // explicit name. Two controls a user must tell apart, sharing one name, is
+    // worse than no name: it invites inverting the schedule.
+    render(
+      <Field label="Quiet window">
+        <Input type="time" aria-label="Quiet window start" value="22:00" onChange={() => {}} />
+        <Input type="time" aria-label="Quiet window end" value="07:00" onChange={() => {}} />
+      </Field>,
+    );
+    expect(screen.getByLabelText("Quiet window start")).toBeTruthy();
+    expect(screen.getByLabelText("Quiet window end")).toBeTruthy();
+    expect(screen.queryAllByLabelText("Quiet window")).toHaveLength(0);
+  });
+
   it("leaves a switch outside any field unnamed rather than inventing a name", () => {
     // The escape-hatch case. Nothing should fabricate a name here; the point
     // is that the mechanism does not reach where there is no label to reach

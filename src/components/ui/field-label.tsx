@@ -27,6 +27,19 @@ import { createContext, useContext } from "react";
  *
  * `undefined` outside a `Field`, which is why every consumer keeps an explicit
  * `aria-label` escape hatch for controls that live somewhere else.
+ *
+ * THE ONE RULE THIS MECHANISM CANNOT ENFORCE: it hands the SAME id to every
+ * control inside a `Field`, so it is only correct where a `Field` wraps ONE
+ * control. A `Field` holding two - Settings' "Quiet window", with a start and
+ * an end time - would name both identically, which is worse than nameless: a
+ * screen-reader user hears two controls called "Quiet window" and can invert
+ * their own schedule. Any `Field` with more than one control MUST name each
+ * one explicitly, and `TimeInput` makes `aria-label` required for exactly that
+ * reason.
+ *
+ * Found by the Codex adversarial review of the change that introduced this
+ * file. The original tests missed it because they covered one control per
+ * provider, which is the shape that works.
  */
 export const FieldLabelContext = createContext<string | undefined>(undefined);
 

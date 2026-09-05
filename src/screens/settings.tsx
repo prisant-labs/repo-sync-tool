@@ -129,9 +129,17 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           </Field>
           {quietOn && (
             <Field label="Quiet window" hint="From start time to end time, your local clock.">
-              <TimeInput value={draft.quietHoursStart ?? 0} onChange={(v) => set("quietHoursStart", v)} />
+              <TimeInput
+                aria-label="Quiet window start"
+                value={draft.quietHoursStart ?? 0}
+                onChange={(v) => set("quietHoursStart", v)}
+              />
               <span className="text-xs text-muted-foreground">to</span>
-              <TimeInput value={draft.quietHoursEnd ?? 0} onChange={(v) => set("quietHoursEnd", v)} />
+              <TimeInput
+                aria-label="Quiet window end"
+                value={draft.quietHoursEnd ?? 0}
+                onChange={(v) => set("quietHoursEnd", v)}
+              />
             </Field>
           )}
         </CardContent>
@@ -495,11 +503,28 @@ function TextInput({
 }
 
 /** A native time picker bound to a minute-of-day integer (0..1439). */
-function TimeInput({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+// `aria-label` is REQUIRED here, unlike on `Switch` and `Input` where an
+// enclosing `Field` supplies the name. Two TimeInputs share one `Field`
+// ("Quiet window"), and a `Field` hands the SAME label id to every control
+// inside it, so inheriting would name both endpoints identically and leave a
+// screen-reader user unable to tell start from end - they could invert their
+// own quiet hours. Caught by the Codex adversarial review of this change; the
+// automatic naming was right for the twelve single-control fields and wrong
+// for the one field with two.
+function TimeInput({
+  value,
+  onChange,
+  "aria-label": ariaLabel,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  "aria-label": string;
+}) {
   return (
     <Input
       type="time"
       className="w-32"
+      aria-label={ariaLabel}
       value={minutesToHhMm(value)}
       onChange={(e) => onChange(hhMmToMinutes(e.target.value))}
     />
