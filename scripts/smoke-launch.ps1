@@ -1,7 +1,19 @@
 #Requires -Version 7.0
 <#
 .SYNOPSIS
-    Binary smoke gate: launch the built RepoSync binary and assert it survives startup.
+    Binary smoke gate: launch the built RepoSync binary, assert it survives startup, then
+    launch it a SECOND time and assert the single-instance guard turns that one away.
+
+.NOTES
+    RUNNING THIS LOCALLY: CLOSE REPOSYNC FIRST.
+
+    Since BL-NI-73 (nothing stops two RepoSync instances sharing one database) the app
+    carries a startup singleton keyed on its BUNDLE IDENTIFIER (com.reposync.app), not on
+    its data directory. The scratch %LOCALAPPDATA% below therefore does NOT isolate this
+    gate from an installed RepoSync sitting in your tray: the guard sees the same
+    identifier and turns THIS gate's first launch away, which shows up as an immediate
+    exit with code 0 before the startup line. Phase 1 says so explicitly when it sees that
+    shape. The same applies to `pnpm tauri dev`, for the same reason and by design.
 
 .DESCRIPTION
     Closes BL-NI-88 (no gate ever launches the built binary). Every other gate in this
@@ -11,6 +23,13 @@
     is how BL-NI-87 (an unreachable! in logging::init that was always reachable) survived
     19 days of green gates and two installers: only launching the built binary could
     catch it.
+
+    It also carries the machine-checkable half of BL-NI-73 (nothing stops two RepoSync
+    instances sharing one database). That guard is a property of the PROCESS - a named
+    mutex claimed during plugin setup - so nothing that reads source or calls a library
+    function can see whether it works. Only launching the binary twice can. Phase 4 does
+    exactly that; see the section below it for what it asserts and why each assertion is
+    there.
 
     This script is that launch. It is deliberately paranoid about the one failure shape
     the app actually has:
@@ -55,6 +74,11 @@
 
 .PARAMETER SettleSeconds
     How long to keep watching the process AFTER the startup line appears. See below.
+
+.PARAMETER SecondLaunchTimeoutSeconds
+    How long to wait for the SECOND launch to exit on its own, and then how long to poll
+    for the running instance's deferral line. A second instance that is still alive after
+    this is the failure BL-NI-73 describes.
 
 .PARAMETER KeepScratch
     Leave the scratch data directory in place instead of deleting it (for debugging).
@@ -113,6 +137,7 @@ param(
     [int]$StartupTimeoutSeconds = 30,
     [int]$ReadyTimeoutSeconds = 30,
     [int]$SettleSeconds = 10,
+    [int]$SecondLaunchTimeoutSeconds = 20,
     [switch]$KeepScratch,
     [switch]$SelfTest
 )
@@ -154,6 +179,19 @@ $ReadyEvent = 'app.startup_completed'
 # message would have to cover both a deadlock and a window that never appeared, and
 # "never became ready" reads as a hang.
 $WindowFailedEvent = 'app.window_setup_failed'
+
+# The line the RUNNING instance logs when a second launch is handed to it (BL-NI-73 -
+# nothing stops two RepoSync instances sharing one database). Emitted from
+# `crate::single_instance::on_second_launch`, which is where the plugin's callback runs.
+#
+# Asserted because "the second process exited" is NOT evidence that the guard worked: a
+# process that crashes on startup also exits, and would satisfy an exit-only assertion
+# perfectly. This line is the POSITIVE half - the running instance saying it was handed a
+# second launch - and it comes from the process whose log appender is alive and flushing.
+# The doomed second process leaves through std::process::exit(0) inside the plugin's own
+# setup hook, which unwinds nothing, so ITS worker guard never drops and anything it
+# queued may never reach the file. Nothing it writes can be relied on.
+$DeferralEvent = 'app.second_instance_deferred'
 
 # Daily rolling files named LOG_FILE_PREFIX.YYYY-MM-DD.LOG_FILE_SUFFIX
 # (crates/reposync-core/src/logging.rs), written into logs/ under the data dir.
@@ -250,6 +288,32 @@ function Read-AllLogText {
     # Get-LogFiles hands back newest first; read oldest first so the text reads in order.
     [array]::Reverse($files)
     return (($files | ForEach-Object { Read-LogText -Path $_.FullName }) -join [System.Environment]::NewLine)
+}
+
+# Count occurrences of a marker across the combined log text.
+#
+# `-split` and regex counting are both wrong here: the markers are literal event names
+# containing a dot, and a regex would quietly treat it as "any character". Ordinal
+# IndexOf is literal, culture-independent, and counts non-overlapping matches, which is
+# what "how many processes logged this" means.
+#
+# Needed because the BL-NI-73 assertion is about a COUNT rather than presence. A run of
+# this gate launches the binary twice, so presence proves nothing about the second
+# launch: the readiness marker being there is equally consistent with one instance
+# starting and with two. Exactly one is the claim.
+function Measure-Occurrence {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][string]$Needle
+    )
+    if ($Text.Length -eq 0) { return 0 }
+    $count = 0
+    $at = $Text.IndexOf($Needle, [System.StringComparison]::Ordinal)
+    while ($at -ge 0) {
+        $count++
+        $at = $Text.IndexOf($Needle, $at + $Needle.Length, [System.StringComparison]::Ordinal)
+    }
+    return $count
 }
 
 # Everything a human needs to diagnose a red gate, printed on every failure path. A CI
@@ -410,7 +474,26 @@ function Invoke-SelfTest {
         Assert-True -Condition ((Read-AllLogText -LogDir $missing).Length -eq 0) -What 'a log directory that does not exist reads as empty'
         Assert-True -Condition (@(Get-LogFiles -LogDir $missing).Count -eq 0) -What 'a log directory that does not exist lists no files'
 
-        # 5. Only OUR files count. The appender names every file reposync.<date>.log, and
+        # 5. Counting, which is what the BL-NI-73 (nothing stops two RepoSync instances
+        #    sharing one database) assertion rests on. Presence is not enough there: this
+        #    gate launches the binary TWICE, so "the readiness marker is present" is
+        #    equally true whether one instance started or two. Exactly one is the claim,
+        #    and it must survive the marker landing in two different daily files.
+        Assert-True -Condition ((Measure-Occurrence -Text "a $ReadyEvent b" -Needle $ReadyEvent) -eq 1) -What 'counting: one occurrence is counted once'
+        Assert-True -Condition ((Measure-Occurrence -Text "$ReadyEvent`n$ReadyEvent" -Needle $ReadyEvent) -eq 2) -What 'counting: two occurrences are counted twice, which is the guard failure this gate exists to catch'
+        Assert-True -Condition ((Measure-Occurrence -Text 'nothing here' -Needle $ReadyEvent) -eq 0) -What 'counting: an absent marker counts zero'
+        Assert-True -Condition ((Measure-Occurrence -Text '' -Needle $ReadyEvent) -eq 0) -What 'counting: empty text counts zero rather than throwing'
+        # The event names contain dots. A regex-based count would read those as "any
+        # character" and match a line that merely resembles the event, so the count is
+        # ordinal and literal. This fixture would match under a regex and must not here.
+        Assert-True -Condition ((Measure-Occurrence -Text 'appXstartupXcompleted' -Needle $ReadyEvent) -eq 0) -What 'counting: the dots in the event name are literal, not regex wildcards'
+
+        $counted = Join-Path $root 'counted\logs'
+        New-LogFixture -LogDir $counted -Date '2026-09-04' -WrittenUtc ([datetime]::new(2026, 9, 4, 23, 59, 59, [System.DateTimeKind]::Utc)) -Content "event=`"$ReadyEvent`"" | Out-Null
+        New-LogFixture -LogDir $counted -Date '2026-09-05' -WrittenUtc ([datetime]::new(2026, 9, 5, 0, 0, 1, [System.DateTimeKind]::Utc)) -Content "event=`"$ReadyEvent`"" | Out-Null
+        Assert-True -Condition ((Measure-Occurrence -Text (Read-AllLogText -LogDir $counted) -Needle $ReadyEvent) -eq 2) -What 'counting: markers in two daily files are counted across both, so a rollover cannot hide a second instance'
+
+        # 6. Only OUR files count. The appender names every file reposync.<date>.log, and
         #    anything else in that directory is not ours to assert on.
         $mixed = Join-Path $root 'mixed\logs'
         New-LogFixture -LogDir $mixed -Date '2026-09-05' -WrittenUtc ([datetime]::new(2026, 9, 5, 1, 0, 0, [System.DateTimeKind]::Utc)) -Content $StartupLine | Out-Null
@@ -488,6 +571,10 @@ $dataDir = Join-Path $scratchRoot 'RepoSync'
 $logDir = Join-Path $dataDir 'logs'
 $stdErrPath = Join-Path $scratchRoot 'stderr.txt'
 $stdOutPath = Join-Path $scratchRoot 'stdout.txt'
+# The second launch gets its OWN capture files. The first process still holds handles on
+# the pair above for its whole life, so reusing them would fail the second Start-Process.
+$stdErrPath2 = Join-Path $scratchRoot 'stderr-second.txt'
+$stdOutPath2 = Join-Path $scratchRoot 'stdout-second.txt'
 
 Write-Section 'Scratch isolation'
 Write-Host "LOCALAPPDATA    : $scratchRoot"
@@ -497,6 +584,7 @@ Write-Host "expected logs   : $logDir"
 $originalLocalAppData = $env:LOCALAPPDATA
 $originalLogLevel = $env:REPOSYNC_LOG
 $proc = $null
+$proc2 = $null
 $failed = $false
 $windowTitle = $null
 $windowSeenAfterSeconds = $null
@@ -536,6 +624,16 @@ try {
     while ($sw.Elapsed.TotalSeconds -lt $StartupTimeoutSeconds) {
         if ($proc.HasExited) {
             Write-Host "::error::Smoke gate: the app EXITED $([math]::Round($sw.Elapsed.TotalSeconds, 2)) s after launch, before the startup line was written. Exit code $(Format-ExitCode -Code $proc.ExitCode). A GUI-subsystem process that dies during startup is exactly the BL-NI-87 shape; the captured stderr below carries the panic text if there was one."
+            # A clean exit code 0 at this point has one overwhelmingly likely cause, and
+            # it is not a defect in the build. It is the signature of the BL-NI-73
+            # single-instance guard turning THIS launch away, which happens when RepoSync
+            # is already running in this logon session. The guard keys on the bundle
+            # identifier, so the scratch %LOCALAPPDATA% above does not isolate the gate
+            # from an installed copy. Saying so here costs one line and saves a
+            # maintainer from debugging a healthy binary.
+            if ($proc.ExitCode -eq 0) {
+                Write-Host '::error::Smoke gate: that exit was CLEAN (code 0), which is what the single-instance guard (BL-NI-73) does to a second launch. A RepoSync instance is almost certainly already running in this logon session - close it (tray icon -> Quit) and run this again. The guard keys on the bundle identifier com.reposync.app, so pointing LOCALAPPDATA at a scratch directory does not hide this gate from an installed copy.'
+            }
             $failed = $true
             break
         }
@@ -731,14 +829,159 @@ try {
         }
     }
 
+    # --- Phase 4: launch it AGAIN and assert the singleton guard turns that one away --
+    #
+    # BL-NI-73 (nothing stops two RepoSync instances sharing one database). This is the
+    # machine-checkable half of the paired verification that row demands; the other half
+    # is a human launching the packaged app twice and confirming the first window comes
+    # to the front with no second tray icon, which no CI runner can see.
+    #
+    # Why this needs a launch at all: the guard is a property of the PROCESS. It is a
+    # named mutex claimed in a plugin setup hook, so cargo test, clippy and vitest cannot
+    # reach it - the same gap BL-NI-88 (no gate ever launches the built binary) exists to
+    # close, one layer in.
+    #
+    # FOUR assertions, and each covers something the others do not:
+    #
+    #   1. The second process EXITS ON ITS OWN, within the budget. This is the assertion
+    #      the whole row is about. Without the guard it simply keeps running, and a
+    #      second RepoSync over one data directory is two schedulers, two sets of git
+    #      processes in the SAME working trees, and racing writes to repo_local_state.
+    #   2. Its exit code is 0. "It exited" is also true of "it crashed", and a crash
+    #      would be a different and worse defect wearing the same evidence. The plugin's
+    #      Windows path leaves through std::process::exit(0), so a clean zero is the
+    #      guard's own signature.
+    #   3. The FIRST process is still alive. A guard that turned away the wrong instance,
+    #      or took both down, would satisfy 1 and 2 perfectly.
+    #   4. The readiness marker appears EXACTLY ONCE across the run's logs. This is the
+    #      one that survives a broken guard failing in an unexpected shape: two instances
+    #      that both complete startup write it twice, whatever they do afterwards.
+    #      Presence alone proves nothing here, because this run launches the binary twice
+    #      by design.
+    #
+    # Plus one positive check that is not strictly an assertion about the second process
+    # at all: the RUNNING instance must log the deferral event. That is the difference
+    # between "the guard turned it away" and "it happened to die", which assertions 1
+    # to 3 cannot tell apart on their own.
+    #
+    # NOT asserted: that the window actually came to the FRONT. On Windows the right to
+    # call SetForegroundWindow belongs to the process the user just launched - the second
+    # instance - not to the one receiving the message, so a perfectly working guard can
+    # legitimately end with a flashing taskbar button. The app records that as a
+    # focus_failed field rather than a failure, and so does this gate. Confirming the
+    # raise visually is part of the human verification the backlog row requires.
+    #
+    # The startup LINE is deliberately not counted. It appears once per process, so a
+    # count of it would be 2 on a healthy run - and could be 1, because the second
+    # process leaves through process::exit, which unwinds nothing, so its log worker
+    # never flushes and its line may never land. Nothing about that line is a stable
+    # signal here, which is exactly why the count is taken on the readiness marker
+    # instead: the second instance provably never reaches the code that emits it, since
+    # the guard runs in the FIRST plugin's setup hook, long before the setup closure.
+
+    if (-not $failed) {
+        Write-Section "Second launch (BL-NI-73 single-instance guard, up to $SecondLaunchTimeoutSeconds s)"
+        Write-Host 'Launching the SAME binary again against the SAME scratch data directory, which'
+        Write-Host 'is what a user double-clicking the shortcut a second time does. The running'
+        Write-Host 'instance should take the launch over and the new process should exit by itself.'
+
+        try {
+            $proc2 = Start-Process -FilePath $ExePath `
+                -WorkingDirectory $scratchRoot `
+                -RedirectStandardError $stdErrPath2 `
+                -RedirectStandardOutput $stdOutPath2 `
+                -PassThru
+        }
+        catch {
+            Write-Host "::error::Smoke gate: could not start the second instance from '$ExePath': $($_.Exception.Message)"
+            Write-Diagnostics -Process $proc -LogDir $logDir -StdErrPath $stdErrPath -StdOutPath $stdOutPath -ScratchDir $scratchRoot
+            exit 1
+        }
+
+        Write-Host "second instance started as pid $($proc2.Id) at $(Get-Date -Format 'HH:mm:ss.fff')"
+
+        $second = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($second.Elapsed.TotalSeconds -lt $SecondLaunchTimeoutSeconds -and -not $proc2.HasExited) {
+            Start-Sleep -Milliseconds $PollMs
+        }
+
+        if (-not $proc2.HasExited) {
+            Write-Host "::error::Smoke gate: THE SECOND INSTANCE IS STILL RUNNING $SecondLaunchTimeoutSeconds s after launch (pid $($proc2.Id)), while the first (pid $($proc.Id)) is also alive. The single-instance guard did not turn it away, so this build allows two RepoSync processes over one data directory: two schedulers, two git processes in the SAME working trees - which the in-memory per-repo lock map cannot serialize across processes and which can corrupt an index - and racing read-modify-writes on repo_local_state. This is BL-NI-73 exactly as filed."
+            $failed = $true
+        }
+        else {
+            Write-Host "second instance exited on its own after $([math]::Round($second.Elapsed.TotalSeconds, 2)) s, exit code $(Format-ExitCode -Code $proc2.ExitCode)"
+
+            if ($proc2.ExitCode -eq 0) {
+                Write-Host 'PASS  the second launch exited on its own, cleanly (code 0)'
+            }
+            else {
+                Write-Host "::error::Smoke gate: the second instance exited, but NOT cleanly - exit code $(Format-ExitCode -Code $proc2.ExitCode). The guard leaves through std::process::exit(0), so a non-zero code means the second process CRASHED rather than being turned away, which would satisfy an exit-only check while being a worse defect than the one this asserts against. Its captured stderr is printed below."
+                $failed = $true
+            }
+
+            if ($proc.HasExited) {
+                Write-Host "::error::Smoke gate: the FIRST instance (pid $($proc.Id)) is no longer running after the second launch. Exit code $(Format-ExitCode -Code $proc.ExitCode). A second launch must be turned away WITHOUT disturbing the instance the user already had; taking the running app down is worse than allowing two."
+                $failed = $true
+            }
+            else {
+                Write-Host "PASS  the first instance is still alive (pid $($proc.Id))"
+            }
+        }
+
+        # Poll for the deferral line rather than reading once. The callback runs
+        # synchronously in the running instance while the second process is still blocked
+        # handing over its arguments, so by now it HAS run - but the log writer is
+        # non-blocking, so the line reaches disk a moment later.
+        $deferral = [System.Diagnostics.Stopwatch]::StartNew()
+        $sawDeferral = $false
+        while ($deferral.Elapsed.TotalSeconds -lt $SecondLaunchTimeoutSeconds) {
+            if ((Read-AllLogText -LogDir $logDir).Contains($DeferralEvent)) {
+                $sawDeferral = $true
+                break
+            }
+            Start-Sleep -Milliseconds $PollMs
+        }
+
+        if ($sawDeferral) {
+            Write-Host "PASS  the running instance logged event=$DeferralEvent, so the second launch was DEFERRED to it rather than merely dying"
+        }
+        else {
+            Write-Host "::error::Smoke gate: the second process is gone but the running instance never logged event=$DeferralEvent. Every assertion above is also satisfied by a second instance that CRASHED on startup, so without this line there is no evidence the guard did anything. Either the single-instance callback did not fire, or it fired and the running instance's log writer is no longer reaching disk."
+            $failed = $true
+        }
+
+        $content = Read-AllLogText -LogDir $logDir
+        $readyCount = Measure-Occurrence -Text $content -Needle $ReadyEvent
+        if ($readyCount -eq 1) {
+            Write-Host "PASS  event=$ReadyEvent appears EXACTLY ONCE across this run's logs, so only one instance completed startup"
+        }
+        else {
+            Write-Host "::error::Smoke gate: event=$ReadyEvent appears $readyCount time(s) across this run's logs; exactly 1 is required. This run launched the binary twice against one data directory, and only the first launch may reach the end of startup. More than one means the guard let a second instance through. Zero means the marker vanished from a log that carried it moments ago, which is a different failure and just as much a red gate."
+            $failed = $true
+        }
+    }
+
     if ($failed) {
         Write-Diagnostics -Process $proc -LogDir $logDir -StdErrPath $stdErrPath -StdOutPath $stdOutPath -ScratchDir $scratchRoot
+        if ($proc2) {
+            Write-Host ''
+            if ($proc2.HasExited) {
+                Write-Host "second instance: EXITED, exit code $(Format-ExitCode -Code $proc2.ExitCode)"
+            }
+            else {
+                Write-Host "second instance: still running (pid $($proc2.Id))"
+            }
+            Show-FileOrNote -Label 'captured stderr (second instance)' -Path $stdErrPath2
+            Show-FileOrNote -Label 'captured stdout (second instance)' -Path $stdOutPath2
+        }
         exit 1
     }
 
     Write-Section 'RESULT'
     Write-Host 'Smoke gate PASSED: the built binary launched, wrote its startup line, reached'
-    Write-Host 'readiness, and was still alive after the settle window.'
+    Write-Host 'readiness, was still alive after the settle window, and turned a second launch'
+    Write-Host 'away without disturbing itself.'
     exit 0
 }
 finally {
@@ -746,13 +989,19 @@ finally {
     # the real RepoSync in their tray; Stop-Process -Name reposync would kill it, and
     # Get-Process -Name reposync would have let this gate pass on THEIR instance without
     # ever launching the build under test.
-    if ($proc -and -not $proc.HasExited) {
-        Write-Host ''
-        Write-Host "Terminating pid $($proc.Id) and its WebView2 child processes."
-        # /T kills the tree: a Tauri app spawns msedgewebview2.exe children that would
-        # otherwise be orphaned.
-        try { & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null } catch { }
-        try { $proc.WaitForExit(5000) | Out-Null } catch { }
+    # Both launches, and the second one FIRST. On a healthy run it is already gone; on
+    # the run this gate exists to fail - the guard missing or broken - it is a live
+    # second RepoSync holding the scratch database open, and leaving it behind would
+    # both leak a process and block the cleanup below.
+    foreach ($p in @($proc2, $proc)) {
+        if ($p -and -not $p.HasExited) {
+            Write-Host ''
+            Write-Host "Terminating pid $($p.Id) and its WebView2 child processes."
+            # /T kills the tree: a Tauri app spawns msedgewebview2.exe children that
+            # would otherwise be orphaned.
+            try { & taskkill.exe /PID $p.Id /T /F 2>&1 | Out-Null } catch { }
+            try { $p.WaitForExit(5000) | Out-Null } catch { }
+        }
     }
 
     $env:LOCALAPPDATA = $originalLocalAppData
