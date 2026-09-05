@@ -59,6 +59,14 @@
 .PARAMETER KeepScratch
     Leave the scratch data directory in place instead of deleting it (for debugging).
 
+.PARAMETER SelfTest
+    Run this script's own log-reading assertions against synthesized fixtures and exit,
+    launching nothing. Covers the daily-rollover boundary: an app started just before UTC
+    midnight writes its startup line to one file and its readiness marker to the next, so
+    a gate that read only the newest file would reject a healthy binary once a day. A
+    required check that goes red on a good build is how a gate gets ignored and then
+    switched off, so that case is worth a test rather than a comment.
+
 .NOTES
     TIMING, and why these two numbers:
 
@@ -105,7 +113,8 @@ param(
     [int]$StartupTimeoutSeconds = 30,
     [int]$ReadyTimeoutSeconds = 30,
     [int]$SettleSeconds = 10,
-    [switch]$KeepScratch
+    [switch]$KeepScratch,
+    [switch]$SelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -224,6 +233,25 @@ function Show-FileOrNote {
     Write-Host $text
 }
 
+# Read EVERY log file in the scratch directory as one text, oldest first.
+#
+# Not just the newest, and the difference is a real failure mode rather than tidiness.
+# The appender rolls DAILY, so a launch that straddles UTC midnight writes its startup
+# line into one file and its readiness marker into the next. Asserting against only the
+# newest would then fail a perfectly healthy binary, once a day, on a required check, and
+# a blocking gate that goes red on a good build is how a gate gets ignored and then
+# switched off. Concatenating is safe precisely because the data directory is created
+# fresh for every run: every file under it belongs to THIS launch, so no assertion here
+# can be satisfied by a marker an earlier run left behind.
+function Read-AllLogText {
+    param([Parameter(Mandatory)][string]$LogDir)
+    $files = @(Get-LogFiles -LogDir $LogDir)
+    if ($files.Count -eq 0) { return '' }
+    # Get-LogFiles hands back newest first; read oldest first so the text reads in order.
+    [array]::Reverse($files)
+    return (($files | ForEach-Object { Read-LogText -Path $_.FullName }) -join [System.Environment]::NewLine)
+}
+
 # Everything a human needs to diagnose a red gate, printed on every failure path. A CI
 # failure nobody can diagnose is barely better than no gate at all.
 function Write-Diagnostics {
@@ -260,7 +288,13 @@ function Write-Diagnostics {
             $read = (Read-LogText -Path $f.FullName).Length
             Write-Host ('{0,10} chars read, directory entry says {1,10} bytes  {2}' -f $read, $f.Length, $f.Name)
         }
-        Show-FileOrNote -Label "log contents: $($logs[0].Name)" -Path $logs[0].FullName
+        # Every file, oldest first: a run that crossed the daily rollover has its
+        # evidence split across two of them, and printing one would hide half of it.
+        $ordered = @($logs)
+        [array]::Reverse($ordered)
+        foreach ($f in $ordered) {
+            Show-FileOrNote -Label "log contents: $($f.Name)" -Path $f.FullName
+        }
     }
 
     Show-FileOrNote -Label 'captured stderr' -Path $StdErrPath
@@ -292,6 +326,114 @@ function Get-WebView2Version {
         }
     }
     return $null
+}
+
+# --- Self-test ----------------------------------------------------------------------
+#
+# The gate's own log-reading logic, checked against synthesized fixtures, launching
+# nothing. It exists for one case that is easy to reason past and impossible to notice
+# until it bites: the appender rolls DAILY, on UTC midnight, so a launch that straddles
+# that instant writes its startup line into yesterday's file and its readiness marker
+# into today's. A gate reading only the newest file would fail a healthy binary, once a
+# day, on a REQUIRED check. That is the most corrosive kind of flake, because the cost
+# lands on a maintainer who did nothing wrong and the cheapest response is to stop
+# trusting the gate.
+#
+# Runs in CI as its own step, so the assertions this gate is built on are themselves
+# gated rather than taken on faith.
+
+function New-LogFixture {
+    param(
+        [Parameter(Mandatory)][string]$LogDir,
+        [Parameter(Mandatory)][string]$Date,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content,
+        [Parameter(Mandatory)][datetime]$WrittenUtc
+    )
+    New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
+    $path = Join-Path $LogDir "reposync.$Date.log"
+    [System.IO.File]::WriteAllText($path, $Content)
+    (Get-Item -LiteralPath $path).LastWriteTimeUtc = $WrittenUtc
+    return $path
+}
+
+function Invoke-SelfTest {
+    $failures = 0
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ('reposync-smoke-selftest-' + [guid]::NewGuid().ToString('N'))
+
+    function Assert-True {
+        param([Parameter(Mandatory)][bool]$Condition, [Parameter(Mandatory)][string]$What)
+        if ($Condition) {
+            Write-Host "PASS  $What"
+        }
+        else {
+            Write-Host "::error::Smoke gate self-test FAILED: $What"
+            $script:selfTestFailures++
+        }
+    }
+
+    $script:selfTestFailures = 0
+
+    try {
+        # 1. The rollover case. A launch just before UTC midnight leaves the startup line
+        #    in yesterday's file and the readiness marker in today's. Both must be found.
+        $split = Join-Path $root 'split\logs'
+        New-LogFixture -LogDir $split -Date '2026-09-04' -WrittenUtc ([datetime]::new(2026, 9, 4, 23, 59, 59, [System.DateTimeKind]::Utc)) `
+            -Content "2026-09-04T23:59:59Z  INFO reposync_lib::logging: $StartupLine version=`"0.9.0`"" | Out-Null
+        New-LogFixture -LogDir $split -Date '2026-09-05' -WrittenUtc ([datetime]::new(2026, 9, 5, 0, 0, 1, [System.DateTimeKind]::Utc)) `
+            -Content "2026-09-05T00:00:01Z  INFO reposync_lib: startup finished event=`"$ReadyEvent`"" | Out-Null
+
+        $text = Read-AllLogText -LogDir $split
+        Assert-True -Condition ($text.Contains($StartupLine)) -What 'rollover: the startup line is found in the OLDER file'
+        Assert-True -Condition ($text.Contains($ReadyEvent)) -What 'rollover: the readiness marker is found in the NEWER file'
+        Assert-True -Condition ($text.Length -gt 0) -What 'rollover: the combined content is non-empty'
+        Assert-True -Condition ($text.IndexOf($StartupLine) -ge 0 -and $text.IndexOf($StartupLine) -lt $text.IndexOf($ReadyEvent)) -What 'rollover: files are concatenated oldest first, so the text reads in order'
+
+        # 2. The ordinary case: one file carrying both markers still works.
+        $single = Join-Path $root 'single\logs'
+        New-LogFixture -LogDir $single -Date '2026-09-05' -WrittenUtc ([datetime]::new(2026, 9, 5, 12, 0, 0, [System.DateTimeKind]::Utc)) `
+            -Content "$StartupLine`nevent=`"$ReadyEvent`"" | Out-Null
+        $text = Read-AllLogText -LogDir $single
+        Assert-True -Condition ($text.Contains($StartupLine) -and $text.Contains($ReadyEvent)) -What 'single file: both markers are found'
+
+        # 3. Non-empty must mean CONTENT. A directory of empty files is still empty, which
+        #    is exactly the shape an aborted process leaves behind under panic = abort,
+        #    and reading across several files must not blur that into "some file exists".
+        $empty = Join-Path $root 'empty\logs'
+        New-LogFixture -LogDir $empty -Date '2026-09-04' -WrittenUtc ([datetime]::new(2026, 9, 4, 23, 59, 59, [System.DateTimeKind]::Utc)) -Content '' | Out-Null
+        New-LogFixture -LogDir $empty -Date '2026-09-05' -WrittenUtc ([datetime]::new(2026, 9, 5, 0, 0, 1, [System.DateTimeKind]::Utc)) -Content '' | Out-Null
+        $text = Read-AllLogText -LogDir $empty
+        Assert-True -Condition ($text.Trim().Length -eq 0) -What 'two empty files still read as empty, so the crash shape is not masked'
+        Assert-True -Condition (@(Get-LogFiles -LogDir $empty).Count -eq 2) -What 'two empty files are still FOUND, so the failure is reported as empty rather than as missing'
+
+        # 4. A directory that does not exist yet reads as empty rather than throwing.
+        $missing = Join-Path $root 'missing\logs'
+        Assert-True -Condition ((Read-AllLogText -LogDir $missing).Length -eq 0) -What 'a log directory that does not exist reads as empty'
+        Assert-True -Condition (@(Get-LogFiles -LogDir $missing).Count -eq 0) -What 'a log directory that does not exist lists no files'
+
+        # 5. Only OUR files count. The appender names every file reposync.<date>.log, and
+        #    anything else in that directory is not ours to assert on.
+        $mixed = Join-Path $root 'mixed\logs'
+        New-LogFixture -LogDir $mixed -Date '2026-09-05' -WrittenUtc ([datetime]::new(2026, 9, 5, 1, 0, 0, [System.DateTimeKind]::Utc)) -Content $StartupLine | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $mixed 'notes.txt'), 'not a log file')
+        Assert-True -Condition (@(Get-LogFiles -LogDir $mixed).Count -eq 1) -What 'a non-matching file in the log directory is ignored'
+    }
+    finally {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $failures = $script:selfTestFailures
+    Write-Host ''
+    if ($failures -eq 0) {
+        Write-Host 'Smoke gate self-test PASSED.'
+        return 0
+    }
+    Write-Host "Smoke gate self-test FAILED with $failures assertion failure(s)."
+    return 1
+}
+
+if ($SelfTest) {
+    Write-Section 'Smoke gate self-test (log reading, launching nothing)'
+    exit (Invoke-SelfTest)
 }
 
 # --- Resolve inputs -----------------------------------------------------------------
@@ -400,10 +542,10 @@ try {
 
         $logs = @(Get-LogFiles -LogDir $logDir)
         if ($logs.Count -gt 0) {
-            $content = Read-LogText -Path $logs[0].FullName
+            $content = Read-AllLogText -LogDir $logDir
             if ($content.Length -gt 0 -and $content.Contains($StartupLine)) {
                 $sawStartupLine = $true
-                Write-Host "startup line seen after $([math]::Round($sw.Elapsed.TotalSeconds, 2)) s in $($logs[0].Name) ($($content.Length) chars read)"
+                Write-Host "startup line seen after $([math]::Round($sw.Elapsed.TotalSeconds, 2)) s ($($content.Length) chars across $($logs.Count) file(s))"
                 break
             }
         }
@@ -417,12 +559,12 @@ try {
             Write-Host "::error::Smoke gate: after $StartupTimeoutSeconds s the app is still running but NO log file matching 'logs\$LogGlob' exists. logging::init either never ran or failed, and the app is running blind."
         }
         else {
-            $content = Read-LogText -Path $logs[0].FullName
+            $content = Read-AllLogText -LogDir $logDir
             if ($content.Length -eq 0) {
-                Write-Host "::error::Smoke gate: after $StartupTimeoutSeconds s the log file '$($logs[0].Name)' exists but reading it yields ZERO BYTES. The appender opens that file when logging::init builds it, so an empty one means nothing was ever flushed to it - either the process aborted before the queue drained (the panic = abort shape, and what BL-NI-87 looked like), or it is still running and the startup line is no longer being emitted at all."
+                Write-Host "::error::Smoke gate: after $StartupTimeoutSeconds s the log file(s) under '$logDir' exist but reading them yields ZERO BYTES. The appender opens that file when logging::init builds it, so an empty one means nothing was ever flushed to it - either the process aborted before the queue drained (the panic = abort shape, and what BL-NI-87 looked like), or it is still running and the startup line is no longer being emitted at all."
             }
             else {
-                Write-Host "::error::Smoke gate: after $StartupTimeoutSeconds s the log file '$($logs[0].Name)' is non-empty ($($content.Length) chars) but does NOT contain the startup line '$StartupLine'. Either the app is stuck before logging::init finished, or that line changed and this gate needs updating."
+                Write-Host "::error::Smoke gate: after $StartupTimeoutSeconds s the log is non-empty ($($content.Length) chars across $($logs.Count) file(s)) but does NOT contain the startup line '$StartupLine'. Either the app is stuck before logging::init finished, or that line changed and this gate needs updating."
             }
         }
         $failed = $true
@@ -456,7 +598,7 @@ try {
 
             $logs = @(Get-LogFiles -LogDir $logDir)
             if ($logs.Count -gt 0) {
-                $content = Read-LogText -Path $logs[0].FullName
+                $content = Read-AllLogText -LogDir $logDir
                 if ($content.Contains($ReadyEvent)) {
                     $sawReady = $true
                     Write-Host "readiness marker seen after $([math]::Round($ready.Elapsed.TotalSeconds, 2)) s"
@@ -472,8 +614,7 @@ try {
             # app either never got to the end of startup (a hang), or it got there and
             # deliberately withheld the marker because the window it produced was not
             # usable. The log says which, so read it rather than guessing.
-            $logs = @(Get-LogFiles -LogDir $logDir)
-            $tail = if ($logs.Count -gt 0) { Read-LogText -Path $logs[0].FullName } else { '' }
+            $tail = Read-AllLogText -LogDir $logDir
 
             if ($tail.Contains($WindowFailedEvent)) {
                 Write-Host "::error::Smoke gate: STARTED BUT THE WINDOW NEVER CAME UP. The app finished its startup path and then logged event=$WindowFailedEvent instead of event=$ReadyEvent, which it does when there is no usable main window - either no 'main' window at all, or a launch that could not show the one it had. The process is alive and nothing crashed, so it would have passed a liveness check while presenting the user with nothing on screen. This is NOT a hang; the log line below names which part failed and carries the OS error."
@@ -534,30 +675,37 @@ try {
             Write-Host "PASS  process is alive $elapsedAtEnd s after launch (pid $($proc.Id))"
         }
 
+        # Assert across EVERY file this run produced, not just the newest, so a launch
+        # that crossed the daily UTC rollover is not failed for having written its two
+        # markers either side of the boundary. "Non-empty" stays a claim about CONTENT:
+        # it is the length of what was actually read, so a directory of empty files
+        # still fails.
         $logs = @(Get-LogFiles -LogDir $logDir)
+        $content = Read-AllLogText -LogDir $logDir
         if ($logs.Count -eq 0) {
             Write-Host "::error::Smoke gate: the log file disappeared from '$logDir'."
             $failed = $true
         }
+        elseif ($content.Length -eq 0) {
+            Write-Host "::error::Smoke gate: the $($logs.Count) log file(s) under '$logDir' read as ZERO BYTES. Under panic = abort an empty log is what a crash looks like."
+            $failed = $true
+        }
         else {
-            $content = Read-LogText -Path $logs[0].FullName
-            if ($content.Length -eq 0) {
-                Write-Host "::error::Smoke gate: the log file '$($logs[0].Name)' reads as ZERO BYTES. Under panic = abort an empty log is what a crash looks like."
-                $failed = $true
-            }
-            elseif ($content.Contains($StartupLine)) {
-                Write-Host "PASS  log file $($logs[0].Name) is non-empty ($($content.Length) chars read)"
+            Write-Host "PASS  log content is non-empty ($($content.Length) chars across $($logs.Count) file(s))"
+
+            if ($content.Contains($StartupLine)) {
                 Write-Host "PASS  log contains the startup line '$StartupLine'"
-                if ($content.Contains($ReadyEvent)) {
-                    Write-Host "PASS  log contains the readiness marker event=$ReadyEvent"
-                }
-                else {
-                    Write-Host "::error::Smoke gate: the log no longer contains the readiness marker event=$ReadyEvent."
-                    $failed = $true
-                }
             }
             else {
-                Write-Host "::error::Smoke gate: the log file '$($logs[0].Name)' is non-empty ($($content.Length) chars) but does NOT contain the startup line '$StartupLine'."
+                Write-Host "::error::Smoke gate: the log is non-empty ($($content.Length) chars) but does NOT contain the startup line '$StartupLine'."
+                $failed = $true
+            }
+
+            if ($content.Contains($ReadyEvent)) {
+                Write-Host "PASS  log contains the readiness marker event=$ReadyEvent"
+            }
+            else {
+                Write-Host "::error::Smoke gate: the log no longer contains the readiness marker event=$ReadyEvent."
                 $failed = $true
             }
         }

@@ -298,6 +298,19 @@ jobs:
       # `timeout-minutes` caps the step so a hung launch fails loudly instead of stalling the
       # runner. The script's own budget is about 70 s worst case, so 5 minutes is slack rather
       # than a second budget anyone has to reason about.
+      # The gate's OWN log-reading logic, against synthesized fixtures, launching nothing.
+      # It runs in about a second and needs no build, and it exists for one case that is
+      # easy to reason past: the appender rolls daily on UTC midnight, so a launch that
+      # straddles that instant splits its two markers across two files. A gate reading
+      # only the newest would fail a healthy binary once a day, on a required check,
+      # which is the most corrosive kind of flake there is. Gating the assertions the
+      # gate is built on keeps that from being taken on faith.
+      - name: Smoke gate self-test (BL-NI-88)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        timeout-minutes: 2
+        run: ./scripts/smoke-launch.ps1 -SelfTest
+
       - name: Smoke test the built binary (BL-NI-88)
         if: matrix.os == 'windows-latest'
         shell: pwsh
