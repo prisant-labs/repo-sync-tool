@@ -51,15 +51,15 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   scoped and more explicit.** Only "Under watch" is clickable (it opens
   Repos); "Need attention," "Updated today," and "New releases" stay
   informational for now, since the Repos screen has no way yet to filter by
-  what they would represent. When a group is selected in the sidebar, those
-  three tiles and the attention list below them narrow to that group; the
-  "checked, no change" figure next to "Under watch" always counts every
-  repository and says so, since narrowing it correctly would need a change
-  RepoSync does not have yet. Each row in "Needs attention" now states why
-  it is there - uncommitted local changes, a failed check, how far behind -
-  with an icon marking whether the cause is local (your machine) or remote
-  (GitHub); a cause RepoSync does not recognize shows with no guessed icon
-  at all.
+  what they would represent. When a group is selected in the sidebar, every
+  tile's headline number and the attention list below them narrow to that
+  group; the small "checked, no change" figure under "Under watch" always
+  counts every repository and says so, since narrowing it correctly would
+  need a change RepoSync does not have yet. Each row in "Needs attention"
+  now states why it is there - uncommitted local changes, a failed check,
+  how far behind - with an icon marking whether the cause is local (your
+  machine) or remote (GitHub); a cause RepoSync does not recognize shows
+  with no guessed icon at all.
 - **Warning banners and the Diagnostics panel have a more consistent
   look.** The database-recovery notice and the Settings -> Diagnostics
   warnings list moved from a tinted background to a left-edge accent
