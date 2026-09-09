@@ -814,6 +814,38 @@ pub async fn settings_set(
     // rejected save durable by the back door.
     reposync_core::store::validate_settings(&settings)?;
 
+    // BL-NI-53 (WebView compromise -> settings_set -> editor/terminal spawn), the
+    // write-time validation layer. Rejected here, before anything is actuated or
+    // persisted, for the same reason `validate_settings` is: the autostart plugin call
+    // below runs before the durable write, so validating later would let a rejected
+    // save change the OS registration on its way out.
+    //
+    // ONLY WHEN THE VALUE CHANGED, which mirrors the rule the git path already follows
+    // a few dozen lines down and exists for the same reason. These settings name
+    // programs on the user's machine, and programs get uninstalled. Validating an
+    // unchanged value would mean that uninstalling VS Code makes every later save fail
+    // - a notification toggle, a quiet-hours edit - with an error about the editor.
+    // That is the exact shape of the bug finding 1 fixed for git-less machines, and it
+    // is worth not reintroducing on a neighbouring field.
+    for (value, previous_value, field) in [
+        (
+            &settings.editor_command,
+            &previous.editor_command,
+            "editor_command",
+        ),
+        (
+            &settings.terminal_command,
+            &previous.terminal_command,
+            "terminal_command",
+        ),
+    ] {
+        if value != previous_value {
+            if let Some(raw) = value.as_deref() {
+                crate::opener::validate_command_setting(raw, field)?;
+            }
+        }
+    }
+
     // E-15 AC1: actuate launch-on-login when the `autostart` setting changed.
     //
     // APPLY-THEN-PERSIST, and deliberately the opposite of the git-path swap next

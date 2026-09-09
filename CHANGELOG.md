@@ -10,6 +10,19 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ## [Unreleased]
 
+### Security
+- **The editor and terminal settings are now checked when you save them, not
+  only when they are used.** RepoSync would store whatever you typed and only
+  find out it was wrong the next time you tried to open a repository. It now
+  refuses a value that is blank, contains characters no real program path has,
+  names nothing it can find on your system, or points at a file Windows does not
+  treat as a program. The practical effect for you is a clear error at the
+  moment you save, naming what it could not find. The reason it matters beyond
+  convenience: these settings name a program RepoSync later launches, so
+  accepting a path to a file that does not exist yet would let anything that
+  could reach the settings put a name there now and supply the program later.
+  Editors that install as a small script, such as VS Code, still work.
+
 ### Changed
 - **The repository is now public** (2026-07-17), at
   `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0
