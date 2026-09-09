@@ -111,12 +111,14 @@ pub mod event {
     /// are correct outcomes; only one of them leaves the user wondering why nothing
     /// happened, and a maintainer reading a log needs to tell them apart.
     ///
-    /// Logged by the LOSING process, which then stops, so unlike the deferred line
-    /// this one is written by a process whose log appender is about to shut down.
-    /// It survives because that process RETURNS from `run` rather than calling
-    /// `std::process::exit`: returning runs the log guard's `Drop`, which flushes the
-    /// worker thread's queue. That is the difference between this line and the one the
-    /// plugin's own exit path cannot guarantee.
+    /// Logged by the LOSING process, which then stops, so like the deferred line it
+    /// is written by a process whose log appender is about to shut down. Unlike that
+    /// line, this one was CHECKED rather than assumed: with the single-instance plugin
+    /// temporarily removed so the lock was the only guard, a second launch stood down
+    /// and this line was present in the log file on disk, read while the first
+    /// instance was still running. Do not weaken that to "should reach the log"
+    /// without re-running it, and do not strengthen it to a guarantee either - it is
+    /// one observed behaviour of `AppHandle::exit`, not a documented contract.
     pub const APP_SECOND_INSTANCE_DB_LOCKED: &str = "app.second_instance_db_locked";
 
     /// The data-directory lock could not be established at all - a permission

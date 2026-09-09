@@ -85,10 +85,16 @@ pub enum AcquireError {
 /// operating-system lock on it. Returns an [`InstanceLock`] that must be kept alive
 /// for the life of the process.
 ///
-/// Call this BEFORE opening the database pool. Not for correctness of the lock itself,
-/// but because the caller's response to [`AcquireError::AlreadyRunning`] is to exit,
-/// and doing that before the pool opens means the losing instance never touches the
-/// database at all.
+/// ## Where to call this, which is not a free choice
+///
+/// Call it BEFORE opening the database pool, so a losing instance never touches the
+/// database at all. But call it AFTER whatever single-instance handoff the shell
+/// already has, because this lock only knows how to STOP a process - it cannot pass a
+/// launch to the instance that is already running, and stopping a launch that the
+/// handoff would have turned into "raise the existing window" is a regression, not a
+/// guard. In this app that means the top of the Tauri setup closure: the
+/// single-instance plugin's own setup hook runs first, so arriving here at all is the
+/// evidence that the handoff did not happen.
 ///
 /// ## What this does not cover
 ///

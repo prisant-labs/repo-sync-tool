@@ -59,10 +59,17 @@
 //!   second guard of our own, which is a worse trade than the race". Both halves of
 //!   that were judgements made without the measurement. Once the failure rate at
 //!   simultaneity was known to be roughly half, the trade was reconsidered and the
-//!   second guard was built: `reposync_core::instance_lock`, acquired in `run` before
-//!   this plugin is even registered. It closes the DATABASE half of the harm. This
-//!   plugin remains the only guard for the working-tree half, which is why it is still
-//!   keyed per-application and why the argument above it stands unchanged.
+//!   second guard was built: `reposync_core::instance_lock`, acquired at the TOP OF
+//!   THE SETUP CLOSURE, which is deliberately AFTER this plugin rather than before it.
+//!   The ordering is the whole design. A second launch that finds the message window
+//!   never reaches the setup closure at all - this plugin hands off and exits it - so
+//!   reaching that lock is itself the evidence that this plugin lost the race. Putting
+//!   the lock any earlier pre-empts the handoff and turns every ordinary second launch
+//!   into a silent no-op, which is a regression wearing the costume of a fix.
+//!
+//!   The lock closes the DATABASE half of the harm only. This plugin remains the sole
+//!   guard for the working-tree half, which is why it is still keyed per-application
+//!   and why the argument above it stands unchanged.
 //! * The mutex carries no `Global\` prefix, so it is scoped to the logon session. Two
 //!   Windows users signed in at once each get their own RepoSync, which is correct:
 //!   each has their own `%LOCALAPPDATA%` and therefore their own database and working
