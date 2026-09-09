@@ -17,6 +17,7 @@ pub mod db;
 pub mod error;
 pub mod git;
 pub mod github;
+pub mod instance_lock;
 pub mod ipc;
 pub mod logging;
 pub mod notify;

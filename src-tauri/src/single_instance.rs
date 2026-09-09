@@ -44,9 +44,25 @@
 //!
 //! * On Windows the second instance only exits if it can FIND the running instance's
 //!   message window. A launch landing between the first instance's `CreateMutexW` and
-//!   its window creation (sub-millisecond, at startup) finds no window and proceeds as
-//!   a full second instance. That is the plugin's behavior; closing it at the app layer
-//!   would need a second guard of our own, which is a worse trade than the race.
+//!   its window creation finds no window and proceeds as a full second instance.
+//!
+//!   That window was called "sub-millisecond" here until it was MEASURED on 2026-09-08
+//!   with `_local/tools/race-probe.ps1` against a release build, and the measurement
+//!   says otherwise: at true simultaneity both instances survived 5 times out of 10,
+//!   and at 25 ms of separation and beyond, 0 times out of 10 at every step out to 2
+//!   seconds. So the window is under 25 ms - too small for a person double-clicking to
+//!   reach, large enough for a script, a login storm, or a slow disk. It was also
+//!   measured on a fast machine, which means the untested case widens it rather than
+//!   narrows it.
+//!
+//!   The original note here also said closing this at the app layer "would need a
+//!   second guard of our own, which is a worse trade than the race". Both halves of
+//!   that were judgements made without the measurement. Once the failure rate at
+//!   simultaneity was known to be roughly half, the trade was reconsidered and the
+//!   second guard was built: `reposync_core::instance_lock`, acquired in `run` before
+//!   this plugin is even registered. It closes the DATABASE half of the harm. This
+//!   plugin remains the only guard for the working-tree half, which is why it is still
+//!   keyed per-application and why the argument above it stands unchanged.
 //! * The mutex carries no `Global\` prefix, so it is scoped to the logon session. Two
 //!   Windows users signed in at once each get their own RepoSync, which is correct:
 //!   each has their own `%LOCALAPPDATA%` and therefore their own database and working

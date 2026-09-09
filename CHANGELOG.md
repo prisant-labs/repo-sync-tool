@@ -19,6 +19,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   which can corrupt a repository. The second launch now hands over to the one
   already running and closes itself. Only one RepoSync runs per signed-in
   Windows user, which also means one tray icon rather than two.
+
+  There is a second guard behind that one, for the case where two copies start
+  at almost exactly the same instant - within about 25 thousandths of a second,
+  which a script or a burst of login programs can do even though a person
+  clicking cannot. RepoSync now claims its data folder when it starts and holds
+  that claim until it closes. A copy that finds the folder already claimed
+  closes itself rather than sharing the database. If the claim cannot be made at
+  all, RepoSync still starts.
 - **The repository is now public** (2026-07-17), at
   `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0
   notes below describe a private build and are kept as the historical record;

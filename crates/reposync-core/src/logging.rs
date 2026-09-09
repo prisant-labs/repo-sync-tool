@@ -97,6 +97,36 @@ pub mod event {
     /// diagnostic log a user emails to a maintainer is the wrong place for them.
     pub const APP_SECOND_INSTANCE_DEFERRED: &str = "app.second_instance_deferred";
 
+    /// A second instance found the data directory already locked and stood down.
+    ///
+    /// This is the BACKSTOP firing, not the plugin: reaching it means the
+    /// single-instance plugin lost its race (the second launch landed before the
+    /// first instance had a message window to hand off to) and the data-directory
+    /// lock caught what got through. See [`crate::instance_lock`].
+    ///
+    /// Distinct from [`APP_SECOND_INSTANCE_DEFERRED`] on purpose, and the difference
+    /// is diagnostic rather than cosmetic. The deferred line means the normal path
+    /// worked and the user's window was raised. This line means the user launched
+    /// RepoSync, saw no window appear, and the launch was silently discarded. Both
+    /// are correct outcomes; only one of them leaves the user wondering why nothing
+    /// happened, and a maintainer reading a log needs to tell them apart.
+    ///
+    /// Logged by the LOSING process, which then stops, so unlike the deferred line
+    /// this one is written by a process whose log appender is about to shut down.
+    /// It survives because that process RETURNS from `run` rather than calling
+    /// `std::process::exit`: returning runs the log guard's `Drop`, which flushes the
+    /// worker thread's queue. That is the difference between this line and the one the
+    /// plugin's own exit path cannot guarantee.
+    pub const APP_SECOND_INSTANCE_DB_LOCKED: &str = "app.second_instance_db_locked";
+
+    /// The data-directory lock could not be established at all - a permission
+    /// problem, a read-only volume, a filesystem without locking.
+    ///
+    /// The app starts anyway, with the single-instance plugin as its only guard,
+    /// which is the protection it shipped with before the lock existed. Refusing to
+    /// launch would turn a tolerated condition into one that bricks an install.
+    pub const APP_INSTANCE_LOCK_UNAVAILABLE: &str = "app.instance_lock_unavailable";
+
     // --- scheduler ---
     /// A scheduled job could not persist its outcome. The repo stays due and
     /// retries, so the user sees nothing; that is exactly why it needs a log.

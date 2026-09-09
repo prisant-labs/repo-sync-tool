@@ -81,6 +81,17 @@ impl AppPaths {
         self.data_dir.join("logs")
     }
 
+    /// The single-instance lock file (`reposync.lock` under the data dir).
+    ///
+    /// Held open and locked by the running process for its whole life, so a second
+    /// process can tell the directory is claimed. Contents are always empty and carry
+    /// no meaning; see [`crate::instance_lock`] for why the owner is deliberately not
+    /// recorded in the file. Not touched by the corrupt-database recovery in
+    /// [`crate::db`], which moves only `reposync.db` and its sidecars.
+    pub fn lock_path(&self) -> PathBuf {
+        self.data_dir.join("reposync.lock")
+    }
+
     /// The corrupt-backups directory (`corrupt-backups/` under the data dir),
     /// where a database is moved aside on migration failure (AC7).
     pub fn corrupt_backups_dir(&self) -> PathBuf {

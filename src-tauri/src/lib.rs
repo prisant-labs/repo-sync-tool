@@ -286,8 +286,8 @@ pub fn run() {
     // and its Drop flushes buffered events on the way out. Moving it into
     // `setup()` or into managed state would end its life early and turn every
     // later log call into a silent no-op.
-    let (_log_guard, log_config) = match logging::init(&reposync_core::paths::AppPaths::from_env())
-    {
+    let paths = reposync_core::paths::AppPaths::from_env();
+    let (_log_guard, log_config) = match logging::init(&paths) {
         Ok((guard, config)) => (Some(guard), Some(config)),
         Err(e) => {
             // The one legitimate surviving eprintln! in the app: the logger
@@ -299,6 +299,63 @@ pub fn run() {
             // WOULD have applied here would be a lie in the one situation where
             // the user most needs the truth.
             (None, None)
+        }
+    };
+
+    // BL-NI-73 (two instances sharing one database), the BACKSTOP half. The
+    // single-instance plugin registered below is the first line and the broader guard;
+    // this closes the database half of its one measured gap, where a second launch
+    // arriving before the first instance has a message window finds nothing to hand off
+    // to and carries on as a full instance.
+    //
+    // Placed HERE, in `run`'s own scope, for two reasons that are both about the log
+    // line surviving.
+    //
+    // First, this scope owns `_log_guard`. `tracing_appender` writes on a worker thread
+    // and only its guard's Drop flushes what is queued, so a losing instance that left
+    // through `std::process::exit` from inside a setup hook - which is exactly what the
+    // plugin itself does, and is documented at `APP_SECOND_INSTANCE_DEFERRED` as costing
+    // it durability - could lose the only record that this guard fired. Returning from
+    // `run` instead runs every destructor in order: the line is flushed, `main` falls off
+    // the end, and the process exits 0 without a single `exit` call.
+    //
+    // Second, it is before `tauri::Builder` exists at all, so a losing instance does no
+    // plugin setup, opens no database, and creates no window.
+    // `Option` because the third outcome is "no lock, start anyway": see the
+    // `Unavailable` arm. `None` means the backstop is not in force for this run, which
+    // is a degraded but supported state, not an error.
+    let _instance_lock = match reposync_core::instance_lock::acquire(&paths) {
+        Ok(lock) => Some(lock),
+        Err(reposync_core::instance_lock::AcquireError::AlreadyRunning { path }) => {
+            // WARN, not INFO, and the message says what the USER saw rather than what
+            // the code did. Reaching this line means the plugin's handoff did not
+            // happen, so nobody's window was raised: someone launched RepoSync and got
+            // nothing. That is the correct outcome - it beats two processes writing one
+            // database - but it is not a quiet success, and a maintainer reading a log
+            // needs to be able to tell it apart from the ordinary deferral.
+            tracing::warn!(
+                event = reposync_core::logging::event::APP_SECOND_INSTANCE_DB_LOCKED,
+                lock_path = %path.display(),
+                "another RepoSync already holds this data directory, so this launch is \
+                 standing down; the single-instance handoff did not run, so the user \
+                 saw no window appear"
+            );
+            return;
+        }
+        Err(reposync_core::instance_lock::AcquireError::Unavailable { path, cause }) => {
+            // NOT fatal, deliberately. The app starts with the plugin as its only
+            // guard, which is the protection it shipped with before this lock existed.
+            // Making a condition the app currently tolerates kill it is the exact class
+            // of change refused during the smoke-gate work: an over-strict startup check
+            // can brick an install on a machine nobody can reproduce.
+            tracing::warn!(
+                event = reposync_core::logging::event::APP_INSTANCE_LOCK_UNAVAILABLE,
+                lock_path = %path.display(),
+                cause = %cause,
+                "the data-directory lock could not be established; starting anyway with \
+                 the single-instance plugin as the only guard"
+            );
+            None
         }
     };
 
