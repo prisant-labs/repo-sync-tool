@@ -342,7 +342,6 @@ pub fn open_homepage(homepage: Option<&str>, repo_id: i64) -> Result<(), AppErro
 }
 
 /// Whether `s` starts with a `X:` drive prefix (a Windows drive-qualified path).
-#[cfg(windows)]
 fn has_drive_prefix(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
@@ -358,7 +357,6 @@ fn has_drive_prefix(s: &str) -> bool {
 ///   - A bare name is searched across the PATH dirs in order; within each dir the
 ///     name is tried as-is when it already carries an extension, then with each
 ///     PATHEXT appended. This is what lets a bare `code` resolve to `code.cmd`.
-#[cfg(windows)]
 fn resolve_in_paths(
     cmd: &str,
     path_dirs: &[PathBuf],
@@ -417,6 +415,32 @@ fn resolve_executable(cmd: &str) -> Option<PathBuf> {
         .map(|e| e.to_string())
         .collect();
     resolve_in_paths(cmd, &path_dirs, &pathext, &|p| p.exists())
+}
+
+/// Resolve a configured command on non-Windows platforms.
+///
+/// The Windows twin above exists to feed `Command::new` a concrete path so a
+/// `.cmd` shim resolves. This one exists only so [`validate_command_value`] can
+/// answer "does this name a real program", because the spawn path here passes the
+/// raw name to `Command::new` and lets the OS resolve it.
+///
+/// There is no PATHEXT: the executable BIT is the authority, so a file that exists
+/// but is not executable is correctly not a resolution. `resolve_in_paths` is
+/// reused with an empty extension list, which reduces it to "try the name as
+/// given", and the exists-predicate carries the executable check.
+#[cfg(not(windows))]
+fn resolve_executable(cmd: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_executable_file = |p: &Path| {
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    resolve_in_paths(cmd, &path_dirs, &[], &is_executable_file)
 }
 
 /// Write-time validation for `editor_command` / `terminal_command`, the
