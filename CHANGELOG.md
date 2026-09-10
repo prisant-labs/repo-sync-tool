@@ -11,6 +11,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Changed
+- **Launching RepoSync while it is already running now brings the running copy
+  to the front instead of starting a second one.** RepoSync lives in the tray,
+  so it is easy to forget it is there and open it again from the Start menu or a
+  shortcut; until now that started a second, independent copy. Two copies shared
+  one database and, worse, could run `git` in the same folder at the same time,
+  which can corrupt a repository. The second launch now hands over to the one
+  already running and closes itself. Only one RepoSync runs per signed-in
+  Windows user, which also means one tray icon rather than two.
 - **The repository is now public** (2026-07-17), at
   `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0
   notes below describe a private build and are kept as the historical record;

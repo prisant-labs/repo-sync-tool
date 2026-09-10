@@ -56,6 +56,14 @@ tauri-plugin-process = "2"
 # registration live at the edge. Pre-specced in
 # docs/internal/v1-architecture-and-decisions.md ("Scoped FS for the folder picker").
 tauri-plugin-dialog = "2"
+# BL-NI-73 (nothing stops two RepoSync instances sharing one database): the startup
+# singleton. Two RepoSync processes over one data directory means two schedulers, two
+# sets of `git` processes in the SAME working trees (the per-repo `RepoLocks` map is
+# in-memory, so it serializes one process only), and racing read-modify-writes on
+# `repo_local_state`. This plugin makes the second launch hand its argv to the running
+# instance and exit. Edge-only, like the other plugins - reposync-core never depends on
+# it; the guard is a property of the PROCESS, not of the logic.
+tauri-plugin-single-instance = "2"
 
 # Shared logic-crate dependencies.
 serde = { version = "1.0.228", features = ["derive"] }
