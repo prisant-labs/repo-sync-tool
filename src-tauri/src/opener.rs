@@ -342,7 +342,6 @@ pub fn open_homepage(homepage: Option<&str>, repo_id: i64) -> Result<(), AppErro
 }
 
 /// Whether `s` starts with a `X:` drive prefix (a Windows drive-qualified path).
-#[cfg(windows)]
 fn has_drive_prefix(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
@@ -358,7 +357,6 @@ fn has_drive_prefix(s: &str) -> bool {
 ///   - A bare name is searched across the PATH dirs in order; within each dir the
 ///     name is tried as-is when it already carries an extension, then with each
 ///     PATHEXT appended. This is what lets a bare `code` resolve to `code.cmd`.
-#[cfg(windows)]
 fn resolve_in_paths(
     cmd: &str,
     path_dirs: &[PathBuf],
@@ -417,6 +415,119 @@ fn resolve_executable(cmd: &str) -> Option<PathBuf> {
         .map(|e| e.to_string())
         .collect();
     resolve_in_paths(cmd, &path_dirs, &pathext, &|p| p.exists())
+}
+
+/// Resolve a configured command on non-Windows platforms.
+///
+/// The Windows twin above exists to feed `Command::new` a concrete path so a
+/// `.cmd` shim resolves. This one exists only so [`validate_command_value`] can
+/// answer "does this name a real program", because the spawn path here passes the
+/// raw name to `Command::new` and lets the OS resolve it.
+///
+/// There is no PATHEXT: the executable BIT is the authority, so a file that exists
+/// but is not executable is correctly not a resolution. `resolve_in_paths` is
+/// reused with an empty extension list, which reduces it to "try the name as
+/// given", and the exists-predicate carries the executable check.
+#[cfg(not(windows))]
+fn resolve_executable(cmd: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_executable_file = |p: &Path| {
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    resolve_in_paths(cmd, &path_dirs, &[], &is_executable_file)
+}
+
+/// Write-time validation for `editor_command` / `terminal_command`, the
+/// "existence + extension" half of BL-NI-53 (WebView compromise -> settings_set ->
+/// editor/terminal spawn).
+///
+/// ## What this is actually defending
+///
+/// The SPAWN path is already hard: no shell hop, the repo path passed as a plain argv
+/// argument, `CREATE_NO_WINDOW`, and the executable resolved up front. So this is not
+/// about command injection through the setting string - `Command::new` treats the whole
+/// value as one program name, and a value like `cmd /c evil` simply fails to resolve.
+///
+/// What it narrows is what a COMPROMISED WEBVIEW can durably store for later. Without
+/// it, `settings_set` will persist any string, including a path to a file that does not
+/// exist yet - letting an attacker stage the setting now and drop the payload there
+/// afterwards - or a data file that is not an executable at all. Requiring the value to
+/// resolve TODAY, to something Windows actually treats as executable, removes both.
+///
+/// ## What it deliberately still allows, and the trade that makes
+///
+/// `.cmd` and `.bat` pass. They are the obvious things to ban, and banning them would
+/// break VS Code: `code` resolves to `code.cmd`, which [`open_editor`] explicitly
+/// supports and which is probably the single most common editor setting this app will
+/// ever see. So this check stops at "Windows considers it executable" rather than
+/// "Windows considers it safe".
+///
+/// BL-NI-53 offers an allowlist as the alternative. An allowlist would narrow much
+/// further and costs the user the ability to configure an editor nobody anticipated.
+/// That is a product decision, not a technical one, and it is NOT made here.
+fn validate_command_value(
+    raw: &str,
+    field: &str,
+    pathext: &[String],
+    resolve: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<(), AppError> {
+    let reject = |why: &str| {
+        Err(AppError::InvalidSetting {
+            field: format!("{field} ({why})"),
+        })
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        // An empty value is not a "clear it" gesture: both fields have real defaults,
+        // and storing empty would make every later open fail with a resolver error
+        // that names nothing useful.
+        return reject("it is empty");
+    }
+    // A control character cannot appear in a legitimate executable path and is a
+    // reliable sign the value was assembled rather than typed. Checked before
+    // resolution so the message names the real problem instead of "not found".
+    if trimmed.chars().any(|c| c.is_control()) {
+        return reject("it contains a control character");
+    }
+
+    let Some(resolved) = resolve(trimmed) else {
+        return reject("no such program was found on PATH");
+    };
+
+    // Windows only. On other platforms the executable bit is the authority and an
+    // extension means nothing, so requiring one would reject correct values.
+    if cfg!(windows) {
+        let ext_ok = resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| {
+                pathext
+                    .iter()
+                    .any(|allowed| allowed.trim_start_matches('.').eq_ignore_ascii_case(e))
+            });
+        if !ext_ok {
+            return reject("it resolves to a file Windows does not treat as executable");
+        }
+    }
+    Ok(())
+}
+
+/// [`validate_command_value`] against the real PATH and PATHEXT.
+pub fn validate_command_setting(raw: &str, field: &str) -> Result<(), AppError> {
+    let pathext: Vec<String> = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .filter(|e| !e.is_empty())
+        .map(|e| e.to_string())
+        .collect();
+    validate_command_value(raw, field, &pathext, &|c| resolve_executable(c))
 }
 
 /// Open the repo folder in the configured editor (e.g. `code`).
@@ -478,12 +589,33 @@ pub fn open_terminal(terminal_cmd: &str, path: &Path) -> Result<(), AppError> {
     require_dir(path)?;
     #[cfg(windows)]
     {
+        // Resolve to a concrete executable BEFORE spawning, exactly as `open_editor`
+        // does (BL-NI-103). Previously this handed the bare configured name to
+        // `Command::new` and let Windows resolve it, while `open_editor` resolved
+        // through PATH + PATHEXT itself - so the two could pick DIFFERENT files for
+        // the same configured string, because PATHEXT order and the OS search order
+        // are not guaranteed to agree.
+        //
+        // That divergence also quietly undercut the write-time validation added for
+        // BL-NI-53 (WebView compromise -> settings_set -> editor/terminal spawn):
+        // validation checks the file the RESOLVER finds, so it could only make an
+        // honest promise about `terminal_command` once the launcher used the resolver
+        // too. A missing terminal now surfaces the same named `InvalidSetting` an
+        // absent editor does, instead of a generic spawn failure.
+        let base = terminal_cmd.trim();
+        let resolved = resolve_executable(base).ok_or_else(|| AppError::InvalidSetting {
+            field: format!("terminal_command ({base} was not found on PATH)"),
+        })?;
         // Windows Terminal ignores an inherited working dir, so it needs
         // `-d <path>`; any other terminal gets its working dir set. The path is a
         // plain argv argument in both cases (no shell), so it needs no escaping.
-        let base = terminal_cmd.trim();
-        let mut c = Command::new(base);
-        if is_windows_terminal(base) {
+        //
+        // Detected from the RESOLVED path rather than the configured string, which is
+        // the stricter and more honest test: the flag has to describe the program
+        // actually being launched. `is_windows_terminal` keys off the file STEM, so a
+        // bare `wt`, `wt.exe`, and a full path all still match.
+        let mut c = Command::new(&resolved);
+        if is_windows_terminal(&resolved.to_string_lossy()) {
             c.arg("-d").arg(path);
         } else {
             c.current_dir(path);
@@ -661,6 +793,95 @@ mod tests {
     }
 
     // --- BL-NI-94: homepage-open scheme validation + null handling ---
+
+    /// The PATHEXT a Windows box actually has, for the validation tests below.
+    fn test_pathext() -> Vec<String> {
+        [".COM", ".EXE", ".BAT", ".CMD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    /// Resolve stub: only these exact names "exist", each mapping to a concrete path.
+    fn stub_resolver(
+        known: &'static [(&'static str, &'static str)],
+    ) -> impl Fn(&str) -> Option<PathBuf> {
+        move |cmd: &str| {
+            known
+                .iter()
+                .find(|(name, _)| *name == cmd)
+                .map(|(_, path)| PathBuf::from(path))
+        }
+    }
+
+    #[test]
+    fn a_command_setting_must_resolve_to_something_executable() {
+        let resolve = stub_resolver(&[
+            ("code", r"C:\Program Files\Microsoft VS Code\bin\code.cmd"),
+            ("notepad", r"C:\Windows\System32\notepad.exe"),
+        ]);
+        let ok = |v: &str| validate_command_value(v, "editor_command", &test_pathext(), &resolve);
+
+        assert!(ok("notepad").is_ok());
+        // A `.cmd` shim passes, and that is deliberate rather than an oversight:
+        // `code` resolves to `code.cmd`, `open_editor` explicitly supports that, and
+        // banning script shims here would break the most common editor setting this
+        // app will ever see.
+        assert!(ok("code").is_ok());
+    }
+
+    #[test]
+    fn a_command_setting_that_names_nothing_real_is_rejected() {
+        let resolve = stub_resolver(&[("notepad", r"C:\Windows\System32\notepad.exe")]);
+        let err = validate_command_value(
+            r"C:\Users\me\AppData\Local\Temp\payload.exe",
+            "editor_command",
+            &test_pathext(),
+            &resolve,
+        )
+        .unwrap_err();
+        // The point of the whole check: a value cannot be stored now and made real
+        // afterwards, which is how a compromised WebView would stage an executable.
+        assert!(
+            matches!(&err, AppError::InvalidSetting { field } if field.contains("editor_command")),
+            "expected InvalidSetting naming the field, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_control_laden_command_setting_is_rejected_before_resolution() {
+        let resolve = stub_resolver(&[]);
+        let ok = |v: &str| validate_command_value(v, "terminal_command", &test_pathext(), &resolve);
+
+        assert!(ok("").is_err());
+        assert!(ok("   ").is_err());
+
+        let err = ok("wt\nsomething").unwrap_err();
+        let AppError::InvalidSetting { field } = &err else {
+            panic!("expected InvalidSetting, got {err:?}")
+        };
+        // The message must name the control character rather than blaming the
+        // resolver: "not found" would send the user looking for the wrong problem.
+        assert!(
+            field.contains("control character"),
+            "message should name the real cause, got {field}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_resolved_file_windows_does_not_treat_as_executable_is_rejected() {
+        // The gap this closes: `resolve_in_paths` tries a value that already carries
+        // an extension VERBATIM, so an absolute path to a data file resolves fine.
+        // Only the PATHEXT check stops it being stored.
+        let resolve = stub_resolver(&[("payload", r"C:\Users\me\payload.txt")]);
+        let err = validate_command_value("payload", "editor_command", &test_pathext(), &resolve)
+            .unwrap_err();
+        let AppError::InvalidSetting { field } = &err else {
+            panic!("expected InvalidSetting, got {err:?}")
+        };
+        assert!(field.contains("executable"), "got {field}");
+    }
 
     #[test]
     fn validate_homepage_url_accepts_http_and_https_with_a_real_host() {
@@ -845,6 +1066,36 @@ mod tests {
             assert_eq!(
                 resolve_in_paths("no-such-editor", &[dir], &pathext, &exists),
                 None
+            );
+        }
+
+        /// BL-NI-103: `open_terminal` must RESOLVE the configured command before it
+        /// spawns, the way `open_editor` already does.
+        ///
+        /// This is the only part of that change reachable from a unit test - the
+        /// success path spawns a real terminal - but it is the part that proves the
+        /// resolver runs at all. Before this change the bare name went straight to
+        /// `Command::new` and a missing terminal surfaced as a generic spawn failure
+        /// from `spawn_detached`, never as a named setting error.
+        #[test]
+        fn open_terminal_resolves_before_spawning_so_a_missing_terminal_names_the_setting() {
+            let dir = tempfile::TempDir::new().expect("tempdir");
+            let err = open_terminal("reposync-no-such-terminal-b3f1a9", dir.path())
+                .expect_err("a terminal that does not exist must not spawn");
+
+            let AppError::InvalidSetting { field } = &err else {
+                panic!("expected InvalidSetting, got {err:?}")
+            };
+            assert!(
+                field.contains("terminal_command"),
+                "the error must name the setting the user has to fix, got {field}"
+            );
+            // And the command that was looked for, because "invalid setting:
+            // terminal_command" is true and useless - the actionable fact is WHICH
+            // program was missing. Same rule `open_editor` follows.
+            assert!(
+                field.contains("reposync-no-such-terminal-b3f1a9"),
+                "the error must name the command it could not find, got {field}"
             );
         }
 
