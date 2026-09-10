@@ -55,6 +55,12 @@ tauri-plugin-process = { workspace = true }
 # folder picker (Explorer / Finder). Registered in `lib.rs`; the `dialog:allow-open`
 # capability permission is granted in `capabilities/default.json`.
 tauri-plugin-dialog = { workspace = true }
+# BL-NI-73 (nothing stops two RepoSync instances sharing one database): the startup
+# singleton. Registered FIRST in `lib.rs` - the plugin's README states that plugins run
+# in the order they are added to the builder, so a later registration would let the
+# doomed second instance run other plugins' setup hooks before being turned away. It
+# exposes no JS command surface, so it needs no entry in `capabilities/default.json`.
+tauri-plugin-single-instance = { workspace = true }
 # Structured diagnostics: the SUBSCRIBER half. A tray app has no console, so
 # `eprintln!` sent every resident failure - scheduler ticks, outcome persistence,
 # update checks - to a stderr nobody ever reads. These two crates put them in a
