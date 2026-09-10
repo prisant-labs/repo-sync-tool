@@ -291,6 +291,22 @@ jobs:
       # the PR that added it. What the gate does NOT prove is that the React root mounted
       # inside that window (BL-NI-99).
       #
+      # The same step also carries the machine-checkable half of BL-NI-73 (nothing stops two
+      # RepoSync instances sharing one database), and it needs a launch for exactly the same
+      # reason: the singleton guard is a property of the PROCESS - a named mutex claimed in a
+      # plugin setup hook - so no gate that reads source or calls a library function can reach
+      # it. After the assertions above pass, the script launches the SAME binary a SECOND time
+      # against the SAME scratch data directory and asserts that the second process exits on
+      # its own, that it exits CLEANLY (code 0 - "it exited" is equally true of "it crashed"),
+      # that the FIRST process is undisturbed, and that `app.startup_completed` appears EXACTLY
+      # ONCE across the run's logs. The count is what makes that last one mean anything: this
+      # run launches the binary twice by design, so presence alone is equally consistent with
+      # one instance starting and with two. It also asserts the running instance logged
+      # `app.second_instance_deferred`, which is the only positive evidence that the guard
+      # turned the second launch away rather than that it happened to die. What CI CANNOT see
+      # is a tray icon or whether the window actually came to the front, so BL-NI-73 stays
+      # open pending a packaged verification by the maintainer.
+      #
       # Windows-only. The isolation mechanism (%LOCALAPPDATA%) and the liveness/terminate calls
       # are Windows-specific, and Windows is the platform carrying the human-validated GA bar;
       # macOS is compiles-and-bundles-in-CI only (see the macOS posture note in the header).

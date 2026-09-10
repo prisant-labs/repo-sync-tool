@@ -292,10 +292,19 @@ pub fn init(app: &AppHandle, recent: &[RepoRef]) -> tauri::Result<()> {
 /// Shared by the tray menu's "show"/"settings" items and a left-click on the tray
 /// icon so every entry point behaves identically.
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    // Delegates to the ONE definition of "surface the app"
+    // ([`crate::windows::raise_main_window`]), which the single-instance callback
+    // (BL-NI-73 - nothing stops two RepoSync instances sharing one database) also
+    // calls. Behavior is unchanged: the same unminimize/show/set_focus in the same
+    // order, and a failure still stops nothing. What changed is that the results are
+    // no longer dropped into `let _ =`, so a tray click that surfaces nothing leaves a
+    // trace instead of looking exactly like one that worked.
+    let outcome = crate::windows::raise_main_window(app);
+    if !outcome.is_usable() {
+        tracing::warn!(
+            outcome = ?outcome,
+            "tray: could not bring the main window to the front"
+        );
     }
 }
 

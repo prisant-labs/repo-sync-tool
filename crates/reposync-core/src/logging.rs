@@ -75,6 +75,28 @@ pub mod event {
     /// the visible state the no-tray fallback already chooses on purpose.
     pub const APP_WINDOW_SETUP_FAILED: &str = "app.window_setup_failed";
 
+    /// A SECOND launch of RepoSync was turned away, and the running instance
+    /// brought its window to the front instead of a second app starting.
+    ///
+    /// BL-NI-73 (nothing stops two RepoSync instances sharing one database).
+    /// Emitted from the FIRST instance, which is where the single-instance
+    /// plugin's callback runs, and that is the only place it CAN be emitted from
+    /// reliably: the second process leaves through `std::process::exit(0)` inside
+    /// the plugin's own setup hook, which unwinds nothing, so its
+    /// `tracing-appender` worker guard never drops and anything it queued may
+    /// never reach the file. The first instance's appender is alive and flushing,
+    /// so this line is the durable record that the guard fired.
+    ///
+    /// It is also the only POSITIVE evidence available to the binary smoke gate.
+    /// "The second process exited" is equally satisfied by "the second process
+    /// crashed", so the gate asserts this line as well: together they say the
+    /// second launch was turned away rather than that it died.
+    ///
+    /// The line carries the ARGUMENT COUNT, never the arguments or the working
+    /// directory the second launch passed. Both are filesystem paths, and a
+    /// diagnostic log a user emails to a maintainer is the wrong place for them.
+    pub const APP_SECOND_INSTANCE_DEFERRED: &str = "app.second_instance_deferred";
+
     // --- scheduler ---
     /// A scheduled job could not persist its outcome. The repo stays due and
     /// retries, so the user sees nothing; that is exactly why it needs a log.

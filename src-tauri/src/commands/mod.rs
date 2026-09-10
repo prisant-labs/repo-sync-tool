@@ -814,6 +814,62 @@ pub async fn settings_set(
     // rejected save durable by the back door.
     reposync_core::store::validate_settings(&settings)?;
 
+    // BL-NI-53 (WebView compromise -> settings_set -> editor/terminal spawn), the
+    // write-time validation layer. Rejected here, before anything is actuated or
+    // persisted, for the same reason `validate_settings` is: the autostart plugin call
+    // below runs before the durable write, so validating later would let a rejected
+    // save change the OS registration on its way out.
+    //
+    // ONLY WHEN THE VALUE CHANGED, which mirrors the rule the git path already follows
+    // a few dozen lines down and exists for the same reason. These settings name
+    // programs on the user's machine, and programs get uninstalled. Validating an
+    // unchanged value would mean that uninstalling VS Code makes every later save fail
+    // - a notification toggle, a quiet-hours edit - with an error about the editor.
+    // That is the exact shape of the bug finding 1 fixed for git-less machines, and it
+    // is worth not reintroducing on a neighbouring field.
+    // NORMALIZE BEFORE VALIDATING, so the string that gets checked is byte-for-byte
+    // the string that will later be spawned. Without this the two disagree: the
+    // validator trimmed its input, but the untrimmed value was persisted and
+    // `open_editor` does not trim, so " code " passed the save and then failed on
+    // first use - preserving exactly the delayed failure this is meant to remove.
+    for field in [&mut settings.editor_command, &mut settings.terminal_command] {
+        if let Some(v) = field.as_deref() {
+            *field = Some(v.trim().to_string());
+        }
+    }
+
+    for (value, previous_value, field) in [
+        (
+            &settings.editor_command,
+            &previous.editor_command,
+            "editor_command",
+        ),
+        (
+            &settings.terminal_command,
+            &previous.terminal_command,
+            "terminal_command",
+        ),
+    ] {
+        if value != previous_value {
+            match value.as_deref() {
+                Some(raw) => crate::opener::validate_command_setting(raw, field)?,
+                // CLEARING THE FIELD IS ALSO A CHANGE, and it has to be rejected here
+                // rather than waved through. The settings UI sends an emptied text box
+                // as null, and `repo_open_editor` / `repo_open_terminal` already treat
+                // a missing value as `InvalidSetting` - so accepting the clear means
+                // the save says "saved" and the next open says "invalid setting",
+                // which is the delayed failure in a different costume. There is no
+                // "no editor configured" mode to protect: these fields always need a
+                // value to be usable.
+                None => {
+                    return Err(AppError::InvalidSetting {
+                        field: format!("{field} (it is empty)"),
+                    })
+                }
+            }
+        }
+    }
+
     // E-15 AC1: actuate launch-on-login when the `autostart` setting changed.
     //
     // APPLY-THEN-PERSIST, and deliberately the opposite of the git-path swap next
