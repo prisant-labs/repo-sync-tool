@@ -286,8 +286,8 @@ pub fn run() {
     // and its Drop flushes buffered events on the way out. Moving it into
     // `setup()` or into managed state would end its life early and turn every
     // later log call into a silent no-op.
-    let (_log_guard, log_config) = match logging::init(&reposync_core::paths::AppPaths::from_env())
-    {
+    let paths = reposync_core::paths::AppPaths::from_env();
+    let (_log_guard, log_config) = match logging::init(&paths) {
         Ok((guard, config)) => (Some(guard), Some(config)),
         Err(e) => {
             // The one legitimate surviving eprintln! in the app: the logger
@@ -372,6 +372,69 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
+            // BL-NI-73 (two instances sharing one database), the BACKSTOP half.
+            //
+            // FIRST in setup, and AFTER the single-instance plugin, and both halves of
+            // that placement are load-bearing.
+            //
+            // After the plugin, because REACHING THIS LINE IS THE PROOF THE PLUGIN LOST
+            // ITS RACE. The plugin's setup hook runs before this one (it is registered
+            // first) and a second launch that finds the running instance's message
+            // window never gets here at all - it hands over its argv, the running
+            // instance raises its window, and the plugin exits the process. That is the
+            // normal, correct second-launch path and this check must never pre-empt it.
+            // An earlier revision of this change ran the lock in `run` BEFORE the
+            // builder existed, which did exactly that: it stopped every second launch
+            // silently and destroyed the window-raising behaviour the plugin exists to
+            // provide, while looking correct to a probe that only counts survivors.
+            //
+            // First within setup, because everything below this line has a cost a
+            // process that is about to stand down should not pay: a window, a database
+            // pool, a scheduler, a tray icon.
+            let paths = reposync_core::paths::AppPaths::from_env();
+            let instance_lock = match reposync_core::instance_lock::acquire(&paths) {
+                Ok(lock) => Some(lock),
+                Err(reposync_core::instance_lock::AcquireError::AlreadyRunning { path }) => {
+                    // WARN, not INFO, and the message says what the USER saw. Getting
+                    // here means the plugin could not hand off, so nobody's window was
+                    // raised: someone launched RepoSync and got nothing. That is the
+                    // correct outcome - it beats two processes writing one database -
+                    // but it is not a quiet success, and a maintainer reading a log
+                    // needs to tell it apart from the ordinary deferral.
+                    tracing::warn!(
+                        event = reposync_core::logging::event::APP_SECOND_INSTANCE_DB_LOCKED,
+                        lock_path = %path.display(),
+                        "another RepoSync already holds this data directory, so this \
+                         launch is standing down; the single-instance handoff did not \
+                         run, so the user saw no window appear"
+                    );
+                    app.handle().exit(0);
+                    return Ok(());
+                }
+                Err(reposync_core::instance_lock::AcquireError::Unavailable { path, cause }) => {
+                    // NOT fatal, deliberately. The app starts with the plugin as its
+                    // only guard, which is the protection it shipped with before this
+                    // lock existed. Making a condition the app currently tolerates kill
+                    // it is the class of change refused during the smoke-gate work: an
+                    // over-strict startup check can brick an install on a machine nobody
+                    // can reproduce.
+                    tracing::warn!(
+                        event = reposync_core::logging::event::APP_INSTANCE_LOCK_UNAVAILABLE,
+                        lock_path = %path.display(),
+                        cause = %cause,
+                        "the data-directory lock could not be established; starting \
+                         anyway with the single-instance plugin as the only guard"
+                    );
+                    None
+                }
+            };
+            // Handed to Tauri purely so its lifetime is the app's. Nothing ever reads
+            // it back: the claim IS the open handle, and the operating system releases
+            // it when this process dies, however it dies. Dropping it early would let a
+            // second instance in, so a value with a visible owner is safer than a local
+            // that a later refactor could shorten.
+            app.manage(instance_lock);
+
             // Register the event registry so typed emit/listen resolve names.
             builder.mount_events(app);
 
