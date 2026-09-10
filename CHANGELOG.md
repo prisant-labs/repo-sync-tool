@@ -23,6 +23,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   could reach the settings put a name there now and supply the program later.
   Editors that install as a small script, such as VS Code, still work.
 
+  Related, and the reason that check can be trusted: RepoSync now finds your
+  terminal the same way it finds your editor. The two used to differ - the
+  editor was looked up and launched by its full path, while the terminal name
+  was handed to Windows to sort out - which meant the same setting could start
+  two different programs depending on which one asked. A terminal RepoSync
+  cannot find now says so plainly, naming what it looked for, instead of failing
+  with a generic launch error.
+
 ### Changed
 - **The repository is now public** (2026-07-17), at
   `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0

@@ -589,12 +589,33 @@ pub fn open_terminal(terminal_cmd: &str, path: &Path) -> Result<(), AppError> {
     require_dir(path)?;
     #[cfg(windows)]
     {
+        // Resolve to a concrete executable BEFORE spawning, exactly as `open_editor`
+        // does (BL-NI-103). Previously this handed the bare configured name to
+        // `Command::new` and let Windows resolve it, while `open_editor` resolved
+        // through PATH + PATHEXT itself - so the two could pick DIFFERENT files for
+        // the same configured string, because PATHEXT order and the OS search order
+        // are not guaranteed to agree.
+        //
+        // That divergence also quietly undercut the write-time validation added for
+        // BL-NI-53 (WebView compromise -> settings_set -> editor/terminal spawn):
+        // validation checks the file the RESOLVER finds, so it could only make an
+        // honest promise about `terminal_command` once the launcher used the resolver
+        // too. A missing terminal now surfaces the same named `InvalidSetting` an
+        // absent editor does, instead of a generic spawn failure.
+        let base = terminal_cmd.trim();
+        let resolved = resolve_executable(base).ok_or_else(|| AppError::InvalidSetting {
+            field: format!("terminal_command ({base} was not found on PATH)"),
+        })?;
         // Windows Terminal ignores an inherited working dir, so it needs
         // `-d <path>`; any other terminal gets its working dir set. The path is a
         // plain argv argument in both cases (no shell), so it needs no escaping.
-        let base = terminal_cmd.trim();
-        let mut c = Command::new(base);
-        if is_windows_terminal(base) {
+        //
+        // Detected from the RESOLVED path rather than the configured string, which is
+        // the stricter and more honest test: the flag has to describe the program
+        // actually being launched. `is_windows_terminal` keys off the file STEM, so a
+        // bare `wt`, `wt.exe`, and a full path all still match.
+        let mut c = Command::new(&resolved);
+        if is_windows_terminal(&resolved.to_string_lossy()) {
             c.arg("-d").arg(path);
         } else {
             c.current_dir(path);
@@ -1045,6 +1066,36 @@ mod tests {
             assert_eq!(
                 resolve_in_paths("no-such-editor", &[dir], &pathext, &exists),
                 None
+            );
+        }
+
+        /// BL-NI-103: `open_terminal` must RESOLVE the configured command before it
+        /// spawns, the way `open_editor` already does.
+        ///
+        /// This is the only part of that change reachable from a unit test - the
+        /// success path spawns a real terminal - but it is the part that proves the
+        /// resolver runs at all. Before this change the bare name went straight to
+        /// `Command::new` and a missing terminal surfaced as a generic spawn failure
+        /// from `spawn_detached`, never as a named setting error.
+        #[test]
+        fn open_terminal_resolves_before_spawning_so_a_missing_terminal_names_the_setting() {
+            let dir = tempfile::TempDir::new().expect("tempdir");
+            let err = open_terminal("reposync-no-such-terminal-b3f1a9", dir.path())
+                .expect_err("a terminal that does not exist must not spawn");
+
+            let AppError::InvalidSetting { field } = &err else {
+                panic!("expected InvalidSetting, got {err:?}")
+            };
+            assert!(
+                field.contains("terminal_command"),
+                "the error must name the setting the user has to fix, got {field}"
+            );
+            // And the command that was looked for, because "invalid setting:
+            // terminal_command" is true and useless - the actionable fact is WHICH
+            // program was missing. Same rule `open_editor` follows.
+            assert!(
+                field.contains("reposync-no-such-terminal-b3f1a9"),
+                "the error must name the command it could not find, got {field}"
             );
         }
 
