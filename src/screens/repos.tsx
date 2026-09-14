@@ -95,6 +95,24 @@ export function ReposScreen({
     onGroupsChanged();
   }, [refetch, refetchMemberships, onGroupsChanged]);
 
+  // The Folder cell's click target (walk item R5). Errors get a toast rather
+  // than being swallowed the way `checkNow` swallows its own: a failed folder
+  // open produces NO other signal anywhere - no activity row, no event, no
+  // row state change - so silence would leave the user clicking a button that
+  // looks broken. `repo_open_folder` fails for reasons a user can act on (the
+  // path was moved, renamed or deleted since the last check), which is exactly
+  // when they need to be told.
+  const openFolder = useCallback(
+    async (id: number, name: string) => {
+      try {
+        await unwrap(commands.repoOpenFolder(id));
+      } catch (e) {
+        toast("error", `Could not open ${name}`, e instanceof IpcError ? e.message : String(e));
+      }
+    },
+    [toast],
+  );
+
   const checkNow = useCallback(
     async (id: number) => {
       setBusyId(id);
@@ -337,17 +355,35 @@ export function ReposScreen({
         // styled glyph (`.pth .fico`, muted and inline with the path text)
         // rather than using the generic muted data-icon slot every other
         // column uses - see the `icon` field's own doc comment on
-        // `DataTableColumn`. Presentational only: this does not call
-        // `repoOpenFolder` (that would be new interactive scope beyond what
-        // was ratified for this fix round; flagged in the PR body).
+        // `DataTableColumn`.
+        //
+        // This cell used to be a plain `<span>` carrying an "Open in File
+        // Explorer" tooltip and no click handler, deliberately: wiring it was
+        // called new interactive scope and deferred to the maintainer. He
+        // ruled on it in the 2026-09-14 walk-through (item R5, "this needs to
+        // function"), so it is now a real button.
+        //
+        // `stopPropagation` matters: the row's `onRowClick` opens the detail
+        // drawer, so without it every folder-open would also open the panel
+        // behind it. It is also a genuine tab stop, which the row itself is
+        // not (see the actions column: the row lost `role="button"`/`tabIndex`
+        // because nesting a keyboard-operable row around a button produced an
+        // invalid accessibility tree). So this is the only keyboard path to a
+        // repo's folder from the list.
         cell: (r) => (
-          <span
-            className="inline-flex min-w-0 items-center gap-1.5 truncate font-mono text-[11px] font-medium text-muted-foreground"
+          <button
+            type="button"
             title="Open in File Explorer"
+            aria-label={`Open ${r.localName} in File Explorer`}
+            onClick={(e) => {
+              e.stopPropagation();
+              void openFolder(r.id, r.localName);
+            }}
+            className="inline-flex min-w-0 items-center gap-1.5 truncate rounded-sm font-mono text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Folder aria-hidden className="size-3 shrink-0 opacity-70" />
             <span className="truncate">{r.localPath}</span>
-          </span>
+          </button>
         ),
       },
       {
@@ -377,7 +413,7 @@ export function ReposScreen({
         cell: (r) => (r.forks === null ? null : <span className="font-mono text-xs tabular-nums">{r.forks}</span>),
       },
     ],
-    [groupsForRepo],
+    [groupsForRepo, openFolder],
   );
 
   // ONE toolbar (N5, sidebar restructure and toolbar consolidation;

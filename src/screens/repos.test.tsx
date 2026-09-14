@@ -586,4 +586,53 @@ describe("ReposScreen toolbar group control (N5)", () => {
     await userEvent.setup().click(clearButton);
     expect(onClearGroup).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * Walk item R5: the Folder cell carried an "Open in File Explorer" tooltip
+   * and no click handler for three PRs, deliberately - wiring it was called
+   * new interactive scope and deferred. The maintainer ruled on it in the
+   * 2026-09-14 walk-through ("this needs to function"), so these two tests
+   * pin the behaviour AND the thing that makes it safe: the row's own click
+   * handler opens the detail drawer, so the cell must stop propagation or
+   * every folder-open silently opens the panel too.
+   */
+  it("R5: clicking the Folder cell opens that repo's folder", async () => {
+    const openFolder = mockCommand(commands, "repoOpenFolder", async () => ok(null));
+    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repo-nine in File Explorer" }));
+
+    await waitFor(() => expect(openFolder).toHaveBeenCalledWith(9));
+  });
+
+  it("R5: opening a folder does not also open the detail drawer behind it", async () => {
+    mockCommand(commands, "repoOpenFolder", async () => ok(null));
+    const repoGet = mockCommand(commands, "repoGet", async () => ok(MINIMAL_DETAIL));
+    mockCommand(commands, "groupList", async () => ok([]));
+    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repo-nine in File Explorer" }));
+
+    // `repoGet` is the drawer's own read. If propagation reached the row,
+    // `onRowClick` would have set the selected id and this would have fired.
+    await waitFor(() => expect(commands.repoOpenFolder).toHaveBeenCalled());
+    expect(repoGet).not.toHaveBeenCalled();
+  });
+
+  it("R5: a folder that cannot be opened reports why instead of failing silently", async () => {
+    mockCommand(commands, "repoOpenFolder", async () => err("fs.not_found", "the folder no longer exists"));
+    const { toast } = renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repo-nine in File Explorer" }));
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("error", "Could not open repo-nine", "the folder no longer exists"),
+    );
+  });
 });

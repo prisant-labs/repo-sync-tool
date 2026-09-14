@@ -500,35 +500,28 @@ function DetailBody({
                   onClick={() => run("editor", () => unwrap(commands.repoOpenEditor(r.id)), "Opened editor")}
                 />
                 {r.remoteOriginUrl && (
-                  <>
-                    <OpenButton
-                      label="Remote"
-                      icon={ExternalLink}
-                      disabled={isBusy}
-                      onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
-                    />
-                    {/*
-                      The round-five web-link glyph (BL-NI-94): a globe that
-                      opens the repo's web URL. Deliberately redundant with the
-                      "Remote" button above - both call `repoOpenRemote`,
-                      because that command IS "the existing remote-open path"
-                      the ratified shape names, and no separate binding exists
-                      for a repo's "web view" distinct from its git remote's
-                      translated URL. Shipping both, as the ratified shape
-                      states them, flagged in the PR for veto.
-                    */}
-                    <Button
-                      variant="secondary"
-                      size="icon"
-                      aria-label="Open repository website"
-                      title="Open repository website"
-                      disabled={isBusy}
-                      onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
-                    >
-                      <Globe />
-                    </Button>
-                  </>
+                  <OpenButton
+                    label="Remote"
+                    icon={ExternalLink}
+                    disabled={isBusy}
+                    onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
+                  />
                 )}
+                {/*
+                  There used to be a third button here: a globe labelled "Open
+                  repository website" that also called `repoOpenRemote`. The
+                  round-five shape (BL-NI-94, the two web-link glyphs) asked for
+                  two distinct destinations, and the comment justifying the
+                  duplicate said "no separate binding exists for a repo's web
+                  view" - true when it was written, and false from `d806256`
+                  onward, which added `repo_open_homepage`. So the globe was a
+                  duplicate of Remote wearing the label that belongs to the
+                  button below it: a screen reader announced "Open repository
+                  website" and landed the user on the git remote. Removed
+                  2026-09-14 on the maintainer's walk-through ruling (item P5).
+                  Remote goes to the git repository; the link glyph below goes
+                  to the project's own site.
+                */}
                 {r.homepage && (
                   <Button
                     variant="secondary"

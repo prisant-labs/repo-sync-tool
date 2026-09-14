@@ -618,4 +618,26 @@ describe("RepoDetailPanel homepage glyph (N4)", () => {
       ),
     );
   });
+
+  /**
+   * Walk item P5. The "Open in" row used to carry THREE outward buttons:
+   * "Remote", a globe labelled "Open repository website", and a link glyph
+   * labelled "Open homepage". The globe called `repoOpenRemote`, identical to
+   * the "Remote" button beside it, while wearing the label that describes
+   * what the link glyph actually does - so a screen reader announced "Open
+   * repository website" and landed the user on the git remote. Removed
+   * 2026-09-14. This test is the guard: the accessible name must not come
+   * back attached to the remote command.
+   */
+  it("P5: no globe duplicating Remote under a website label", async () => {
+    mockCommand(commands, "repoGet", async () =>
+      ok({ ...DETAIL, remoteOriginUrl: "git@github.com:o/r.git", homepage: "https://example.com" }),
+    );
+    renderPanel();
+    await screen.findByRole("button", { name: "Remote" });
+
+    expect(screen.queryByRole("button", { name: "Open repository website" })).toBeNull();
+    // The two that remain are distinct destinations, not two names for one.
+    expect(screen.getByRole("button", { name: "Open homepage" })).toBeDefined();
+  });
 });
