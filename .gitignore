@@ -25,6 +25,7 @@ yarn-error.log*
 
 # Local-only and tooling (never for the public repo)
 _local/
+_LOCAL/
 .memsearch/
 
 # Editor / IDE cruft
