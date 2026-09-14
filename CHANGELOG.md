@@ -10,6 +10,20 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ## [Unreleased]
 
+### Fixed
+- **The folder path on the Repos list now opens the folder.** It has always shown
+  an "Open in File Explorer" tooltip and done nothing when you clicked it. It is
+  now a real button, it can be reached with the Tab key, and if the folder has
+  been moved or deleted since the last check it tells you so instead of silently
+  doing nothing.
+- **Removed a button that went somewhere other than its label said.** A repo's
+  detail panel carried three outward links where two led to the same place: a
+  globe labelled "Open repository website" that actually opened the git remote,
+  sitting next to the button that really does open the project's website. A
+  screen reader announced the website and took you to the code. The globe is
+  gone. "Remote" opens the git repository and the link glyph opens the project's
+  own site.
+
 ### Security
 - **The editor and terminal settings are now checked when you save them, not
   only when they are used.** RepoSync would store whatever you typed and only
