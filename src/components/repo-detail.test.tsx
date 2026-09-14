@@ -574,11 +574,11 @@ describe("RepoDetailPanel group pills (N4)", () => {
   });
 });
 
-describe("RepoDetailPanel homepage glyph (N4)", () => {
+describe("RepoDetailPanel Website button (N4)", () => {
   it("is hidden when homepage is null", async () => {
     renderPanel();
     await screen.findByText("Up to date with origin");
-    expect(screen.queryByRole("button", { name: "Open homepage" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Website" })).toBeNull();
   });
 
   it("opens the homepage via repoOpenHomepage when set", async () => {
@@ -587,7 +587,7 @@ describe("RepoDetailPanel homepage glyph (N4)", () => {
     renderPanel();
     const user = userEvent.setup();
 
-    const button = await screen.findByRole("button", { name: "Open homepage" });
+    const button = await screen.findByRole("button", { name: "Website" });
     await user.click(button);
 
     await waitFor(() => expect(openHomepage).toHaveBeenCalledWith(7));
@@ -607,7 +607,7 @@ describe("RepoDetailPanel homepage glyph (N4)", () => {
     const { toast } = renderPanel();
     const user = userEvent.setup();
 
-    const button = await screen.findByRole("button", { name: "Open homepage" });
+    const button = await screen.findByRole("button", { name: "Website" });
     await user.click(button);
 
     await waitFor(() =>
@@ -638,6 +638,28 @@ describe("RepoDetailPanel homepage glyph (N4)", () => {
 
     expect(screen.queryByRole("button", { name: "Open repository website" })).toBeNull();
     // The two that remain are distinct destinations, not two names for one.
-    expect(screen.getByRole("button", { name: "Open homepage" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Website" })).toBeDefined();
+  });
+
+  /**
+   * Codex adversarial review, finding 2 (2026-09-14). Removing the duplicate
+   * globe left the homepage action as an icon-only button whose destination
+   * lived only in `aria-label` and `title`, sitting beside a visibly labelled
+   * "Remote" - so a sighted keyboard user got no wording at all and a pointer
+   * user had to hover to find out. `getByRole({ name })` alone CANNOT catch a
+   * regression back to that state, because an `aria-label` satisfies it just
+   * as well as visible text. This test reads `textContent`, which only visible
+   * wording can satisfy.
+   */
+  it("the Website button's label is visible text, not only an accessible name", async () => {
+    mockCommand(commands, "repoGet", async () =>
+      ok({ ...DETAIL, remoteOriginUrl: "git@github.com:o/r.git", homepage: "https://example.com" }),
+    );
+    renderPanel();
+
+    const website = await screen.findByRole("button", { name: "Website" });
+    expect(website.textContent).toContain("Website");
+    // Its labelled sibling, held to the same standard so the pair stays consistent.
+    expect(screen.getByRole("button", { name: "Remote" }).textContent).toContain("Remote");
   });
 });

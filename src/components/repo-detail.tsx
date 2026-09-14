@@ -519,20 +519,27 @@ function DetailBody({
                   button below it: a screen reader announced "Open repository
                   website" and landed the user on the git remote. Removed
                   2026-09-14 on the maintainer's walk-through ruling (item P5).
-                  Remote goes to the git repository; the link glyph below goes
-                  to the project's own site.
+                  Remote goes to the git repository; Website below goes to
+                  whatever URL the host reports as the repository's homepage.
+                  That is host-supplied text validated only as `http(s)` (see
+                  `repo_open_homepage`), so neither the label nor this comment
+                  claims it is the project's own site - only that it is the
+                  homepage the host has on record.
+
+                  Labelled, not an icon: it sat beside a visibly labelled
+                  Remote with its destination readable only from `aria-label`
+                  and `title`, so a sighted keyboard user got no wording at all
+                  (Codex adversarial review, finding 2, 2026-09-14). "Two
+                  buttons, both labelled" is also what the maintainer marked on
+                  walk item P5 the same day.
                 */}
                 {r.homepage && (
-                  <Button
-                    variant="secondary"
-                    size="icon"
-                    aria-label="Open homepage"
-                    title="Open homepage"
+                  <OpenButton
+                    label="Website"
+                    icon={Link2}
                     disabled={isBusy}
                     onClick={() => run("homepage", () => unwrap(commands.repoOpenHomepage(r.id)), "Opened homepage")}
-                  >
-                    <Link2 />
-                  </Button>
+                  />
                 )}
               </div>
             </section>

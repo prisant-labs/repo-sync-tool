@@ -17,12 +17,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   been moved or deleted since the last check it tells you so instead of silently
   doing nothing.
 - **Removed a button that went somewhere other than its label said.** A repo's
-  detail panel carried three outward links where two led to the same place: a
-  globe labelled "Open repository website" that actually opened the git remote,
-  sitting next to the button that really does open the project's website. A
-  screen reader announced the website and took you to the code. The globe is
-  gone. "Remote" opens the git repository and the link glyph opens the project's
-  own site.
+  detail panel carried a globe labelled "Open repository website" that actually
+  opened the git remote, duplicating the "Remote" button beside it. A screen
+  reader announced the website and took you to the code. The globe is gone.
+- **The homepage button now says "Website".** It was an unlabelled icon whose
+  destination you could only find by hovering, sitting next to a clearly
+  labelled "Remote". It appears only for repositories whose host reports a
+  homepage URL, and it opens exactly that URL - RepoSync has no way to confirm
+  who owns it.
 
 ### Security
 - **The editor and terminal settings are now checked when you save them, not

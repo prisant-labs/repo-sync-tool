@@ -379,7 +379,14 @@ export function ReposScreen({
               e.stopPropagation();
               void openFolder(r.id, r.localName);
             }}
-            className="inline-flex min-w-0 items-center gap-1.5 truncate rounded-sm font-mono text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            // `w-full` is load-bearing, not cosmetic. Content-sized, the button
+            // covered only the path text, so the leftover space in the same
+            // cell still bubbled to the row and opened the drawer instead -
+            // one cell with two outcomes decided by which pixel you hit, and
+            // nothing in the styling marked the boundary (Codex adversarial
+            // review, finding 1, 2026-09-14). Full-width makes the whole
+            // Folder cell do the one thing its column header names.
+            className="inline-flex w-full min-w-0 items-center gap-1.5 truncate rounded-sm text-left font-mono text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Folder aria-hidden className="size-3 shrink-0 opacity-70" />
             <span className="truncate">{r.localPath}</span>

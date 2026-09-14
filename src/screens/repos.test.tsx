@@ -245,7 +245,7 @@ describe("ReposScreen table", () => {
     expect(branchCellFor("repo-c").textContent).toBe("-");
   });
 
-  it("renders the Folder column from localPath, presentationally (no click wiring)", async () => {
+  it("renders the Folder column from localPath", async () => {
     renderScreen([repo({ localPath: "E:\\Projects\\repo-a" })]);
     await screen.findByText("repo-a");
 
@@ -634,5 +634,27 @@ describe("ReposScreen toolbar group control (N5)", () => {
     await waitFor(() =>
       expect(toast).toHaveBeenCalledWith("error", "Could not open repo-nine", "the folder no longer exists"),
     );
+  });
+
+  /**
+   * Codex adversarial review, finding 1 (2026-09-14). The three tests above
+   * all click the button itself, so none of them could see the real defect:
+   * the button was content-sized, so the rest of the cell was NOT the button,
+   * and a click landing there bubbled to the row and opened the drawer. One
+   * cell, two outcomes, decided by which pixel you hit.
+   *
+   * This is a LAYOUT defect and jsdom has no layout, so no amount of
+   * `user.click` can reach it - firing on the cell container bubbles to the
+   * row whatever the CSS says. The class IS the fix, so the class is what
+   * this guards, which is the one situation where asserting a class name is
+   * the honest test rather than a lazy one. A real-browser check would be
+   * strictly better and is not what this is.
+   */
+  it("R5: the Folder button fills its cell, so no part of the cell opens the drawer instead", async () => {
+    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+
+    const button = screen.getByRole("button", { name: "Open repo-nine in File Explorer" });
+    expect(button.className).toContain("w-full");
   });
 });
