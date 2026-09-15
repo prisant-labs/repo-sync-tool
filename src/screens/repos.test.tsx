@@ -245,7 +245,7 @@ describe("ReposScreen table", () => {
     expect(branchCellFor("repo-c").textContent).toBe("-");
   });
 
-  it("renders the Folder column from localPath, presentationally (no click wiring)", async () => {
+  it("renders the Folder column from localPath", async () => {
     renderScreen([repo({ localPath: "E:\\Projects\\repo-a" })]);
     await screen.findByText("repo-a");
 
@@ -585,5 +585,76 @@ describe("ReposScreen toolbar group control (N5)", () => {
 
     await userEvent.setup().click(clearButton);
     expect(onClearGroup).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Walk item R5: the Folder cell carried an "Open in File Explorer" tooltip
+   * and no click handler for three PRs, deliberately - wiring it was called
+   * new interactive scope and deferred. The maintainer ruled on it in the
+   * 2026-09-14 walk-through ("this needs to function"), so these two tests
+   * pin the behaviour AND the thing that makes it safe: the row's own click
+   * handler opens the detail drawer, so the cell must stop propagation or
+   * every folder-open silently opens the panel too.
+   */
+  it("R5: clicking the Folder cell opens that repo's folder", async () => {
+    const openFolder = mockCommand(commands, "repoOpenFolder", async () => ok(null));
+    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repo-nine in File Explorer" }));
+
+    await waitFor(() => expect(openFolder).toHaveBeenCalledWith(9));
+  });
+
+  it("R5: opening a folder does not also open the detail drawer behind it", async () => {
+    mockCommand(commands, "repoOpenFolder", async () => ok(null));
+    const repoGet = mockCommand(commands, "repoGet", async () => ok(MINIMAL_DETAIL));
+    mockCommand(commands, "groupList", async () => ok([]));
+    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repo-nine in File Explorer" }));
+
+    // `repoGet` is the drawer's own read. If propagation reached the row,
+    // `onRowClick` would have set the selected id and this would have fired.
+    await waitFor(() => expect(commands.repoOpenFolder).toHaveBeenCalled());
+    expect(repoGet).not.toHaveBeenCalled();
+  });
+
+  it("R5: a folder that cannot be opened reports why instead of failing silently", async () => {
+    mockCommand(commands, "repoOpenFolder", async () => err("fs.not_found", "the folder no longer exists"));
+    const { toast } = renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open repo-nine in File Explorer" }));
+
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith("error", "Could not open repo-nine", "the folder no longer exists"),
+    );
+  });
+
+  /**
+   * Codex adversarial review, finding 1 (2026-09-14). The three tests above
+   * all click the button itself, so none of them could see the real defect:
+   * the button was content-sized, so the rest of the cell was NOT the button,
+   * and a click landing there bubbled to the row and opened the drawer. One
+   * cell, two outcomes, decided by which pixel you hit.
+   *
+   * This is a LAYOUT defect and jsdom has no layout, so no amount of
+   * `user.click` can reach it - firing on the cell container bubbles to the
+   * row whatever the CSS says. The class IS the fix, so the class is what
+   * this guards, which is the one situation where asserting a class name is
+   * the honest test rather than a lazy one. A real-browser check would be
+   * strictly better and is not what this is.
+   */
+  it("R5: the Folder button fills its cell, so no part of the cell opens the drawer instead", async () => {
+    renderScreen([repo({ id: 9, localName: "repo-nine" })]);
+    await screen.findByText("repo-nine");
+
+    const button = screen.getByRole("button", { name: "Open repo-nine in File Explorer" });
+    expect(button.className).toContain("w-full");
   });
 });
