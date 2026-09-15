@@ -378,17 +378,46 @@ function DetailBody({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/*
-        Chrome above the tabs (ratified 2026-08-31 shape): repo name/description,
-        then the third header line carrying the status chip, the archived pill,
-        and the member-only group pills (G2: in the header). Deliberate reading
-        of a header that pre-dated a "path" line in the mockup this decision
-        traces to - no path row is added here, since Path stays inside "Where it
-        lives" (Overview tab) rather than duplicating it in chrome. Flagged in
-        the PR for veto.
+        Chrome above the tabs. Top to bottom: the repo name and description,
+        the path and remote it points at, the status chip with the archived
+        pill, the member-only group pills (G2: in the header), and ONE row
+        holding every repo-level action.
+
+        HISTORY, because this comment said the opposite until 2026-09-14. The
+        ratified 2026-08-31 shape deliberately kept Path out of chrome, on the
+        reading that Path belonged inside "Where it lives" on the Overview tab
+        and should not appear in two places - and it flagged itself for veto in
+        the PR. The veto arrived: on the 2026-09-14 drawer walk-through the
+        maintainer marked item P2 (path and remote stacked in the header) and
+        item P3 (one header action row). Path and Remote MOVED here. They are
+        not copies - the two "Where it lives" rows that held them are gone - so
+        each still appears exactly once.
+
+        The remote line is text, not a link. It used to be a button that opened
+        the remote, and the Remote button in the action row below already did
+        the same thing. P3 collapses duplicate affordances onto one control, so
+        the click lives on the button and this line only reports where the repo
+        points.
       */}
       <div className="flex flex-col gap-2 px-5 pt-5 pb-3">
         <div className="font-mono text-lg font-bold">{r.localName}</div>
         {r.description && <p className="text-sm text-muted-foreground">{r.description}</p>}
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <FolderOpen className="size-3.5 shrink-0" />
+            <span className="min-w-0 truncate font-mono" title={r.localPath}>
+              {r.localPath}
+            </span>
+          </div>
+          {r.remoteOriginUrl && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Globe className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate font-mono" title={r.remoteOriginUrl}>
+                {r.remoteOriginUrl}
+              </span>
+            </div>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={status} count={badgeCount} />
           {r.isArchived && (
@@ -403,6 +432,122 @@ function DetailBody({
           groupBusyId={groupBusyId}
           onToggleGroup={onToggleGroup}
         />
+        {/*
+          P3 (2026-09-14 walk-through): one row for every repo-level action,
+          replacing the two rows that used to sit inside the Overview tab - a
+          bare button row and an "Open in" section. Opening actions on the
+          left, sync actions on the right.
+
+          SYNC (same walk-through) asks for one primary per region, so "Check
+          now" is the only button here on the default variant and every other
+          button in the row is `secondary`. Refresh metadata and Pause were
+          `outline` in their old home; kept as-is they would have read as a
+          second tier of emphasis sitting between the primary and the opening
+          actions, which is the thing SYNC is trying to remove.
+
+          Four of these are conditional, and each condition is carried over
+          unchanged from where the button used to live:
+          - Terminal and Editor are ALWAYS rendered and disabled when their
+            Settings command is unset, with the reason in `title`. Not hidden:
+            a button that cannot succeed should say so before it is pressed
+            rather than after. Both commands return `InvalidSetting` when the
+            column is NULL, and `?? true` while settings load means "assume
+            available" rather than flashing a disabled control that enables a
+            moment later.
+          - Remote renders only when the repo has an origin.
+          - Website renders only when the host reports a homepage.
+          - Pause renders only while the repo is enabled and not already
+            auto-paused. Resume is NOT here - it stays in the Focal card,
+            which is where a paused repo's state is explained.
+        */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <OpenButton
+              label="Folder"
+              icon={FolderOpen}
+              disabled={isBusy}
+              onClick={() => run("folder", () => unwrap(commands.repoOpenFolder(r.id)), "Opened folder")}
+            />
+            <OpenButton
+              label="Terminal"
+              icon={Terminal}
+              disabled={isBusy || !hasTerminalCommand}
+              title={hasTerminalCommand ? undefined : "Set a terminal command in Settings"}
+              onClick={() => run("terminal", () => unwrap(commands.repoOpenTerminal(r.id)), "Opened terminal")}
+            />
+            <OpenButton
+              label="Editor"
+              icon={Pencil}
+              disabled={isBusy || !hasEditorCommand}
+              title={hasEditorCommand ? undefined : "Set an editor command in Settings"}
+              onClick={() => run("editor", () => unwrap(commands.repoOpenEditor(r.id)), "Opened editor")}
+            />
+            {r.remoteOriginUrl && (
+              <OpenButton
+                label="Remote"
+                icon={ExternalLink}
+                disabled={isBusy}
+                onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
+              />
+            )}
+            {/*
+              There used to be a third button in this set: a globe labelled
+              "Open repository website" that also called `repoOpenRemote`. The
+              round-five shape (BL-NI-94, the two web-link glyphs) asked for two
+              distinct destinations, and the comment justifying the duplicate
+              said "no separate binding exists for a repo's web view" - true
+              when it was written, and false from `d806256` onward, which added
+              `repo_open_homepage`. So the globe was a duplicate of Remote
+              wearing the label that belongs to the button beside it: a screen
+              reader announced "Open repository website" and landed the user on
+              the git remote. Removed 2026-09-14 on the maintainer's
+              walk-through ruling (item P5). Remote goes to the git repository;
+              Website goes to whatever URL the host reports as the repository's
+              homepage. That is host-supplied text validated only as `http(s)`
+              (see `repo_open_homepage`), so neither the label nor this comment
+              claims it is the project's own site - only that it is the homepage
+              the host has on record.
+
+              Labelled, not an icon: it sat beside a visibly labelled Remote
+              with its destination readable only from `aria-label` and `title`,
+              so a sighted keyboard user got no wording at all (Codex
+              adversarial review, finding 2, 2026-09-14). "Two buttons, both
+              labelled" is also what the maintainer marked on walk item P5 the
+              same day.
+            */}
+            {r.homepage && (
+              <OpenButton
+                label="Website"
+                icon={Link2}
+                disabled={isBusy}
+                onClick={() => run("homepage", () => unwrap(commands.repoOpenHomepage(r.id)), "Opened homepage")}
+              />
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" disabled={isBusy} onClick={onCheckNow}>
+              <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Check now
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={isBusy}
+              onClick={() => run("meta", () => unwrap(commands.repoRefreshMetadata(r.id)), "Metadata refreshed")}
+            >
+              <Package /> Refresh metadata
+            </Button>
+            {r.enabled && !r.autoPaused && (
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={isBusy}
+                onClick={() => run("pause", () => unwrap(commands.repoSetEnabled(r.id, false)), `Paused ${r.localName}`)}
+              >
+                <Pause /> Pause
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
 
       <Tabs value={tab} onValueChange={(v) => onTabChange(v as PanelTab)} className="flex min-h-0 flex-1 flex-col">
@@ -440,110 +585,6 @@ function DetailBody({
 
             <SyncStateSection r={r} />
 
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" disabled={isBusy} onClick={onCheckNow}>
-                <RefreshCw className={busy === "check" ? "animate-spin" : undefined} /> Check now
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={isBusy}
-                onClick={() => run("meta", () => unwrap(commands.repoRefreshMetadata(r.id)), "Metadata refreshed")}
-              >
-                <Package /> Refresh metadata
-              </Button>
-              {r.enabled && !r.autoPaused && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={isBusy}
-                  onClick={() => run("pause", () => unwrap(commands.repoSetEnabled(r.id, false)), `Paused ${r.localName}`)}
-                >
-                  <Pause /> Pause
-                </Button>
-              )}
-            </div>
-
-            <section>
-              <SectionLabel icon={ExternalLink}>Open in</SectionLabel>
-              <div className="flex flex-wrap gap-2">
-                <OpenButton
-                  label="Folder"
-                  icon={FolderOpen}
-                  disabled={isBusy}
-                  onClick={() => run("folder", () => unwrap(commands.repoOpenFolder(r.id)), "Opened folder")}
-                />
-                {/*
-                  Terminal and Editor are gated on their settings being set at
-                  all. Both commands return `InvalidSetting` when the column is
-                  NULL, so before 0009 backfilled them these buttons looked live
-                  and failed on click, with a Settings field whose placeholder
-                  ("code", "default") read like a configured value. A button
-                  that cannot succeed should say so before it is pressed rather
-                  than after.
-
-                  `?? true` while settings are loading: assume available rather
-                  than flashing a disabled control that enables a moment later.
-                */}
-                <OpenButton
-                  label="Terminal"
-                  icon={Terminal}
-                  disabled={isBusy || !hasTerminalCommand}
-                  title={hasTerminalCommand ? undefined : "Set a terminal command in Settings"}
-                  onClick={() => run("terminal", () => unwrap(commands.repoOpenTerminal(r.id)), "Opened terminal")}
-                />
-                <OpenButton
-                  label="Editor"
-                  icon={Pencil}
-                  disabled={isBusy || !hasEditorCommand}
-                  title={hasEditorCommand ? undefined : "Set an editor command in Settings"}
-                  onClick={() => run("editor", () => unwrap(commands.repoOpenEditor(r.id)), "Opened editor")}
-                />
-                {r.remoteOriginUrl && (
-                  <OpenButton
-                    label="Remote"
-                    icon={ExternalLink}
-                    disabled={isBusy}
-                    onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
-                  />
-                )}
-                {/*
-                  There used to be a third button here: a globe labelled "Open
-                  repository website" that also called `repoOpenRemote`. The
-                  round-five shape (BL-NI-94, the two web-link glyphs) asked for
-                  two distinct destinations, and the comment justifying the
-                  duplicate said "no separate binding exists for a repo's web
-                  view" - true when it was written, and false from `d806256`
-                  onward, which added `repo_open_homepage`. So the globe was a
-                  duplicate of Remote wearing the label that belongs to the
-                  button below it: a screen reader announced "Open repository
-                  website" and landed the user on the git remote. Removed
-                  2026-09-14 on the maintainer's walk-through ruling (item P5).
-                  Remote goes to the git repository; Website below goes to
-                  whatever URL the host reports as the repository's homepage.
-                  That is host-supplied text validated only as `http(s)` (see
-                  `repo_open_homepage`), so neither the label nor this comment
-                  claims it is the project's own site - only that it is the
-                  homepage the host has on record.
-
-                  Labelled, not an icon: it sat beside a visibly labelled
-                  Remote with its destination readable only from `aria-label`
-                  and `title`, so a sighted keyboard user got no wording at all
-                  (Codex adversarial review, finding 2, 2026-09-14). "Two
-                  buttons, both labelled" is also what the maintainer marked on
-                  walk item P5 the same day.
-                */}
-                {r.homepage && (
-                  <OpenButton
-                    label="Website"
-                    icon={Link2}
-                    disabled={isBusy}
-                    onClick={() => run("homepage", () => unwrap(commands.repoOpenHomepage(r.id)), "Opened homepage")}
-                  />
-                )}
-              </div>
-            </section>
-
             {r.latestReleaseTag && (
               <section>
                 <SectionLabel icon={Package}>Latest release</SectionLabel>
@@ -557,30 +598,23 @@ function DetailBody({
               </section>
             )}
 
+            {/*
+              This section was "Where it lives" and held four rows: Path,
+              Remote, Last checked, Last fetched. P2 moved Path and Remote into
+              the header above, so those two rows are gone from here rather
+              than duplicated, and what is left is two timestamps - which the
+              old label no longer described.
+
+              It is a waypoint, not a destination. Decision P1 (three fact
+              blocks) absorbs both remaining rows, and the follow-on ruling on
+              the same walk-through is that this section is REMOVED once P1
+              lands. It survives this change only because "Last fetched"
+              appears nowhere else in the app, and a redesign must not drop a
+              fact on its way between two shapes.
+            */}
             <section>
-              <SectionLabel icon={FolderOpen}>Where it lives</SectionLabel>
+              <SectionLabel icon={Clock}>Timing</SectionLabel>
               <dl className="overflow-hidden rounded-md border border-border">
-                <KvRow label="Path" icon={FolderOpen} value={r.localPath} mono breakAll />
-                <KvRow
-                  label="Remote"
-                  icon={Globe}
-                  value={
-                    r.remoteOriginUrl ? (
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => run("remote", () => unwrap(commands.repoOpenRemote(r.id)), "Opened remote")}
-                        className="text-left text-primary underline-offset-2 hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                      >
-                        {r.remoteOriginUrl}
-                      </button>
-                    ) : (
-                      "none"
-                    )
-                  }
-                  mono
-                  breakAll
-                />
                 <KvRow label="Last checked" icon={Clock} value={relativeTime(r.lastCheckedAt)} />
                 <KvRow label="Last fetched" icon={RefreshCw} value={relativeTime(r.lastFetchedAt)} />
               </dl>
