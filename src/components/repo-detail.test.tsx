@@ -395,13 +395,26 @@ describe("RepoDetailPanel tabs (N4)", () => {
     await screen.findByText("Up to date with origin");
     expect(tabSelected("Overview")).toBe(true);
 
-    // The last focusable control inside Overview's own content: the
-    // "Where it lives" > Remote row renders as a link-styled button when
-    // `remoteOriginUrl` is set. Selected by its visible URL text since an
-    // earlier "Open in > Remote" button shares the same accessible name.
-    const remoteLink = screen.getByText(DETAIL.remoteOriginUrl!);
-    remoteLink.focus();
-    expect(document.activeElement).toBe(remoteLink);
+    // The trap's last element when Overview is active is the Overview PANEL
+    // ITSELF. Until 2026-09-14 this test focused a control inside the panel -
+    // the "Where it lives" > Remote row, which rendered as a link-styled
+    // button - but decision P3 moved every repo-level action into the header
+    // chrome above the tab list, and P2 moved the Remote row up with them, so
+    // Overview's content has no focusable control of its own in the clean
+    // state. `TabPanel` carries `tabIndex={0}` (see `ui/tabs.tsx`) precisely
+    // so a panel is still reachable and scrollable by keyboard when nothing
+    // inside it can take focus, which makes the active panel the last
+    // focusable element in the drawer.
+    //
+    // This still discriminates a working exclusion filter from a broken one.
+    // With the filter, the trap's "last" is this panel, so Tab is intercepted
+    // and wraps to Close. Without it, "last" would be one of the mounted-but-
+    // hidden Settings controls, the handler would not fire, and native
+    // tabbing - which skips `hidden` content - would walk straight out of the
+    // drawer rather than landing on Close.
+    const overviewPanel = screen.getByRole("tabpanel", { name: "Overview" });
+    overviewPanel.focus();
+    expect(document.activeElement).toBe(overviewPanel);
 
     const user = userEvent.setup();
     await user.keyboard("{Tab}");
@@ -661,5 +674,177 @@ describe("RepoDetailPanel Website button (N4)", () => {
     expect(website.textContent).toContain("Website");
     // Its labelled sibling, held to the same standard so the pair stays consistent.
     expect(screen.getByRole("button", { name: "Remote" }).textContent).toContain("Remote");
+  });
+});
+
+/**
+ * P3 (the 2026-09-14 drawer walk-through): the eight repo-level actions used
+ * to live INSIDE the Overview tab, split across two rows - a bare button row
+ * and an "Open in" section. They now sit in a single row in the header chrome,
+ * above the tab list.
+ *
+ * The point of the move is that these actions stop being a property of one
+ * tab, so the first test asserts exactly that: they are reachable while a
+ * DIFFERENT tab is active. The rest pin the four conditional controls, because
+ * moving a button between containers is precisely where a condition gets
+ * dropped - the button still renders, the command still compiles, every other
+ * test still passes, and the only evidence is a control that appears when it
+ * should not or is clickable when it cannot succeed.
+ *
+ * Two of the four are HIDDEN on their condition and two are DISABLED WITH A
+ * REASON, which is the distinction most at risk of being flattened into "just
+ * hide it". Neither Terminal nor Editor had any test before this move; their
+ * behaviour was documented only in a comment.
+ */
+describe("RepoDetailPanel header action row (P3)", () => {
+  /** Both optional destinations present, so all eight controls render. */
+  const WIRED = {
+    ...DETAIL,
+    remoteOriginUrl: "https://github.com/example/example.git",
+    homepage: "https://example.com",
+  };
+
+  const ALL_ACTIONS = [
+    "Folder",
+    "Terminal",
+    "Editor",
+    "Remote",
+    "Website",
+    "Check now",
+    "Refresh metadata",
+    "Pause",
+  ];
+
+  it("keeps every action reachable while the Activity tab is the active one", async () => {
+    mockCommand(commands, "repoGet", async () => ok(WIRED));
+    renderPanel();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    expect(tabSelected("Activity")).toBe(true);
+
+    for (const name of ALL_ACTIONS) {
+      expect(screen.getByRole("button", { name })).toBeDefined();
+    }
+  });
+
+  it("hides Remote when the repo has no origin", async () => {
+    mockCommand(commands, "repoGet", async () => ok({ ...WIRED, remoteOriginUrl: null }));
+    renderPanel();
+    await screen.findByRole("button", { name: "Folder" });
+
+    expect(screen.queryByRole("button", { name: "Remote" })).toBeNull();
+    // The other four opening actions are unaffected by a missing origin.
+    expect(screen.getByRole("button", { name: "Website" })).toBeDefined();
+  });
+
+  it("hides Pause once the repo is paused by hand, leaving Resume in the Focal card", async () => {
+    mockCommand(commands, "repoGet", async () => ok({ ...WIRED, enabled: false }));
+    renderPanel();
+    await screen.findByRole("button", { name: "Folder" });
+
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    // Resume deliberately did NOT move into the header row: it belongs beside
+    // the Focal card's explanation of why the repo is not being checked.
+    expect(await screen.findByRole("button", { name: "Resume watching" })).toBeDefined();
+  });
+
+  it("hides Pause once the scheduler has auto-paused the repo", async () => {
+    mockCommand(commands, "repoGet", async () => ok({ ...WIRED, autoPaused: true }));
+    renderPanel();
+    await screen.findByRole("button", { name: "Folder" });
+
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+  });
+
+  /*
+   * Terminal and Editor are gated on their Settings command being set at all.
+   * Both backend commands return `InvalidSetting` when the column is NULL, so
+   * before migration 0009 backfilled them these buttons looked live and failed
+   * on click - with a Settings field whose placeholder ("code", "default")
+   * read like a configured value.
+   *
+   * Rendered-and-disabled, never hidden: a hidden button tells the user
+   * nothing, while a disabled one with a `title` says what to go and set. That
+   * is the behaviour these two tests exist to stop a future redesign from
+   * quietly converting into a conditional render.
+   */
+  it("disables Terminal and Editor with the reason on them when their commands are unset", async () => {
+    mockCommand(commands, "repoGet", async () => ok(WIRED));
+    // An empty value can no longer ARRIVE through the Settings screen, and
+    // that is worth stating plainly rather than letting the next reader assume
+    // this is the routine path. PR #86 rejects a cleared editor or terminal
+    // command at save time ("the settings UI sends an emptied text box as
+    // null", `commands/mod.rs:856-868`), and migration 0009 backfilled the
+    // NULLs that existed before it. So neither "" nor null is reachable by
+    // using the app normally.
+    //
+    // What this pins is the FRONTEND's derivation of "unset" (`repo-detail
+    // .tsx:146-147`), which is the last thing standing if an empty value ever
+    // does arrive - a hand-edited database, a restored pre-0009 file, or a
+    // future backend change that relaxes the save rule. It is exactly the kind
+    // of defence a layout change deletes without noticing, because nothing a
+    // user can do makes its absence visible.
+    //
+    // Note `?? "code"`: that fallback treats NULL as available on purpose,
+    // because null is also what the hook reports while settings are loading,
+    // and a disabled button that enables a moment later is worse than a
+    // briefly optimistic one. So "" is the representation to test with, not
+    // null - the two are deliberately not equivalent here.
+    mockCommand(commands, "settingsGet", async () =>
+      ok({ ...SETTINGS, terminalCommand: "", editorCommand: "  " }),
+    );
+    renderPanel();
+
+    const terminal = await screen.findByRole("button", { name: "Terminal" });
+    const editor = screen.getByRole("button", { name: "Editor" });
+
+    expect(terminal.hasAttribute("disabled")).toBe(true);
+    expect(terminal.getAttribute("title")).toBe("Set a terminal command in Settings");
+    expect(editor.hasAttribute("disabled")).toBe(true);
+    expect(editor.getAttribute("title")).toBe("Set an editor command in Settings");
+  });
+
+  it("leaves Terminal and Editor enabled and unexplained when their commands are set", async () => {
+    mockCommand(commands, "repoGet", async () => ok(WIRED));
+    renderPanel();
+
+    const terminal = await screen.findByRole("button", { name: "Terminal" });
+    const editor = screen.getByRole("button", { name: "Editor" });
+
+    expect(terminal.hasAttribute("disabled")).toBe(false);
+    // No `title` when there is nothing to explain - a tooltip that always
+    // shows would train the user to ignore the one that matters.
+    expect(terminal.getAttribute("title")).toBeNull();
+    expect(editor.hasAttribute("disabled")).toBe(false);
+    expect(editor.getAttribute("title")).toBeNull();
+  });
+
+  /*
+   * P2 moved the path and the remote URL into the header as text. The remote
+   * used to render as a link-styled button that opened the remote, duplicating
+   * the Remote button beside it; P3 collapses duplicate affordances onto one
+   * control, so the line reports and the button acts.
+   */
+  it("shows the path and remote as header text, with the opening click on the buttons", async () => {
+    mockCommand(commands, "repoGet", async () => ok(WIRED));
+    renderPanel();
+
+    const path = await screen.findByText(WIRED.localPath);
+    expect(path.tagName).toBe("SPAN");
+
+    const remote = screen.getByText(WIRED.remoteOriginUrl);
+    expect(remote.tagName).toBe("SPAN");
+    expect(screen.getByRole("button", { name: "Remote" })).toBeDefined();
+  });
+
+  it("omits the remote line entirely when there is no origin, rather than printing a placeholder", async () => {
+    mockCommand(commands, "repoGet", async () => ok({ ...WIRED, remoteOriginUrl: null }));
+    renderPanel();
+    await screen.findByText(WIRED.localPath);
+
+    // The old "Where it lives" row printed the string "none" here. A header
+    // line has no label to hang that off, so the line is simply absent.
+    expect(screen.queryByText("none")).toBeNull();
   });
 });

@@ -10,6 +10,18 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ## [Unreleased]
 
+### Changed
+- **Every action on a repository is now in one row at the top of its detail
+  panel.** They used to be split across two rows further down, inside the
+  Overview tab, which meant switching back to Overview before you could open a
+  folder or start a check. The row sits above the tabs now, so it is there
+  whichever tab you are reading. Opening actions are on the left - Folder,
+  Terminal, Editor, Remote, Website - and the ones that change something are on
+  the right, with "Check now" as the one highlighted button.
+- **A repository's path and remote URL are now shown under its name**, rather
+  than further down the Overview tab. Long paths are shortened with the full
+  value on hover.
+
 ### Fixed
 - **The folder path on the Repos list now opens the folder.** It has always shown
   an "Open in File Explorer" tooltip and done nothing when you clicked it. It is
