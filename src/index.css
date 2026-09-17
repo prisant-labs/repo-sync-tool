@@ -11,6 +11,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-ink: var(--primary-ink);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -201,6 +202,14 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.52 0.19 264); /* Graphite accent blue */
+  /* The accent as TEXT, not as a fill. `--primary` is tuned to carry white on top
+     of it, so it is too light to read AS text on our own surfaces: measured with
+     _generators/contrast.py it is 4.27:1 on the sidebar's bg-primary/10 wash and
+     4.44:1 on the bare dark sidebar, both under the 4.5:1 AA floor DESIGN.md
+     requires. Same hue and chroma, darker in light mode and lighter in dark, so
+     nothing about the treatment changes - only the ink clears the floor. This is
+     the same tint/ink split the --status-* pairs below already use. */
+  --primary-ink: oklch(0.48 0.19 264);
   --primary-foreground: oklch(0.985 0 0);
   /* These three remain one value under three names, which is its own defect
      (a "secondary button" and a "muted well" cannot both be tuned while they
@@ -292,6 +301,7 @@
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
   --primary: oklch(0.6 0.16 264); /* Graphite accent blue (dark) */
+  --primary-ink: oklch(0.66 0.16 264);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);

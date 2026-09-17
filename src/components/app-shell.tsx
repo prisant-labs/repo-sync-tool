@@ -45,7 +45,7 @@ const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = 
  * Settings entry.
  *
  * Active state (N5, corrected post-review): moved off the accent tint
- * (`bg-primary/10 text-primary`) onto the ratified neutral 1B surface ramp -
+ * (`bg-primary/10 text-primary-ink`) onto the ratified neutral 1B surface ramp -
  * `bg-sidebar-accent` is the same `0.935`/`0.269` well step `--muted` already
  * sits on. `text-foreground` on `bg-sidebar-accent` is 16.35:1 in light,
  * 14.48:1 in dark (`_generators/contrast.py`).
@@ -195,7 +195,7 @@ export function AppShell() {
             R
           </div>
           <span className="font-semibold">
-            Repo<span className="text-primary">Sync</span>
+            Repo<span className="text-primary-ink">Sync</span>
           </span>
           <span className="ml-auto font-mono text-[11px] text-muted-foreground">
             {appVersion ?? "..."}

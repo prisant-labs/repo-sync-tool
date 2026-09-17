@@ -33,7 +33,7 @@ type DialogState = { mode: "create" | "rename"; group: GroupSummary | null };
  * paints when `railActive` is true (the caller passes `view === "repos"`),
  * so the visual "you are here" language stays exclusive to the primary nav's
  * own active item. The fill itself was left as the pre-existing
- * `bg-primary/10 text-primary` - a light colour TINT with no font-weight
+ * `bg-primary/10 text-primary-ink` - a light colour TINT with no font-weight
  * change - which is already visually subordinate to the primary nav's own
  * active treatment (a flat, opaque `bg-sidebar-accent` fill plus a left
  * accent bar plus `font-semibold`, `app-shell.tsx`'s `NavButton`): a lighter
@@ -116,7 +116,7 @@ export function GroupsNav({
               className={cn(
                 "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
                 activeGroupId === null && railActive
-                  ? "bg-primary/10 text-primary"
+                  ? "bg-primary/10 text-primary-ink"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
             >
@@ -191,7 +191,7 @@ function GroupRow({
     <div
       className={cn(
         "group/row relative flex items-center rounded-md text-sm font-medium transition-colors",
-        visuallyActive ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted",
+        visuallyActive ? "bg-primary/10 text-primary-ink" : "text-muted-foreground hover:bg-muted",
       )}
     >
       <button
@@ -233,7 +233,7 @@ function GroupRow({
           <span
             className={cn(
               "font-mono text-[11px] tabular-nums transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
-              visuallyActive ? "text-primary" : "text-muted-foreground",
+              visuallyActive ? "text-primary-ink" : "text-muted-foreground",
             )}
           >
             {group.repoCount}

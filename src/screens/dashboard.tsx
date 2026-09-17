@@ -276,7 +276,7 @@ export function DashboardScreen({
                 <Card>
                   <CardHeader>
                     <CardTitle>Needs attention</CardTitle>
-                    <button onClick={onOpenRepos} className="ml-auto text-xs font-medium text-primary">
+                    <button onClick={onOpenRepos} className="ml-auto text-xs font-medium text-primary-ink">
                       Open Repos
                     </button>
                   </CardHeader>

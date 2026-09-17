@@ -38,7 +38,7 @@ export function FilterChip({
         "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
-          ? "border-primary bg-primary/10 text-primary"
+          ? "border-primary bg-primary/10 text-primary-ink"
           : "border-border text-muted-foreground hover:bg-muted",
       )}
     >
