@@ -68,6 +68,21 @@ the shadcn/ui neutral scale; RepoSync adds the accent hue and the six status tok
 ### Interaction accent (one blue, `--primary`)
 - **Graphite blue** `oklch(0.52 0.19 264)` light / `oklch(0.6 0.16 264)` dark; focus ring `--ring: oklch(0.62 0.15 264)`. Primary buttons, links, focus. Means "you can act here." **Never** used to convey repo status. The primary sidebar nav's active state moved OFF using this accent as a background FILL as of N5 (sidebar restructure and toolbar consolidation, Components below) - the fill itself is now the neutral ramp - but a Codex adversarial review of that change found the neutral ramp too narrow (~0.01 L) to tell active from hover apart on lightness alone, so active reintroduced the accent in a different, narrower form: a 2px positional marker (a left bar), never a wash. The accent also still marks the active GROUP filter's tint in the nested Groups section, a separate, narrower exception.
 
+#### The accent as text (`--primary-ink`)
+`--primary` is tuned to carry white **on top of it**, which makes it too light to read **as**
+text on our own surfaces. Measured with `_generators/contrast.py`: bare `text-primary` is
+4.44:1 on the dark sidebar and on dark cards, and on the `bg-primary/10` wash the active
+group row is 4.27:1 light and 3.99:1 dark - all under the 4.5:1 floor. So the accent gets its
+own ink, exactly as each status state does: **`--primary-ink`** `oklch(0.48 0.19 264)` light /
+`oklch(0.66 0.16 264)` dark. Same hue, same chroma, darker in light and lighter in dark; every
+failing pair moves to 5.08-6.84:1.
+
+**The split is the rule, not the exception.** `--primary` is a FILL (button backgrounds, the
+active-nav marker) and `--primary-ink` is TEXT (links, the wordmark, the info toast, filter
+chip labels, the active group row). Reaching for `text-primary` is the mistake this token
+exists to prevent, and nothing in the build enforces it - the same unenforced coupling the
+status inks carry, below.
+
 ### Status taxonomy (the only saturated color that shouts)
 Each token has a light and a dark value (lighter, slightly less chroma in dark for AA on
 the dark surface). Rendered always as color **plus** a lucide icon **plus** a word.

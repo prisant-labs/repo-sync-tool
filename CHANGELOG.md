@@ -23,6 +23,15 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **Faint text is readable again in several places, and the success badge on a
+  receipt now carries an icon.** The blue used for links, the RepoSync wordmark,
+  filter chips and the highlighted group in the sidebar was tuned to sit behind
+  white text, which made it too pale to read as text itself - worst in dark mode,
+  where it fell below the contrast level the project requires. It now uses a
+  second, darker shade wherever it appears as words rather than as a background.
+  Separately, the outcome badge on an activity receipt was showing colour alone;
+  it now shows a tick or a cross as well, so it still reads in greyscale or if you
+  cannot easily tell red from green.
 - **The folder path on the Repos list now opens the folder.** It has always shown
   an "Open in File Explorer" tooltip and done nothing when you clicked it. It is
   now a real button, it can be reached with the Tab key, and if the folder has
