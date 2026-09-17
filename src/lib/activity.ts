@@ -99,18 +99,25 @@ export type StatusFilter = "all" | "success" | "failed";
  * `repoId` stays `null` here: repo-scoped filtering needs a control this app
  * does not have yet, and picking one is a UI decision that has not been made.
  *
- * `groupId` stays `null` for the same reason (BL-NI-93): the backend can now
- * constrain by group (`activity::list` resolves membership server-side, before
- * its own `LIMIT`), but the Activity screen has no group-filter control yet -
- * that lands with N4. This keeps the wire contract satisfied in the meantime.
+ * `groupId` carries the shell's engaged group (A2). It is a REQUIRED
+ * parameter rather than a defaulted one on purpose: the sidebar now marks the
+ * engaged group on the Activity screen, and a mark over an unfiltered list is
+ * the same class of lie as a count taken from a capped page. A default would
+ * let a caller drop the scope silently; this way the type system asks.
+ *
+ * The scope goes on the wire rather than narrowing the fetched page, for the
+ * same reason the other two axes do: `activity::list` resolves membership
+ * server-side via a `repo_groups` join, before its own `LIMIT` (BL-NI-93,
+ * closed). Filtering client-side would search only the capped page.
  */
 export function toActivityFilter(
   actionType: ActionTypeFilter,
   status: StatusFilter,
+  groupId: number | null,
 ): ActivityFilter {
   return {
     repoId: null,
-    groupId: null,
+    groupId,
     actionType: actionType === "all" ? null : actionType,
     status: status === "all" ? null : status,
     limit: ACTIVITY_FETCH_LIMIT,

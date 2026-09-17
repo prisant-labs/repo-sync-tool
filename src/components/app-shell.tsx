@@ -20,19 +20,26 @@ function isView(value: string): value is View {
   return (VIEWS as readonly string[]).includes(value);
 }
 
-// Ratified sidebar order (ui-delivery-plan.md ledger B1 / N5, sidebar
-// restructure and toolbar consolidation): Dashboard,
-// Activity, Repos - with Groups nested one level beneath Repos (rendered
-// separately below, not in this array) - then Settings, bottom-docked
-// (its own nav below, separated by a hairline and pushed down with
-// `mt-auto`). Split into two arrays rather than one flat NAV so the render
-// below can place Settings at the sidebar's foot without reordering `VIEWS`/
+// Sidebar order (SB6): Dashboard, Repos, Activity - then Settings,
+// bottom-docked (its own nav below, separated by a hairline and pushed down
+// with `mt-auto`). Groups renders below this list as a plain line under the
+// WHOLE nav (A1), not as a subtree of Repos.
+//
+// SB6 and A1 both REVERSE the earlier ratified N5 / ledger-B1 shape, which
+// put Activity above Repos and nested Groups one level beneath Repos behind
+// an indent and a guide rail. The reversal is recorded in
+// `_local/design/3-decisions/ui-delivery-plan.md` (H.1 for the order, F.1
+// confirmed at J.1 for the placement), which is the only file that may
+// record a decision.
+//
+// Still split into two arrays rather than one flat NAV so the render below
+// can place Settings at the sidebar's foot without reordering `VIEWS`/
 // `isView`, which the tray's `navigate:requested` handler validates against
 // and must not change shape.
 const PRIMARY_NAV: { id: View; label: string; Icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
-  { id: "activity", label: "Activity", Icon: Activity },
   { id: "repos", label: "Repos", Icon: List },
+  { id: "activity", label: "Activity", Icon: Activity },
 ];
 const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = {
   id: "settings",
@@ -208,20 +215,17 @@ export function AppShell() {
         </nav>
 
         {/*
-          Groups, nested one level beneath Repos (ui-delivery-plan.md ledger
-          B1 / N5, coverage-matrix.md section 1). The indent plus the left
-          guide rail are what say "this belongs to Repos" rather than "this is
-          a second top-level nav list"; no mockup specified an exact value, so
-          this materialization is provisional and named in the PR body for
-          veto. Every shipped Groups behaviour (matrix section 2) is
-          unchanged: only this wrapper and GroupsNav's own outer spacing
-          moved, nothing inside it did.
+          Groups: a plain line under the WHOLE nav (A1, asked for again at
+          J.1 - "under the whole nav. I thought that was clarified elsewhere
+          several times"). The indent and the left guide rail that used to
+          say "this belongs to Repos" are gone, because the placement itself
+          is no longer a claim about ownership. Every shipped Groups
+          behaviour is unchanged; only this wrapper moved.
         */}
-        <div className="ml-[23px] flex min-h-0 flex-1 flex-col border-l border-border pl-2">
+        <div className="flex min-h-0 flex-1 flex-col">
           <GroupsNav
             groups={groups}
             activeGroupId={activeGroupId}
-            railActive={view === "repos"}
             onSelectGroup={selectGroup}
             onClearActiveGroup={clearActiveGroup}
             refetchGroups={groupsState.refetch}
@@ -328,7 +332,7 @@ export function AppShell() {
               onGroupsChanged={groupsState.refetch}
             />
           )}
-          {view === "activity" && <ActivityScreen />}
+          {view === "activity" && <ActivityScreen activeGroupId={activeGroupId} />}
           {view === "settings" && <SettingsScreen dark={dark} onToggleTheme={toggle} />}
         </div>
       </main>

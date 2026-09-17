@@ -16,42 +16,36 @@ type DialogState = { mode: "create" | "rename"; group: GroupSummary | null };
  * and a "New group" control. Selecting a group lifts the active filter to the
  * app shell, which also switches to the Repos view.
  *
- * Destination state vs. filter state (post-review correction). The active
- * group filter PERSISTS across every screen (selecting it once keeps it
- * applied on Repos even after navigating away and back - the shipped
- * cross-screen behaviour this file's own history already documents), but
- * before this fix the row that names the current filter rendered its
- * accent-tinted "selected" fill on every screen, not only Repos. A Codex
- * adversarial review caught the result: Dashboard's own active nav item
- * plus an accent-active "All repositories"/group row under an inactive
- * Repos item, two things reading as "current" in one rail at once, and the
- * same collision on Activity/Settings whenever a group was selected.
+ * A2: the engaged group is marked on EVERY screen. The filter has always
+ * persisted across screens; now the mark does too, so the rail answers "what
+ * am I scoped to" wherever you are standing rather than only on Repos.
  *
- * `railActive` decouples the two: `aria-pressed` always reflects the true,
- * persistent filter state (this row's own semantic "is this filter engaged"
- * fact, unaffected by which screen is showing), while the ACCENT FILL only
- * paints when `railActive` is true (the caller passes `view === "repos"`),
- * so the visual "you are here" language stays exclusive to the primary nav's
- * own active item. The fill itself was left as the pre-existing
- * `bg-primary/10 text-primary-ink` - a light colour TINT with no font-weight
- * change - which is already visually subordinate to the primary nav's own
- * active treatment (a flat, opaque `bg-sidebar-accent` fill plus a left
- * accent bar plus `font-semibold`, `app-shell.tsx`'s `NavButton`): a lighter
- * lever set can never outrank a heavier one painted in the same rail.
+ * Destination and filter remain two different facts carried on two different
+ * attributes, which is what keeps one rail from reading as two "current"
+ * things at once: `aria-current="page"` marks WHERE YOU ARE and is set only
+ * by the primary nav; `aria-pressed` marks WHAT IS ENGAGED and is set only
+ * here. Both can be true in the same rail without competing, because they
+ * are not the same claim.
+ *
+ * The visual treatments are deliberately unequal for the same reason. A nav
+ * item's active state is a flat, opaque `bg-sidebar-accent` fill plus a 2px
+ * left accent bar plus `font-semibold` (`app-shell.tsx`'s `NavButton`); a
+ * group row's is a light `bg-primary/10` TINT with no weight change. A
+ * lighter lever set cannot outrank a heavier one painted in the same rail.
+ *
+ * `text-primary-ink` rather than `text-primary` is load-bearing, not
+ * cosmetic: accent text on this tint measures 4.27:1 light and 3.99:1 dark
+ * with `--primary`, both under the 4.5:1 floor (D-14, fixed in PR #92).
  */
 export function GroupsNav({
   groups,
   activeGroupId,
-  railActive,
   onSelectGroup,
   onClearActiveGroup,
   refetchGroups,
 }: {
   groups: GroupSummary[];
   activeGroupId: number | null;
-  /** Whether the current screen is Repos - gates the ACCENT FILL only; the
-   * underlying filter (and `aria-pressed`) is unaffected by this flag. */
-  railActive: boolean;
   onSelectGroup: (id: number | null) => void;
   onClearActiveGroup: () => void;
   refetchGroups: () => void;
@@ -81,11 +75,10 @@ export function GroupsNav({
   }
 
   return (
-    // N5 (sidebar restructure and toolbar consolidation): no top border/pt-3
-    // here any more - this section now renders nested
-    // directly beneath the Repos nav button (app-shell.tsx supplies the
-    // indent and the left guide rail that say "nested," not a rule separating
-    // two unrelated top-level blocks).
+    // A1: no top border here. This section is a plain line under the whole
+    // nav, so it needs neither a rule separating it from the nav above nor
+    // the indent and guide rail an earlier nesting used - app-shell.tsx no
+    // longer supplies those either.
     <div className="flex min-h-0 flex-1 flex-col pt-1">
       <div className="flex items-center gap-2 px-2 pb-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -115,7 +108,7 @@ export function GroupsNav({
               aria-pressed={activeGroupId === null}
               className={cn(
                 "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
-                activeGroupId === null && railActive
+                activeGroupId === null
                   ? "bg-primary/10 text-primary-ink"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
               )}
@@ -129,7 +122,6 @@ export function GroupsNav({
                 key={group.id}
                 group={group}
                 active={activeGroupId === group.id}
-                railActive={railActive}
                 confirming={confirmDeleteId === group.id}
                 deleting={busyDeleteId === group.id}
                 onSelect={() => onSelectGroup(group.id)}
@@ -157,7 +149,6 @@ export function GroupsNav({
 function GroupRow({
   group,
   active,
-  railActive,
   confirming,
   deleting,
   onSelect,
@@ -167,10 +158,10 @@ function GroupRow({
   onConfirmDelete,
 }: {
   group: GroupSummary;
-  /** The true, persistent filter state: is THIS group the active filter. */
+  /** The persistent filter state: is THIS group the engaged filter. Carried
+   * to assistive tech via `aria-pressed` and painted as a tint, on every
+   * screen (A2) - the semantic fact and the visual one no longer diverge. */
   active: boolean;
-  /** Whether the current screen is Repos - gates the visual fill only. */
-  railActive: boolean;
   confirming: boolean;
   deleting: boolean;
   onSelect: () => void;
@@ -179,19 +170,11 @@ function GroupRow({
   onCancelDelete: () => void;
   onConfirmDelete: () => void;
 }) {
-  // Destination vs. filter (see the module doc comment): `active` is the
-  // real, always-true-when-selected filter fact, carried to assistive tech
-  // via `aria-pressed` on the row's own button regardless of which screen is
-  // showing. `visuallyActive` is what actually paints, and only paints on
-  // Repos, so this row can never look "current" on a screen the primary nav
-  // already marked as current with a heavier, categorically different (bar
-  // plus weight plus opaque fill) treatment.
-  const visuallyActive = active && railActive;
   return (
     <div
       className={cn(
         "group/row relative flex items-center rounded-md text-sm font-medium transition-colors",
-        visuallyActive ? "bg-primary/10 text-primary-ink" : "text-muted-foreground hover:bg-muted",
+        active ? "bg-primary/10 text-primary-ink" : "text-muted-foreground hover:bg-muted",
       )}
     >
       <button
@@ -200,7 +183,7 @@ function GroupRow({
         aria-pressed={active}
         className={cn(
           "flex min-w-0 flex-1 items-center gap-2.5 py-1.5 pl-2.5 text-left",
-          !visuallyActive && "hover:text-foreground",
+          !active && "hover:text-foreground",
         )}
       >
         <span
@@ -233,7 +216,7 @@ function GroupRow({
           <span
             className={cn(
               "font-mono text-[11px] tabular-nums transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
-              visuallyActive ? "text-primary-ink" : "text-muted-foreground",
+              active ? "text-primary-ink" : "text-muted-foreground",
             )}
           >
             {group.repoCount}

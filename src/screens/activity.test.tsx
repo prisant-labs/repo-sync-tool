@@ -73,10 +73,14 @@ function manyRecords(n: number): ActivityRecord[] {
   return Array.from({ length: n }, (_, i) => record({ id: i + 1, timestamp: 1_700_000_000 - i }));
 }
 
-function renderScreen(rows: ActivityRecord[], repos: RepoSummary[] = [repo()]) {
+function renderScreen(
+  rows: ActivityRecord[],
+  repos: RepoSummary[] = [repo()],
+  activeGroupId: number | null = null,
+) {
   const activityList = mockCommand(commands, "activityList", async () => ok(rows));
   mockCommand(commands, "repoList", async () => ok(repos));
-  const view = render(<ActivityScreen />);
+  const view = render(<ActivityScreen activeGroupId={activeGroupId} />);
   return { activityList, ...view };
 }
 
