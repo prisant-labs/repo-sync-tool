@@ -8,13 +8,20 @@ import { err, mockCommand, ok } from "@/test/mock-ipc";
 import { AppShell } from "@/components/app-shell";
 
 /**
- * N5 (sidebar restructure and toolbar consolidation; ui-delivery-plan.md
- * ledger B1): the ratified sidebar order (Dashboard,
- * Activity, Repos with Groups nested one level beneath it, Settings
- * bottom-docked) and the cross-component contract between GroupsNav's
- * delete flow and the shell's group-filter state (E-16 (groups and tags)
- * known defect 6: deleting the ACTIVE group's filter must clear it without
- * forcing navigation).
+ * The sidebar's settled shape (ui-delivery-plan.md section H.1 / J.1, the
+ * decisions the round-three and round-four walks marked Keep): the nav reads
+ * Dashboard, Repos, Activity (SB6), Groups is a plain line under the WHOLE
+ * nav rather than a subtree of Repos (A1), Settings is bottom-docked (SB5),
+ * and the engaged group stays marked on every screen (A2).
+ *
+ * SB6 REVERSES the earlier N5 / ledger-B1 order this file used to assert
+ * (Dashboard, Activity, Repos), and A1 reverses N5's nesting. Both reversals
+ * are recorded in the register, which is the only file that may record a
+ * decision; the code and its tests follow it.
+ *
+ * Also the cross-component contract between GroupsNav's delete flow and the
+ * shell's group-filter state (E-16 (groups and tags) known defect 6: deleting
+ * the ACTIVE group's filter must clear it without forcing navigation).
  *
  * `AppShell` mounts `DashboardScreen` by default (the initial view), which
  * pulls in `repoList` and `summaryToday`; every command below is mocked
@@ -94,8 +101,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("AppShell sidebar (N5)", () => {
-  it("renders the ratified nav order top to bottom: Dashboard, Activity, Repos, then Settings bottom-docked separately", async () => {
+describe("AppShell sidebar", () => {
+  it("renders the settled nav order top to bottom: Dashboard, Repos, Activity, then Settings bottom-docked separately (SB6)", async () => {
     mockShellCommands();
     render(<AppShell />);
     await screen.findByRole("heading", { name: "Dashboard" });
@@ -110,12 +117,57 @@ describe("AppShell sidebar (N5)", () => {
     const primaryLabels = within(navs[0])
       .getAllByRole("button")
       .map((b) => b.textContent);
-    expect(primaryLabels).toEqual(["Dashboard", "Activity", "Repos"]);
+    expect(primaryLabels).toEqual(["Dashboard", "Repos", "Activity"]);
 
     const bottomLabels = within(navs[1])
       .getAllByRole("button")
       .map((b) => b.textContent);
     expect(bottomLabels).toEqual(["Settings"]);
+  });
+
+  // A1: Groups is a plain line under the WHOLE nav - no indent, no guide
+  // rail, no tree. The guide rail is the thing being removed, and a class
+  // assertion is the only handle jsdom gives on it (it computes no layout),
+  // so this pins the absence of the exact wrapper that used to draw it.
+  it("Groups sits under the whole nav with no indent and no guide rail (A1)", async () => {
+    mockShellCommands();
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    const groupsHeading = screen.getByText("Groups");
+    const aside = groupsHeading.closest("aside")!;
+    // Nothing between the Groups block and the sidebar may indent it or draw
+    // a vertical rule down its left edge.
+    for (let el: HTMLElement | null = groupsHeading; el && el !== aside; el = el.parentElement) {
+      const classes = el.className.split(/\s+/);
+      expect(classes.some((c) => c.startsWith("ml-"))).toBe(false);
+      expect(classes).not.toContain("border-l");
+    }
+  });
+
+  // A2, wired end to end: the sidebar marks the engaged group on Activity,
+  // so Activity has to actually honour it. The backend resolves group
+  // membership server-side, before its own LIMIT, so the scope belongs on
+  // the wire - this asserts the shell hands it down rather than leaving the
+  // mark to stand over an unfiltered list.
+  it("the engaged group reaches the Activity screen's query, not just the sidebar (A2)", async () => {
+    mockShellCommands();
+    const seen: (number | null)[] = [];
+    mockCommand(commands, "activityList", async (filter) => {
+      seen.push(filter.groupId);
+      return ok([]);
+    });
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Work" }));
+    await screen.findByRole("heading", { name: "Repos" });
+
+    await user.click(within(screen.getAllByRole("navigation")[0]).getByRole("button", { name: "Activity" }));
+    await screen.findByRole("heading", { name: "Activity" });
+
+    await waitFor(() => expect(seen.at(-1)).toBe(1));
   });
 
   it("the logo block (R square, RepoSync wordmark, live version) survives untouched", async () => {
@@ -145,7 +197,7 @@ describe("AppShell sidebar (N5)", () => {
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeDefined();
   });
 
-  it("selecting a group from the nested Groups section navigates to Repos", async () => {
+  it("selecting a group from the Groups section navigates to Repos", async () => {
     mockShellCommands();
     render(<AppShell />);
     await screen.findByRole("heading", { name: "Dashboard" });
@@ -156,11 +208,13 @@ describe("AppShell sidebar (N5)", () => {
     expect(await screen.findByRole("heading", { name: "Repos" })).toBeDefined();
   });
 
-  // Codex adversarial review finding 2: GroupsNav rendered its selected
-  // row's accent fill on every screen, not only Repos, so Dashboard's own
-  // active nav item and an accent-active group row both read as "current" at
-  // once. Destination (aria-current) and filter (aria-pressed) are now two
-  // separate, non-competing signals.
+  // A2 is settled: the sidebar keeps marking the engaged group on EVERY
+  // screen. What must stay exclusive is the DESTINATION, and destination and
+  // filter are two different signals carried on two different attributes -
+  // `aria-current` for where you are, `aria-pressed` for what is engaged. So
+  // the group row can paint its fill everywhere without ever competing for
+  // "current", which is what this test pins. It replaces an earlier
+  // assertion that gated the fill itself on being on Repos.
   it("exactly one destination reads as current at any time, even with a group filter still selected on a different screen", async () => {
     mockShellCommands();
     render(<AppShell />);

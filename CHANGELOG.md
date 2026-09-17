@@ -11,6 +11,26 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Changed
+- **The sidebar now reads Dashboard, Repos, Activity**, and Groups sits as a
+  plain line beneath the whole list rather than indented under Repos behind a
+  vertical guide line. Groups are not a sub-part of the Repos screen, and the
+  old indent said they were.
+- **The group you have selected stays marked in the sidebar on every screen.**
+  It used to lose its highlight the moment you left Repos, even though the
+  filter itself was still applied - so the app was narrowing what you saw
+  without showing you why.
+- **The Activity list now honours the selected group.** Previously it showed
+  every repository's history regardless, which meant the sidebar could say you
+  were scoped to a group while the list in front of you was not. When nothing
+  matches, the empty message names the group and says where to clear it, since
+  that control is in the sidebar and not on the Activity screen.
+- **Filter buttons and status labels now look like one family.** The filters
+  above a list were outlined ovals while the statuses inside it were filled
+  blocks, so the same word - "Behind" as something you can filter by, "Behind"
+  as something a repository is - was drawn two different ways one line apart.
+  Filters are now filled too: plain grey until you turn one on, blue when it is
+  on.
+
 - **Every action on a repository is now in one row at the top of its detail
   panel.** They used to be split across two rows further down, inside the
   Overview tab, which meant switching back to Overview before you could open a
@@ -23,6 +43,11 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **The "Failed" filter on the Activity screen was too faint to read in light
+  mode.** It used the app's general-purpose error red rather than the red the
+  status taxonomy uses for a failed check, and that shade fell below the
+  contrast level the project requires. Measured, not estimated.
+
 - **Faint text is readable again in several places, and the success badge on a
   receipt now carries an icon.** The blue used for links, the RepoSync wordmark,
   filter chips and the highlighted group in the sidebar was tuned to sit behind
