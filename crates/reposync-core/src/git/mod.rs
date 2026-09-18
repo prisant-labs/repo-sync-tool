@@ -90,10 +90,18 @@ pub struct InspectResult {
     pub last_commit_at: Option<i64>,
     /// What HEAD is, observed rather than inferred (RR6). See [`HeadState`].
     ///
-    /// Always `Some` here: an inspection that returns at all HAS observed HEAD.
-    /// The `Option` lives at the storage and wire boundary, where NULL means
-    /// "no inspection has recorded this yet".
-    pub head_state: HeadState,
+    /// `None` means THIS inspection could not tell. That is a real outcome, not
+    /// a placeholder: `git2`'s `head()` fails for a corrupt or unreadable
+    /// reference as well as for an unborn branch, and only the error code tells
+    /// them apart. An earlier version of this field was not optional and its
+    /// doc comment claimed "an inspection that returns at all HAS observed
+    /// HEAD", which is exactly the kind of assertion the enum above exists to
+    /// prevent: it made every unreadable HEAD report `Unborn`, so a damaged
+    /// repository rendered as "no commits" (Codex review of PRs #93-#96,
+    /// finding 1).
+    ///
+    /// `None` persists as NULL, which every consumer already reads as unknown.
+    pub head_state: Option<HeadState>,
 }
 
 /// Classification of a `git fetch` outcome (AC10 / BL-NI-05).

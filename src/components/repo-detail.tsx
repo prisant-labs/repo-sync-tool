@@ -1286,7 +1286,16 @@ function ActivityRow({ row, onClick }: { row: ActivityRecord; onClick: () => voi
       <span
         className={cn(
           "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
-          bad ? "bg-status-failed/10 text-status-failed" : "bg-status-sync/10 text-status-sync",
+          // The design system's OPAQUE tint under its solved ink, not a 10%
+          // wash of the raw status colour. The wash let the row's
+          // `hover:bg-muted` through, and because the wash is the ink's own
+          // hue it pulled the background toward the text: 4.14:1 on hover,
+          // under the floor, while the same chip measured fine at rest.
+          // Codex review of PRs #93-#96, finding 4. `StatusBadge` has used
+          // these tokens all along; this chip was a second, worse copy of it.
+          bad
+            ? "bg-status-failed-tint text-status-failed-ink"
+            : "bg-status-sync-tint text-status-sync-ink",
         )}
       >
         <Icon aria-hidden className="size-3" />

@@ -46,7 +46,7 @@ export function ReposScreen({
   onGroupsChanged,
   addOpen,
   onAddOpenChange,
-  onReposChanged,
+  onLibraryChanged,
 }: {
   activeGroupId: number | null;
   groups: GroupSummary[];
@@ -69,9 +69,17 @@ export function ReposScreen({
    */
   addOpen: boolean;
   onAddOpenChange: (open: boolean) => void;
-  /** Lets the shell's own repo count refresh when this screen adds one, for
-   * the same reason: no event announces it. */
-  onReposChanged: () => void;
+  /**
+   * Refreshes the SHELL's own repo list, summary and membership snapshots.
+   *
+   * Every mutation on this screen has to call it, because none of them emit a
+   * backend event: `repo_add`, `repo_remove` and a group-membership toggle all
+   * change what the sidebar shows and announce nothing (Codex review of PRs
+   * #93-#96, finding 2). Refreshing only this screen's copy leaves the count
+   * beside Repos and the attention dot describing a library that no longer
+   * exists.
+   */
+  onLibraryChanged: () => void;
 }) {
   const repos = useRepoList(ALL_FILTER);
   const refetch = repos.refetch;
@@ -112,11 +120,16 @@ export function ReposScreen({
 
   // After an assignment change in the drawer, refresh the list, the membership
   // map, and the sidebar group counts together.
+  // Also the drawer's remove and its group toggles, which is why the shell is
+  // told here too: `repo_remove` emits no event, and removing the LAST
+  // repository leaves nothing for a scheduler tick to check, so no later event
+  // would ever correct the sidebar.
   const handleRepoChanged = useCallback(() => {
     refetch();
     refetchMemberships();
     onGroupsChanged();
-  }, [refetch, refetchMemberships, onGroupsChanged]);
+    onLibraryChanged();
+  }, [refetch, refetchMemberships, onGroupsChanged, onLibraryChanged]);
 
   // The Folder cell's click target (walk item R5). Errors get a toast rather
   // than being swallowed the way `checkNow` swallows its own: a failed folder
@@ -371,7 +384,17 @@ export function ReposScreen({
               : r.headState === "unborn"
                 ? "no commits"
                 : r.headState === null
-                  ? "never run"
+                  ? // NULL is TWO facts, not one, and telling them apart needs a
+                    // second field. It means "no inspection recorded this",
+                    // which is "never run" for a repo nothing has looked at -
+                    // and ALSO what an inspection writes when it looked and
+                    // could not tell, because HEAD would not read (the Rust
+                    // side stopped calling that "unborn" in this same change).
+                    // Saying "never run" about a repo checked ten minutes ago
+                    // would just swap one confident wrong answer for another.
+                    r.lastCheckedAt === null
+                    ? "never run"
+                    : "unreadable"
                   : // `branch` with no `activeBranch` is not a state inspect can
                     // produce, so there is nothing honest to say about it.
                     null;
@@ -548,9 +571,23 @@ export function ReposScreen({
                     active={chip === "all"}
                     onClick={() => setChip("all")}
                   />
+                  {/* A chip renders when it has something to show OR when it is
+                      the SELECTED filter, even at zero (AC-17, Codex review of
+                      PRs #93-#96, finding 3).
+
+                      `counts[s] > 0` alone was safe while the counts were the
+                      whole library: a selected chip could not reach zero without
+                      the library itself emptying. Scoping the counts to the group
+                      and the search (the fix in PR #95) broke that. Select
+                      Behind, then search for an in-sync repo, and the Behind chip
+                      unmounts while `chip` stays "behind" - so the table filters
+                      to nothing and the only filter still applied is the one
+                      control no longer on screen. An empty table with a visible
+                      reason is fine; an empty table with an invisible one is the
+                      defect. */}
                   {STATUS_ORDER.map(
                     (s) =>
-                      counts[s] > 0 && (
+                      (counts[s] > 0 || chip === s) && (
                         <FilterChip
                           key={s}
                           label={STATUS_STYLE[s].label}
@@ -712,7 +749,7 @@ export function ReposScreen({
         onClose={() => onAddOpenChange(false)}
         onAdded={() => {
           refetch();
-          onReposChanged();
+          onLibraryChanged();
         }}
       />
     </PageShell>

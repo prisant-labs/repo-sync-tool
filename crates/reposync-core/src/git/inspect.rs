@@ -17,11 +17,21 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
     let repo =
         Repository::open(repo_path).map_err(|e| AppError::not_a_repo_from_git2(repo_path, &e))?;
 
-    let is_detached = repo.head_detached().unwrap_or(false);
+    // Kept as a Result: an ERROR here is not "not detached", it is "we could
+    // not tell", and the two must not collapse. `is_detached` keeps the old
+    // lenient reading because it is a pre-existing boolean column with readers
+    // that expect one; `head_state` below is allowed to say it does not know.
+    let detached = repo.head_detached();
+    let is_detached = detached.as_ref().copied().unwrap_or(false);
 
-    // HEAD may be unborn (a fresh repo with no commits). Treat that as "no
-    // commit / no branch" rather than an error.
-    let head = repo.head().ok();
+    // HEAD may be unborn (a fresh repo with no commits), which `git2` reports
+    // as an ERROR with a specific code. Every OTHER error is a repository that
+    // could not be read - a corrupt ref, an unreadable `.git/HEAD`, a ref
+    // pointing at nothing - and those are a different fact entirely. `.ok()`
+    // alone throws that distinction away, so the code is kept.
+    let head_result = repo.head();
+    let head_err = head_result.as_ref().err().map(|e| e.code());
+    let head = head_result.ok();
 
     // Peel HEAD to its commit once, for both the SHA and the committer time (E-17
     // local recency). An unborn HEAD or an unreadable commit yields None for both.
@@ -49,12 +59,25 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
     // the question this answers is what HEAD points AT, not whether the
     // object store could be read, and conflating the two is what made
     // deriving this from a null `head_sha` lossy.
-    let head_state = if is_detached {
-        HeadState::Detached
-    } else if head.is_none() {
-        HeadState::Unborn
+    let head_state = if detached.is_err() {
+        // We could not even establish whether HEAD is detached, so we cannot
+        // classify it. Saying `Branch` or `Unborn` here would be a guess.
+        None
+    } else if is_detached {
+        Some(HeadState::Detached)
+    } else if head.is_some() {
+        Some(HeadState::Branch)
+    } else if head_err == Some(git2::ErrorCode::UnbornBranch) {
+        // The ONE error that genuinely means "a repository with no commits".
+        Some(HeadState::Unborn)
     } else {
-        HeadState::Branch
+        // HEAD could not be read, and not because it is unborn. This is the
+        // case the whole column was added to keep honest: reporting `Unborn`
+        // would tell the user a damaged repository has no commits, which is
+        // confident, reassuring and wrong. NULL renders as "never run", which
+        // is at least not a claim about the repository (Codex review of PRs
+        // #93-#96, finding 1).
+        None
     };
 
     // Dirty = any tracked or untracked (non-ignored) change present.
@@ -410,7 +433,7 @@ mod tests {
         init_repo_with_commit(tmp.path());
 
         let got = inspect(tmp.path()).expect("inspect");
-        assert_eq!(got.head_state, HeadState::Branch);
+        assert_eq!(got.head_state, Some(HeadState::Branch));
         assert!(got.active_branch.is_some(), "a branch checkout names it");
     }
 
@@ -420,13 +443,67 @@ mod tests {
         git2::Repository::init(tmp.path()).expect("init");
 
         let got = inspect(tmp.path()).expect("inspect an unborn repo");
-        assert_eq!(got.head_state, HeadState::Unborn);
+        assert_eq!(got.head_state, Some(HeadState::Unborn));
         // The three fields that used to be the only evidence, all absent -
         // which is exactly why they could not answer the question.
         assert_eq!(got.active_branch, None);
         assert_eq!(got.head_sha, None);
         assert_eq!(got.last_commit_at, None);
         assert!(!got.is_detached, "unborn is not detached");
+    }
+
+    #[test]
+    fn head_state_is_unknown_when_head_cannot_be_read_at_all() {
+        // The case this field was added for, and the one the first
+        // implementation got wrong (Codex review of PRs #93-#96, finding 1).
+        //
+        // `repo.head()` errors on an unborn branch AND on a reference it cannot
+        // read. The original code did `repo.head().ok()` and called every
+        // resulting `None` "unborn", so a repository whose ref is corrupt
+        // reported "no commits" - a confident, reassuring, wrong answer about
+        // the user's data, which is the exact failure the column's own
+        // migration note says it exists to avoid.
+        //
+        // The fixture: a real repo with a real commit, then its branch ref
+        // overwritten with garbage. `.git/HEAD` still points at the branch, so
+        // `Repository::open` succeeds and only the RESOLUTION fails.
+        let tmp = TempDir::new().expect("tempdir");
+        init_repo_with_commit(tmp.path());
+
+        let head_file =
+            std::fs::read_to_string(tmp.path().join(".git").join("HEAD")).expect("read .git/HEAD");
+        let ref_name = head_file
+            .trim()
+            .strip_prefix("ref: ")
+            .expect("a branch checkout writes `ref: refs/heads/...`")
+            .to_string();
+        // Kill any packed form too, or git2 resolves the ref from there and the
+        // fixture quietly tests nothing.
+        let _ = std::fs::remove_file(tmp.path().join(".git").join("packed-refs"));
+        std::fs::write(
+            tmp.path().join(".git").join(&ref_name),
+            "this is not an object id
+",
+        )
+        .expect("corrupt the branch ref");
+
+        let repo = git2::Repository::open(tmp.path()).expect("open still works");
+        let err = match repo.head() {
+            Ok(_) => panic!("a corrupt ref must not resolve"),
+            Err(e) => e,
+        };
+        assert_ne!(
+            err.code(),
+            git2::ErrorCode::UnbornBranch,
+            "the fixture must fail for a reason OTHER than unborn, or it is              not testing the distinction this fix is about",
+        );
+
+        let got = inspect(tmp.path()).expect("inspect still returns");
+        assert_eq!(
+            got.head_state, None,
+            "an unreadable HEAD is NOT an unborn repository; it is unknown",
+        );
+        assert_ne!(got.head_state, Some(HeadState::Unborn));
     }
 
     #[test]
@@ -441,7 +518,7 @@ mod tests {
         // Detached is checked FIRST in `inspect`: a detached HEAD is also not a
         // branch, so an ordering slip would report it as Unborn - a repo with
         // commits described as having none.
-        assert_eq!(got.head_state, HeadState::Detached);
+        assert_eq!(got.head_state, Some(HeadState::Detached));
         assert_eq!(got.active_branch, None);
         assert!(got.head_sha.is_some(), "a detached HEAD still has a commit");
     }

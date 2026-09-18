@@ -310,8 +310,17 @@
      with light, which was already 5.49:1 - the dark accent was the outlier,
      not the rule. Everything downstream improves or is unaffected: the /10
      group tint and /15 chip tint get marginally darker, which RAISES
-     `--primary-ink`'s contrast on them, and the 2px nav bar stays far past
-     the 3:1 non-text floor against the sidebar. */
+     `--primary-ink`'s contrast on them.
+
+     ONE THING DOWNSTREAM DID NOT SURVIVE, and the first version of this note
+     asserted it had. The 2px nav bar was measured against the SIDEBAR, where
+     it still clears the 3:1 non-text floor at 3.45:1 - but an ACTIVE nav item
+     is the only time that bar is drawn, and an active item's fill is
+     `--sidebar-accent`, not the sidebar. Against the surface it actually sits
+     on, the deeper accent took it from 3.74:1 to 2.91:1, under the floor.
+     Found by the Codex review of PRs #93-#96; the bar now uses
+     `--primary-ink`, and BOTH of its neighbours are in the contrast gate so
+     the easier one can no longer be the only one checked. */
   --primary: oklch(0.54 0.16 264);
   --primary-ink: oklch(0.66 0.16 264);
   --primary-foreground: oklch(0.985 0 0);

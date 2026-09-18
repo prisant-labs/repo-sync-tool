@@ -168,14 +168,16 @@ function renderScreen(
     mockCommand(commands, "repoGroupMemberships", async () => ok(memberships));
   }
   const onOpenRepos = options.onOpenRepos ?? vi.fn();
+  const onLibraryChanged = vi.fn();
   const view = render(
     <DashboardScreen
       onOpenRepos={onOpenRepos}
       activeGroupId={options.activeGroupId ?? null}
       groups={options.groups ?? GROUPS}
+      onLibraryChanged={onLibraryChanged}
     />,
   );
-  return { onOpenRepos, ...view };
+  return { onOpenRepos, onLibraryChanged, ...view };
 }
 
 beforeEach(() => {
@@ -505,5 +507,24 @@ describe("Attention row provenance classification (Codex review finding 2)", () 
     expect(within(row).getByText("Offline")).toBeDefined();
     expect(row.querySelector(".lucide-cloud")).not.toBeNull();
     expect(row.querySelector(".lucide-hard-drive")).toBeNull();
+  });
+
+  it("adding a repository from HERE tells the shell, not just this screen", async () => {
+    // Codex review of PRs #93-#96, finding 2, the half that is easy to miss.
+    // The Repos screen already told the shell when it added one. The Dashboard
+    // has its own Add button and its own dialog, and it refreshed only itself,
+    // so a repository added from this screen was invisible to the count beside
+    // Repos until some unrelated event happened to fire.
+    const add = mockCommand(commands, "repoAddPath", async () => ok(7));
+    const { onLibraryChanged } = renderScreen([], summary({}));
+    await screen.findByRole("button", { name: /Add repos/ });
+    const user = userEvent.setup();
+
+    await user.click(screen.getAllByRole("button", { name: /Add repos/ })[0]);
+    await user.type(await screen.findByPlaceholderText("C:\\Users\\you\\code"), "E:\\x");
+    await user.click(screen.getByRole("button", { name: /Add this path/ }));
+
+    await waitFor(() => expect(add).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onLibraryChanged).toHaveBeenCalled());
   });
 });
