@@ -71,6 +71,24 @@ export function blendedLuminance(fg: Oklch, alpha: number, bg: Oklch): number {
   return 0.2126 * blended[0] + 0.7152 * blended[1] + 0.0722 * blended[2];
 }
 
+/**
+ * A TRANSLUCENT ink painted directly on an opaque surface.
+ *
+ * The mirror of `contrastOverWash`, and a shape the gate had no way to express:
+ * there the alpha is on the BACKGROUND, here it is on the text itself
+ * (`text-muted-foreground/55`). The two are not interchangeable. Fading the ink
+ * moves it toward the surface, which is exactly how a placeholder ends up
+ * measuring 2.29:1 while the opaque token it derives from measures comfortably
+ * above the floor and passes every check the registry makes.
+ */
+export function contrastOfTranslucentInk(
+  ink: Oklch,
+  alpha: number,
+  surface: Oklch,
+): number {
+  return ratioFromLuminance(blendedLuminance(ink, alpha, surface), luminance(surface));
+}
+
 /** An opaque ink over a translucent wash over an opaque surface. */
 export function contrastOverWash(
   ink: Oklch,

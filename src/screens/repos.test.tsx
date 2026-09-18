@@ -149,7 +149,7 @@ function renderScreen(
   const toast = vi.fn();
   const onClearGroup = vi.fn();
   const onGroupsChanged = vi.fn();
-  const onReposChanged = vi.fn();
+  const onLibraryChanged = vi.fn();
   const onAddOpenChange = vi.fn();
   const view = render(
     <ToastContext.Provider value={toast}>
@@ -160,11 +160,11 @@ function renderScreen(
         onGroupsChanged={onGroupsChanged}
         addOpen={options.addOpen ?? false}
         onAddOpenChange={onAddOpenChange}
-        onReposChanged={onReposChanged}
+        onLibraryChanged={onLibraryChanged}
       />
     </ToastContext.Provider>,
   );
-  return { toast, onClearGroup, onGroupsChanged, onReposChanged, onAddOpenChange, ...view };
+  return { toast, onClearGroup, onGroupsChanged, onLibraryChanged, onAddOpenChange, ...view };
 }
 
 beforeEach(() => {
@@ -458,6 +458,39 @@ describe("ReposScreen table", () => {
     }
   });
 
+  it("keeps the SELECTED status chip visible at zero, so a filter narrowing to nothing is never invisible", async () => {
+    // AC-17 / Codex review of PRs #93-#96, finding 3. Select Behind, then
+    // search for the in-sync repo. The scoped counts make Behind zero, and the
+    // old `counts[s] > 0` guard unmounted the chip while `chip` stayed
+    // "behind" - leaving an empty table whose only applied filter was no
+    // longer on screen.
+    renderScreen([
+      repo({ id: 1, localName: "repo-behind", behindCount: 2 }),
+      repo({ id: 2, localName: "repo-sync" }),
+    ]);
+    await screen.findByText("repo-behind");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Behind/ }));
+    await user.type(screen.getByPlaceholderText("Filter by name"), "repo-sync");
+
+    // The table is empty: the Behind filter still applies to a search that
+    // matches only an in-sync repo.
+    await waitFor(() => expect(screen.queryByText("repo-behind")).toBeNull());
+    expect(screen.queryByText("repo-sync")).toBeNull();
+
+    // ...and the chip responsible for that is still on screen, reading zero.
+    const behind = screen.getByRole("button", { name: /^Behind/ });
+    expect(behind).toBeDefined();
+    expect(behind.textContent).toContain("0");
+
+    // An unselected zero chip still does NOT render: this widens the guard for
+    // the selected chip only, it does not show every status all the time.
+    for (const label of [/^Dirty/, /^Failed/, /^Paused/, /^Ahead/]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+
   it("the table has a valid accessible tree: table > rowgroup > row, and a row carries no button role or tabIndex", async () => {
     renderScreen([repo()]);
     await screen.findByText("repo-a");
@@ -547,6 +580,35 @@ describe("ReposScreen table", () => {
     for (const row of screen.getAllByRole("row")) {
       expect(row.hasAttribute("aria-current")).toBe(false);
     }
+  });
+
+  it("removing the LAST repository tells the shell, which no event ever would", async () => {
+    // Codex review of PRs #93-#96, finding 2. `repo_remove` emits no backend
+    // event, so the sidebar's count and attention dot only correct themselves
+    // on the next check, update or metadata refresh. Remove the last repository
+    // and there is nothing left to check: no `scheduler:tick` will ever carry
+    // `checked > 0`, so nothing corrects them at all until a restart. The
+    // screen has to say so itself.
+    mockCommand(commands, "repoGet", async () => ok(MINIMAL_DETAIL));
+    mockCommand(commands, "groupList", async () => ok([]));
+    mockCommand(commands, "groupsForRepo", async () => ok([]));
+    mockCommand(commands, "settingsGet", async () => ok(MINIMAL_SETTINGS));
+    const remove = mockCommand(commands, "repoRemove", async () => ok(null));
+    for (const ev of [events.repoStateChanged]) {
+      vi.spyOn(ev, "listen").mockResolvedValue(() => {});
+    }
+    const { onLibraryChanged } = renderScreen([repo()]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open details" }));
+    // Remove lives in the drawer's Settings tab, behind a two-step confirm.
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /Remove from RepoSync/ }));
+    await user.click(await screen.findByRole("button", { name: /^Remove$/ }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onLibraryChanged).toHaveBeenCalled());
   });
 });
 

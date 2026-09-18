@@ -5,6 +5,7 @@ import {
   AA_NON_TEXT,
   AA_TEXT,
   contrast,
+  contrastOfTranslucentInk,
   contrastOverWash,
   parseTokens,
   type Oklch,
@@ -56,6 +57,12 @@ type Pair = {
   on: string;
   /** A translucent wash of this token, painted over `on`, under the ink. */
   wash?: { token: string; alpha: number };
+  /**
+   * The INK's own alpha, as a Tailwind opacity suffix on a text colour writes
+   * it. Distinct from `wash`, which fades the background: fading the ink moves
+   * it toward the surface instead.
+   */
+  inkAlpha?: number;
   /** Text unless stated: an icon, bar, dot or fill gets the 3:1 floor. */
   floor?: number;
 };
@@ -108,6 +115,24 @@ const PAIRS: Pair[] = [
     floor: AA_NON_TEXT,
   },
   { what: "the active nav item's label", ink: "foreground", on: "sidebar-accent" },
+  // The 2px accent bar on the active nav item. It is the ONE lever that marks
+  // active without touching the neutral ramp, so it has to be visible against
+  // the fill it sits on, not just against the sidebar beside it. Codex flagged
+  // this as a possible casualty of deepening dark `--primary` (PRs #93-#96,
+  // next steps): a non-text mark takes the 3:1 floor, and the fill is the
+  // harder of its two neighbours.
+  {
+    what: "the active nav item's accent bar against its own fill",
+    ink: "primary-ink",
+    on: "sidebar-accent",
+    floor: AA_NON_TEXT,
+  },
+  {
+    what: "the active nav item's accent bar against the sidebar beside it",
+    ink: "primary-ink",
+    on: "sidebar",
+    floor: AA_NON_TEXT,
+  },
 
   // --- status inks, as TEXT on every surface they land on ------------------
   // The tone on a filter chip (C1) put these on `--muted`, which is how D-17
@@ -128,6 +153,42 @@ const PAIRS: Pair[] = [
       on,
     })),
   ),
+
+  // --- the drawer's activity outcome chip -----------------------------------
+  // Found by the Codex review of PRs #93-#96, finding 4. It used to paint
+  // `bg-status-X/10 text-status-X`: a 10% wash of the ink's OWN hue, which
+  // pulls the surface toward the text, over a row that is `hover:bg-muted`. It
+  // measured 4.14:1 on hover and passed at rest, so every check the registry
+  // held was green while the thing on screen was not. It now uses the opaque
+  // tint and solved ink `StatusBadge` has used all along, which is why these
+  // rows name the same token pair: the point is that this CONSUMER is
+  // registered, so a future change to it has something to fail.
+  ...(["sync", "failed"] as const).map((s) => ({
+    what: `the drawer's activity outcome chip (${s})`,
+    ink: `status-${s}-ink`,
+    on: `status-${s}-tint`,
+  })),
+
+  // --- translucent inks in the shared table --------------------------------
+  // `DataTable` rendered an empty cell's placeholder at `text-muted-foreground/55`
+  // and a cell icon at `/75`. The registry held the opaque token and therefore
+  // said nothing about either, and the placeholder measured 2.29:1. The dash is
+  // not decoration: it is how the table says "no value", which is information,
+  // so it takes the text floor. Both now ship opaque, and these rows are what
+  // stops the alpha coming back.
+  ...(["card", "muted"] as const).flatMap((on) => [
+    {
+      what: `the empty-cell placeholder dash on ${on}`,
+      ink: "muted-foreground",
+      on,
+    },
+    {
+      what: `a cell icon on ${on}`,
+      ink: "muted-foreground",
+      on,
+      floor: AA_NON_TEXT,
+    },
+  ]),
 
   // --- status chips: the ink/tint pairs StatusBadge actually paints --------
   ...(
@@ -164,7 +225,9 @@ describe("every shipped colour pair clears its WCAG floor", () => {
                 pair.wash.alpha,
                 surface,
               )
-            : contrast(ink, surface);
+            : pair.inkAlpha !== undefined
+              ? contrastOfTranslucentInk(ink, pair.inkAlpha, surface)
+              : contrast(ink, surface);
 
           // The received value is in the message on failure, so a broken pair
           // reports its actual ratio rather than just "false".

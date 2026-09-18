@@ -168,14 +168,16 @@ function renderScreen(
     mockCommand(commands, "repoGroupMemberships", async () => ok(memberships));
   }
   const onOpenRepos = options.onOpenRepos ?? vi.fn();
+  const onLibraryChanged = vi.fn();
   const view = render(
     <DashboardScreen
       onOpenRepos={onOpenRepos}
       activeGroupId={options.activeGroupId ?? null}
       groups={options.groups ?? GROUPS}
+      onLibraryChanged={onLibraryChanged}
     />,
   );
-  return { onOpenRepos, ...view };
+  return { onOpenRepos, onLibraryChanged, ...view };
 }
 
 beforeEach(() => {
