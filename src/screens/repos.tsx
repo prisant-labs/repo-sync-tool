@@ -384,7 +384,17 @@ export function ReposScreen({
               : r.headState === "unborn"
                 ? "no commits"
                 : r.headState === null
-                  ? "never run"
+                  ? // NULL is TWO facts, not one, and telling them apart needs a
+                    // second field. It means "no inspection recorded this",
+                    // which is "never run" for a repo nothing has looked at -
+                    // and ALSO what an inspection writes when it looked and
+                    // could not tell, because HEAD would not read (the Rust
+                    // side stopped calling that "unborn" in this same change).
+                    // Saying "never run" about a repo checked ten minutes ago
+                    // would just swap one confident wrong answer for another.
+                    r.lastCheckedAt === null
+                    ? "never run"
+                    : "unreadable"
                   : // `branch` with no `activeBranch` is not a state inspect can
                     // produce, so there is nothing honest to say about it.
                     null;

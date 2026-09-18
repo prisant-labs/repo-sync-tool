@@ -73,9 +73,10 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 - **A damaged repository could be reported as having no commits.** When RepoSync
   could not read a repository's HEAD at all - a corrupt reference, an unreadable
   file - it recorded that as "no commits yet", which is a confident and
-  reassuring answer to a question it had not actually answered. A repository it
-  cannot read now says so instead. A repository that genuinely has no commits is
-  unaffected.
+  reassuring answer to a question it had not actually answered. Its Branch column
+  now reads "unreadable", which is what it actually knows. A repository that
+  genuinely has no commits still reads "no commits", and one nothing has looked
+  at yet still reads "never run".
 - **A filter you had selected could vanish while it was still filtering.** Pick
   Behind, then type a name that matches only an in-sync repository, and the
   Behind button disappeared while the list stayed filtered to Behind. The result
@@ -94,8 +95,8 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   see-through tint that let the row's hover colour through, measuring 4.14:1
   when hovered while passing at rest; they now use the same solid badge the rest
   of the app uses. And the marker on the selected sidebar item fell to 2.91:1
-  against its own highlight when the blue was deepened, so it now uses the
-  darker blue reserved for things meant to be read.
+  against its own highlight when the blue was deepened, so it now uses the blue
+  the app reserves for text.
 - **Buttons in dark mode were hard to read.** The white label on RepoSync's blue
   buttons sat below the contrast level the project requires, in every dark-mode
   window since the theme shipped. The blue is slightly deeper now, which fixes

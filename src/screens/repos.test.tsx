@@ -236,7 +236,7 @@ describe("ReposScreen table", () => {
   // RR6. An empty Branch cell had three causes and one rendering. `headState`
   // (migration 0011) is the observation that separates the two `isDetached`
   // never could, so each now says what it is.
-  it("names all three reasons a Branch cell is empty, rather than one dash for three facts (RR6)", async () => {
+  it("names all four reasons a Branch cell is empty, rather than one dash for four facts (RR6)", async () => {
     renderScreen([
       repo({ id: 1, localName: "repo-a", activeBranch: "feature/x", headState: "branch" }),
       repo({ id: 2, localName: "repo-b", activeBranch: null, isDetached: true, headState: "detached" }),
@@ -244,7 +244,29 @@ describe("ReposScreen table", () => {
       // `headState: null` is the fourth fact the column carries: no inspection
       // has recorded it since 0011 added the column. Rendering "no commits"
       // here would be an observation nobody made.
-      repo({ id: 4, localName: "repo-d", activeBranch: null, isDetached: false, headState: null }),
+      //
+      // But NULL is two facts, not one, and `lastCheckedAt` is what separates
+      // them. Never checked: nothing has looked, so "never run" is true.
+      // Checked, and still null: something looked and could not tell, which is
+      // what the Rust side now records when HEAD will not read at all. Calling
+      // that "never run" would swap one confident wrong answer for another,
+      // which is the whole reason this column exists.
+      repo({
+        id: 4,
+        localName: "repo-d",
+        activeBranch: null,
+        isDetached: false,
+        headState: null,
+        lastCheckedAt: null,
+      }),
+      repo({
+        id: 5,
+        localName: "repo-e",
+        activeBranch: null,
+        isDetached: false,
+        headState: null,
+        lastCheckedAt: 1_700_000_000,
+      }),
     ]);
     await screen.findByText("repo-a");
 
@@ -257,6 +279,7 @@ describe("ReposScreen table", () => {
     expect(branchCellFor("repo-b").textContent).toBe("detached");
     expect(branchCellFor("repo-c").textContent).toBe("no commits");
     expect(branchCellFor("repo-d").textContent).toBe("never run");
+    expect(branchCellFor("repo-e").textContent).toBe("unreadable");
   });
 
   it("never infers a HEAD state from a missing branch name alone", async () => {

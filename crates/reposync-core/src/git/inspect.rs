@@ -29,8 +29,9 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
     // could not be read - a corrupt ref, an unreadable `.git/HEAD`, a ref
     // pointing at nothing - and those are a different fact entirely. `.ok()`
     // alone throws that distinction away, so the code is kept.
-    let head_err = repo.head().err().map(|e| e.code());
-    let head = repo.head().ok();
+    let head_result = repo.head();
+    let head_err = head_result.as_ref().err().map(|e| e.code());
+    let head = head_result.ok();
 
     // Peel HEAD to its commit once, for both the SHA and the committer time (E-17
     // local recency). An unborn HEAD or an unreadable commit yields None for both.
