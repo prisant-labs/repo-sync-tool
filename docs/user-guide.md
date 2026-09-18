@@ -677,9 +677,16 @@ and retry.
 RepoSync's main window is built to be fully usable without a mouse, not as an
 afterthought:
 
-- Repo rows in the Repos list and items in the Dashboard's "Needs attention"
-  list are real focusable controls: Tab to them, then **Enter** or **Space**
-  opens that repo's detail drawer.
+- Items in the Dashboard's "Needs attention" list are real focusable controls:
+  Tab to them, then **Enter** or **Space** opens that repo's detail drawer.
+- In the Repos list, the row itself is not a tab stop; each row's own buttons
+  are. Tab across a row and you reach its "Check now", its folder button, and
+  a chevron labelled "Open details" that opens the drawer. Clicking anywhere
+  else on the row also opens the drawer, but that is a mouse convenience, not
+  the keyboard path. The row is deliberately not focusable as a whole: wrapping
+  a keyboard-operable row around buttons that do their own thing produced an
+  ambiguous **Enter** target and an invalid accessibility tree, so the actions
+  carry the keyboard behaviour instead of the row.
 - The detail drawer and every dialog (Add repositories, group create/rename)
   trap focus while open and close on **Escape**, and return focus to whatever
   you had focused before you opened them.
