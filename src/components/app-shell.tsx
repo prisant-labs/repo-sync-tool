@@ -1,18 +1,31 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Activity, AlertTriangle, LayoutDashboard, List, Settings, X } from "lucide-react";
+import { Activity, AlertTriangle, LayoutDashboard, List, Plus, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { events } from "@/lib/bindings";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { GroupsNav } from "@/components/groups-nav";
-import { useDbRecoveryNotice, useGroups } from "@/hooks/queries";
+import {
+  useBackendEvents,
+  useDbRecoveryNotice,
+  useGroups,
+  useRepoGroupMemberships,
+  useRepoList,
+  useSummaryToday,
+} from "@/hooks/queries";
+import { groupScope } from "@/lib/group-scope";
 import { DashboardScreen } from "@/screens/dashboard";
 import { ReposScreen } from "@/screens/repos";
 import { ActivityScreen } from "@/screens/activity";
 import { SettingsScreen } from "@/screens/settings";
 
 type View = "dashboard" | "repos" | "activity" | "settings";
+
+// Every tracked repo, unfiltered - the shell's own read, narrowed afterwards
+// by group rather than by the backend, because the sidebar needs the group
+// intersection anyway and `repo_list` has no group parameter.
+const ALL_REPOS = { enabledOnly: null, hostType: null, query: null };
 
 const VIEWS: readonly View[] = ["dashboard", "repos", "activity", "settings"];
 
@@ -89,11 +102,27 @@ function NavButton({
   Icon,
   active,
   onClick,
+  badge,
+  dot,
+  dotLabel,
 }: {
   label: string;
   Icon: typeof LayoutDashboard;
   active: boolean;
   onClick: () => void;
+  /**
+   * SB4: a count rendered at the row's right edge. `null` renders NOTHING,
+   * and that distinction is the whole point - `null` means "not knowable
+   * yet", which a `0` would misreport as "none". A real zero (an empty
+   * library) also renders nothing, matching the composite, which hides the
+   * badge and the dot entirely on a fresh install: "Repos 0" beside "No
+   * repositories yet" is noise, not information.
+   */
+  badge?: number | null;
+  /** SB3: a status dot at the row's right edge. Same null-vs-false rule. */
+  dot?: boolean;
+  /** What the dot means, for anyone who cannot see a coloured circle. */
+  dotLabel?: string;
 }) {
   return (
     <button
@@ -107,7 +136,42 @@ function NavButton({
       )}
     >
       <Icon className="size-[17px]" />
-      {label}
+      <span className="flex-1 text-left">{label}</span>
+      {dot === true && (
+        <>
+          {/*
+            The dot is a shape with a meaning, so it is hidden from the
+            accessible name and the meaning is supplied as words beside it.
+            NOT `role="status"`: that declares a live region, which would make
+            a screen reader announce the dot every time a background check
+            changes it, on every screen, unprompted.
+          */}
+          <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-status-dirty" />
+          <span className="sr-only">{`, ${dotLabel}`}</span>
+        </>
+      )}
+      {badge != null && badge > 0 && (
+        <>
+          <span
+            aria-hidden
+            className={cn(
+              "shrink-0 rounded-full px-1.5 font-mono text-[10px] tabular-nums",
+              active ? "bg-background text-foreground" : "bg-muted text-muted-foreground",
+            )}
+          >
+            {badge}
+          </span>
+          {/*
+            A bare "2" in the accessible name reads as "Repos 2", which could
+            be a count, a version, or a keyboard hint. The count is real
+            information a sighted user gets, so it is not hidden - it is said
+            properly instead.
+          */}
+          <span className="sr-only">
+            {badge === 1 ? ", 1 repository" : `, ${badge} repositories`}
+          </span>
+        </>
+      )}
     </button>
   );
 }
@@ -148,6 +212,75 @@ export function AppShell() {
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
   const toast = useToast();
+
+  /**
+   * SB3 and SB4: the sidebar reports two facts about the library it is a rail
+   * for - whether anything needs attention (a dot on Dashboard) and how many
+   * repositories there are (a count on Repos).
+   *
+   * Both are SCOPED to the engaged group, and that is not a free choice. The
+   * screens they point at are already scoped: Dashboard intersects its
+   * attention list against group membership, and Repos filters its table the
+   * same way. An unscoped dot over a scoped Dashboard says "something needs
+   * you" above a screen that says "All clear", and the user cannot tell which
+   * one is lying. The scoping rule itself is `lib/group-scope.ts`, shared with
+   * Dashboard so the two cannot drift apart.
+   *
+   * These reads duplicate Dashboard's own while Dashboard is showing. They go
+   * to local SQLite through an IPC call that is already made on every screen
+   * change, so the cost is small and the alternative - lifting Dashboard's
+   * entire scoping block into the shell and threading it back down - is a far
+   * larger change than the two indicators justify.
+   */
+  const shellRepos = useRepoList(ALL_REPOS);
+  const shellSummary = useSummaryToday();
+  const shellMemberships = useRepoGroupMemberships();
+  const reposRefetch = shellRepos.refetch;
+  const summaryRefetch = shellSummary.refetch;
+  const membershipsRefetch = shellMemberships.refetch;
+  // Without this the dot is a snapshot from mount: a check that turns a repo
+  // dirty in the background would leave the rail claiming All clear.
+  useBackendEvents(
+    useCallback(() => {
+      reposRefetch();
+      summaryRefetch();
+      membershipsRefetch();
+    }, [reposRefetch, summaryRefetch, membershipsRefetch]),
+  );
+
+  const scope = useMemo(
+    () => groupScope(activeGroupId, shellMemberships.data),
+    [activeGroupId, shellMemberships.data],
+  );
+  const repoCount = scope.countRepos(shellRepos.data);
+  const attentionCount = scope.countItems(shellSummary.data?.attention ?? null);
+  // `null` (not knowable yet) and `0` (knowably nothing) both render no dot;
+  // only a positive count does. Written as an explicit comparison rather than
+  // a truthiness check so a future `null` cannot quietly read as false for the
+  // wrong reason.
+  const needsAttention = attentionCount !== null && attentionCount > 0;
+
+  /**
+   * L4: the sidebar's add-repo button does not own the Add-repositories
+   * dialog - it asks the Repos screen to open its own.
+   *
+   * Lifting `AddReposDialog` into the shell looked simpler and is wrong:
+   * `repo_add` emits no backend event (see the `events` list in bindings.ts),
+   * so `ReposScreen` learns about a new repo only through the `onAdded`
+   * callback wired to its own refetch. A shell-owned dialog would add repos
+   * that the table behind it does not show until something else happens to
+   * refetch.
+   *
+   * The open/closed flag lives HERE rather than on the Repos screen because
+   * this button outlives that screen: `ReposScreen` unmounts on every
+   * navigation, so a flag owned there could not survive the very navigation
+   * this button performs. The screen takes it as a controlled prop.
+   */
+  const [addOpen, setAddOpen] = useState(false);
+  function requestAddRepos() {
+    setView("repos");
+    setAddOpen(true);
+  }
 
   // E-02 AC7 / BL-NI-33: the one-time database-recovery notice, read once at
   // launch. It surfaces only when the startup migration failed and the old
@@ -210,7 +343,21 @@ export function AppShell() {
         </div>
         <nav className="flex flex-col gap-0.5 px-2.5 py-2">
           {PRIMARY_NAV.map(({ id, label, Icon }) => (
-            <NavButton key={id} label={label} Icon={Icon} active={view === id} onClick={() => setView(id)} />
+            <NavButton
+              key={id}
+              label={label}
+              Icon={Icon}
+              active={view === id}
+              onClick={() => setView(id)}
+              badge={id === "repos" ? repoCount : undefined}
+              dot={id === "dashboard" ? needsAttention : undefined}
+              dotLabel={
+                // Lower case: this lands mid-name, after "Dashboard, ".
+                activeGroupId === null
+                  ? "some repositories need attention"
+                  : "some repositories in this group need attention"
+              }
+            />
           ))}
         </nav>
 
@@ -233,11 +380,33 @@ export function AppShell() {
         </div>
 
         {/*
-          Settings, bottom-docked (N5): pushed to the sidebar's foot with
-          `mt-auto` and separated from Groups above it by a hairline, rather
-          than living in the primary nav list.
+          L4: add-repo above the hairline over Settings, icon and label LEFT
+          aligned, in a reverse-contrast colour DISTINCT from the nav
+          selection. Distinct is the requirement that shapes it: the nav's
+          active item already owns the accent (a 2px `--primary` bar), so this
+          button uses the neutral inversion instead - `bg-foreground` with
+          `text-background`, 16.35:1 light and 14.48:1 dark on the sidebar,
+          and no hue at all, so it can never be mistaken for "you are here".
+          Hover darkens the fill rather than filtering brightness, which would
+          also lighten the text.
         */}
-        <nav className="mt-auto border-t border-border px-2.5 py-2">
+        <div className="mt-auto px-2.5 pb-2">
+          <button
+            type="button"
+            onClick={requestAddRepos}
+            className="flex w-full items-center gap-3 rounded-md bg-foreground px-2.5 py-2 text-left text-sm font-semibold text-background transition-colors hover:bg-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Plus className="size-[17px] shrink-0" />
+            Add repositories
+          </button>
+        </div>
+
+        {/*
+          Settings, bottom-docked (SB5): separated from what is above it by a
+          hairline, rather than living in the primary nav list. `mt-auto` moved
+          up to the add-repo block, which is now the first thing in the foot.
+        */}
+        <nav className="border-t border-border px-2.5 py-2">
           <NavButton
             label={SETTINGS_NAV.label}
             Icon={SETTINGS_NAV.Icon}
@@ -330,6 +499,9 @@ export function AppShell() {
               groups={groups}
               onClearGroup={clearActiveGroup}
               onGroupsChanged={groupsState.refetch}
+              addOpen={addOpen}
+              onAddOpenChange={setAddOpen}
+              onReposChanged={reposRefetch}
             />
           )}
           {view === "activity" && <ActivityScreen activeGroupId={activeGroupId} />}

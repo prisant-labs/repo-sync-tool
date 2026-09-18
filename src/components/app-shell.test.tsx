@@ -75,11 +75,15 @@ const REPO: RepoSummary = {
   homepage: null,
 };
 
-function mockShellCommands(groups: GroupSummary[] = GROUPS, repos: RepoSummary[] = [REPO]) {
+function mockShellCommands(
+  groups: GroupSummary[] = GROUPS,
+  repos: RepoSummary[] = [REPO],
+  summary: DailySummary = EMPTY_SUMMARY,
+) {
   mockCommand(commands, "dbRecoveryNotice", async () => ok({ recovered: false, backupPath: null }));
   mockCommand(commands, "groupList", async () => ok(groups));
   mockCommand(commands, "repoList", async () => ok(repos));
-  mockCommand(commands, "summaryToday", async () => ok(EMPTY_SUMMARY));
+  mockCommand(commands, "summaryToday", async () => ok(summary));
   mockCommand(commands, "repoGroupMemberships", async () => ok([{ repoId: 1, groupIds: [1] }]));
 }
 
@@ -114,9 +118,12 @@ describe("AppShell sidebar", () => {
     const navs = screen.getAllByRole("navigation");
     expect(navs).toHaveLength(2);
 
+    // `textContent` picks up the SB4 count badge and its screen-reader
+    // wording, so the order assertion reads the visible label only - the
+    // first child span, which is the one carrying the word.
     const primaryLabels = within(navs[0])
       .getAllByRole("button")
-      .map((b) => b.textContent);
+      .map((b) => b.querySelector("span")?.textContent);
     expect(primaryLabels).toEqual(["Dashboard", "Repos", "Activity"]);
 
     const bottomLabels = within(navs[1])
@@ -170,6 +177,79 @@ describe("AppShell sidebar", () => {
     await waitFor(() => expect(seen.at(-1)).toBe(1));
   });
 
+  // SB4. The count is real information a sighted user gets from the badge,
+  // so it belongs in the accessible name too - but as words. A bare "Repos 2"
+  // could be a count, a version, or a keyboard hint.
+  it("the Repos nav item carries the repo count, as a badge and as words (SB4)", async () => {
+    mockShellCommands();
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    const repos = within(screen.getAllByRole("navigation")[0]).getByRole("button", {
+      name: "Repos, 1 repository",
+    });
+    expect(repos.textContent).toContain("1");
+  });
+
+  // SB3 + SB4, the honesty rule both share: the sidebar reports on a library
+  // it may only be seeing part of. Its numbers are scoped the same way the
+  // screens they point at are scoped, or the rail contradicts its own
+  // destination.
+  it("scopes the repo count to the engaged group (SB4)", async () => {
+    // Two repos, only one of them in Work.
+    mockShellCommands(GROUPS, [REPO, { ...REPO, id: 2, localName: "repo-b" }]);
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const nav = () => within(screen.getAllByRole("navigation")[0]);
+    await waitFor(() => nav().getByRole("button", { name: "Repos, 2 repositories" }));
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Work" }));
+
+    await waitFor(() => nav().getByRole("button", { name: "Repos, 1 repository" }));
+  });
+
+  it("shows the attention dot only when something in scope needs attention (SB3)", async () => {
+    mockShellCommands(GROUPS, [REPO], {
+      ...EMPTY_SUMMARY,
+      attentionCount: 1,
+      // The repo needing attention is id 2, which is NOT in Work (the
+      // membership mock puts only repo 1 there).
+      attention: [{ repoId: 2, localName: "repo-b", detail: "Uncommitted changes" }],
+    });
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const nav = () => within(screen.getAllByRole("navigation")[0]);
+
+    // Unscoped: something needs attention, so the dot is there.
+    await waitFor(() =>
+      nav().getByRole("button", { name: /Dashboard.*need attention/ }),
+    );
+
+    // Scoped to Work, which does not contain that repo: the dot must go, or
+    // it claims attention over a Dashboard that will say All clear.
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Work" }));
+    await waitFor(() =>
+      expect(nav().queryByRole("button", { name: /need attention/ })).toBeNull(),
+    );
+  });
+
+  // L4. The dialog stays owned by the Repos screen because `repo_add` emits
+  // no backend event, so only that screen's own `onAdded` refetch makes a new
+  // repo appear. The sidebar asks; it does not own.
+  it("the sidebar's add-repo button opens the Repos screen's Add dialog (L4)", async () => {
+    mockShellCommands();
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Add repositories" }));
+
+    await screen.findByRole("heading", { name: "Repos" });
+    expect(await screen.findByRole("dialog")).toBeDefined();
+  });
+
   it("the logo block (R square, RepoSync wordmark, live version) survives untouched", async () => {
     mockShellCommands();
     render(<AppShell />);
@@ -190,7 +270,7 @@ describe("AppShell sidebar", () => {
     await user.click(within(navs[0]).getByRole("button", { name: "Activity" }));
     expect(await screen.findByRole("heading", { name: "Activity" })).toBeDefined();
 
-    await user.click(within(navs[0]).getByRole("button", { name: "Repos" }));
+    await user.click(within(navs[0]).getByRole("button", { name: /^Repos/ }));
     expect(await screen.findByRole("heading", { name: "Repos" })).toBeDefined();
 
     await user.click(within(navs[1]).getByRole("button", { name: "Settings" }));
@@ -262,7 +342,7 @@ describe("AppShell sidebar", () => {
     // And the filter actually cleared: opening Repos now shows no active
     // group filter control (the group is gone from the refetched list too,
     // but even before that refetch resolves, activeGroupId itself is null).
-    await user.click(within(screen.getAllByRole("navigation")[0]).getByRole("button", { name: "Repos" }));
+    await user.click(within(screen.getAllByRole("navigation")[0]).getByRole("button", { name: /^Repos/ }));
     await screen.findByRole("heading", { name: "Repos" });
     expect(screen.queryByRole("button", { name: /Clear .* filter/ })).toBeNull();
   });

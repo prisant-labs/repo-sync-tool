@@ -21,6 +21,7 @@ import { RepoDetailPanel, REPO_DETAIL_TITLE_ID } from "@/components/repo-detail"
 import { AddReposDialog } from "@/components/add-repos-dialog";
 import { PageShell } from "@/components/page-shell";
 import { useBackendEvents, useRepoGroupMemberships, useRepoList, useSummaryToday } from "@/hooks/queries";
+import { groupScope } from "@/lib/group-scope";
 import { checkFailureMessage, deriveStatus, STATUS_ICON, STATUS_STYLE } from "@/lib/status";
 
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
@@ -66,16 +67,21 @@ export function DashboardScreen({
     [activeGroupId, groups],
   );
   const membershipMap = memberships.data;
-  // A group filter is set but the bulk membership read hasn't resolved (or
-  // failed) yet. Every scoped number below must wait for this rather than
-  // render a fabricated zero (finding 7 / BL-NI-22's sibling honesty rule,
-  // repos.tsx's own `inGroupCount === null` guard) - see the render below.
-  const membershipPending = activeGroupId !== null && membershipMap === null;
-
-  const inActiveGroup = useCallback(
-    (repoId: number) => activeGroupId === null || (membershipMap?.get(repoId)?.includes(activeGroupId) ?? false),
+  // The scoping rule itself lives in `lib/group-scope.ts` rather than here,
+  // because SB3 and SB4 gave it a second consumer: the sidebar's attention
+  // dot and repo count. A second copy of this rule is exactly how the dot
+  // ends up claiming attention over a Dashboard that reports All clear.
+  //
+  // `scope.pending` is "a group filter is set but the bulk membership read
+  // hasn't resolved (or failed) yet". Every scoped number must wait for it
+  // rather than render a fabricated zero (finding 7 / BL-NI-22's sibling
+  // honesty rule, repos.tsx's own `inGroupCount === null` guard).
+  const scope = useMemo(
+    () => groupScope(activeGroupId, membershipMap),
     [activeGroupId, membershipMap],
   );
+  const membershipPending = scope.pending;
+  const inActiveGroup = scope.includes;
 
   // Look up each attention item's live facts so its icon/color can follow the
   // repo's actual current status (finding 10 / BL-NI-27), rather than always
@@ -144,15 +150,16 @@ export function DashboardScreen({
    * resolved, falling back to a degraded but still honest "a group" /
    * "this group" phrasing otherwise.
    */
+  // Both of these now delegate to the shared scope. `scopedCount` keeps its
+  // non-null return because every caller renders it inside a branch that has
+  // already checked `membershipPending`; `underWatchCount` keeps its nullable
+  // one because its own render is that check.
   const scopedCount = useCallback(
-    (items: SummaryItem[]) => (activeGroupId === null ? items.length : items.filter((it) => inActiveGroup(it.repoId)).length),
-    [activeGroupId, inActiveGroup],
+    (items: SummaryItem[]) => scope.countItems(items) ?? 0,
+    [scope],
   );
 
-  const underWatchCount = useMemo(() => {
-    if (repos.data === null) return null;
-    return activeGroupId === null ? repos.data.length : repos.data.filter((r) => inActiveGroup(r.id)).length;
-  }, [repos.data, activeGroupId, inActiveGroup]);
+  const underWatchCount = useMemo(() => scope.countRepos(repos.data), [scope, repos.data]);
 
   return (
     <PageShell
