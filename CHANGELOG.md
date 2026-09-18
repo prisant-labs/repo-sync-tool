@@ -70,6 +70,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **The user guide described a keyboard shortcut that does not exist.** It said
+  you could Tab to a row in the Repos list and press Enter or Space to open that
+  repository's details. Rows stopped being focusable some time ago, on purpose,
+  because wrapping a keyboard-operable row around its own buttons made Enter
+  ambiguous. The keyboard path is the row's own buttons, including a chevron
+  labelled "Open details", and the guide now says so. Nothing about the app
+  changed here; the documentation was wrong, which for a keyboard user is worse
+  than saying nothing.
 - **Buttons in dark mode were hard to read.** The white label on RepoSync's blue
   buttons sat below the contrast level the project requires, in every dark-mode
   window since the theme shipped. The blue is slightly deeper now, which fixes
