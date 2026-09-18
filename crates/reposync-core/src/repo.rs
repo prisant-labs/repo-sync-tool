@@ -194,14 +194,17 @@ pub async fn add(
     // 6. Insert the initial repo_local_state row from the inspection. E-17: persist
     //    the HEAD committer time into last_local_commit_at (the column existed since
     //    migration 0001 but nothing wrote it).
+    // RR6: `head_state` is written from the SAME inspection as `is_detached`,
+    // in the same statement, so the two can never disagree about one repo.
     sqlx::query(
         "INSERT INTO repo_local_state \
-         (repo_id, active_branch, head_sha, upstream_branch, is_dirty, is_detached, \
+         (repo_id, active_branch, head_state, head_sha, upstream_branch, is_dirty, is_detached, \
           last_local_commit_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(repo_id)
     .bind(&inspect.active_branch)
+    .bind(inspect.head_state.map(|h| h.as_db_str()))
     .bind(&inspect.head_sha)
     .bind(&inspect.upstream_branch)
     .bind(inspect.is_dirty as i64)
@@ -366,12 +369,14 @@ async fn check_now_inner(
     let upstream_state = classify_upstream(&inspect, has_origin).as_db_str();
     sqlx::query(
         "UPDATE repo_local_state SET \
-         active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
+         active_branch = ?, head_state = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, \
+         is_detached = ?, \
          head_sha = ?, upstream_branch = ?, upstream_state = ?, last_local_commit_at = ?, \
          last_checked_at = ?, last_attempted_at = ?, last_error_code = ? \
          WHERE repo_id = ?",
     )
     .bind(&inspect.active_branch)
+    .bind(inspect.head_state.map(|h| h.as_db_str()))
     .bind(ahead_behind.ahead)
     .bind(ahead_behind.behind)
     .bind(inspect.is_dirty as i64)
@@ -606,7 +611,8 @@ async fn run_update_inner(
     let upstream_state = classify_upstream(&post, has_origin).as_db_str();
     sqlx::query(
         "UPDATE repo_local_state SET \
-         active_branch = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, is_detached = ?, \
+         active_branch = ?, head_state = ?, ahead_count = ?, behind_count = ?, is_dirty = ?, \
+         is_detached = ?, \
          head_sha = ?, upstream_branch = ?, upstream_state = ?, last_local_commit_at = ?, \
          last_checked_at = ?, last_attempted_at = ?, last_updated_at = COALESCE(?, last_updated_at), \
          last_error_code = ?, \
@@ -615,6 +621,7 @@ async fn run_update_inner(
          WHERE repo_id = ?",
     )
     .bind(&post.active_branch)
+    .bind(post.head_state.map(|h| h.as_db_str()))
     .bind(post_ab.ahead)
     .bind(post_ab.behind)
     .bind(post.is_dirty as i64)
@@ -1111,6 +1118,7 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::git::fixtures::{build_fixture, FixtureState};
+    use crate::git::HeadState;
     use tempfile::TempDir;
 
     // --- H2: fresh inspect upstream is authoritative over the stored ref -------
@@ -1200,6 +1208,7 @@ mod tests {
             is_detached: false,
             upstream_branch: Some("origin/main".into()),
             last_commit_at: Some(1_700_000_000),
+            head_state: Some(HeadState::Branch),
         };
         assert_eq!(
             classify_upstream(&with_up, true),

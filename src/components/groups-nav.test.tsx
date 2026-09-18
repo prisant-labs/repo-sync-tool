@@ -31,15 +31,10 @@ const GROUPS: GroupSummary[] = [
   { id: 2, name: "Forks", color: null, repoCount: 0 },
 ];
 
-// `railActive` defaults to true (the "we are on Repos" case) so every
-// existing interaction test below exercises the same visual path it always
-// did; the two tests specifically about the destination/filter split pass
-// `railActive: false` explicitly.
-function renderNav(
-  groups: GroupSummary[],
-  activeGroupId: number | null = null,
-  options: { railActive?: boolean } = {},
-) {
+// A2 removed this component's `railActive` prop: the engaged group is marked
+// on every screen now, so there is no longer a "which screen are we on" input
+// to vary in a render helper.
+function renderNav(groups: GroupSummary[], activeGroupId: number | null = null) {
   const toast = vi.fn();
   const onSelectGroup = vi.fn();
   const onClearActiveGroup = vi.fn();
@@ -49,7 +44,6 @@ function renderNav(
       <GroupsNav
         groups={groups}
         activeGroupId={activeGroupId}
-        railActive={options.railActive ?? true}
         onSelectGroup={onSelectGroup}
         onClearActiveGroup={onClearActiveGroup}
         refetchGroups={refetchGroups}
@@ -209,18 +203,13 @@ describe("GroupsNav", () => {
     expect(onSelectGroup).not.toHaveBeenCalled();
   });
 
-  // Codex adversarial review finding 2: destination state (which screen is
-  // current) and filter state (which group is applied) were conflated - the
-  // group row's accent fill painted on every screen, not only Repos, so a
-  // sighted user saw two "current" things in one rail at once. The fix
-  // separates them: `aria-pressed` (the filter's own, real, persistent
-  // state) is unaffected by `railActive`; only the visual fill is gated.
-  it("aria-pressed reflects the true filter state regardless of railActive - the filter persists even where its accent fill does not paint", () => {
-    renderNav(GROUPS, 1, { railActive: false });
+  // A2: the engaged group is marked on every screen. This component no longer
+  // knows which screen is showing, so "is this group engaged" is now a single
+  // fact rather than a semantic one plus a gated visual one - `aria-pressed`
+  // and the tint always agree.
+  it("aria-pressed names exactly the engaged group, and only that group", () => {
+    renderNav(GROUPS, 1);
 
-    // Work (id 1) IS the active filter even though this render represents a
-    // screen other than Repos (railActive: false) - the semantic state must
-    // say so for assistive tech, independent of whether the accent fill painted.
     expect(screen.getByRole("button", { name: "Work" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Forks" }).getAttribute("aria-pressed")).toBe("false");
     expect(screen.getByRole("button", { name: "All repositories" }).getAttribute("aria-pressed")).toBe(
@@ -228,12 +217,24 @@ describe("GroupsNav", () => {
     );
   });
 
-  it("aria-pressed on 'All repositories' is true exactly when no group is the active filter, on every screen", () => {
-    renderNav(GROUPS, null, { railActive: false });
+  it("aria-pressed on 'All repositories' is true exactly when no group is the active filter", () => {
+    renderNav(GROUPS, null);
 
     expect(screen.getByRole("button", { name: "All repositories" }).getAttribute("aria-pressed")).toBe(
       "true",
     );
     expect(screen.getByRole("button", { name: "Work" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  // A2, the visual half: the tint is what a sighted user reads, and it is no
+  // longer conditional on anything outside this component. Asserted on the
+  // ROW (the element that carries the fill), not the button inside it.
+  it("the engaged group's row carries the tint, and no other row does", () => {
+    renderNav(GROUPS, 1);
+
+    const engaged = screen.getByRole("button", { name: "Work" }).parentElement!;
+    const other = screen.getByRole("button", { name: "Forks" }).parentElement!;
+    expect(engaged.className).toContain("bg-primary/10");
+    expect(other.className).not.toContain("bg-primary/10");
   });
 });

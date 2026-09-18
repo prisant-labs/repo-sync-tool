@@ -14,7 +14,7 @@ const ICONS: Record<ToastKind, typeof Check> = {
 
 const TONE: Record<ToastKind, string> = {
   ok: "text-status-sync",
-  info: "text-primary",
+  info: "text-primary-ink",
   error: "text-status-failed",
 };
 

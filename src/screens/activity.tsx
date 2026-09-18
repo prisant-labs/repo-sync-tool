@@ -9,7 +9,7 @@ import { FilterChip } from "@/components/filter-chip";
 import { ActivityReceipt, ACTIVITY_RECEIPT_TITLE_ID } from "@/components/activity-receipt";
 import { PageShell } from "@/components/page-shell";
 import { useActivity, useRepoList } from "@/hooks/queries";
-import { ACTIVITY_PAGE_LIMIT, paginate, toActivityFilter } from "@/lib/activity";
+import { ACTIVITY_PAGE_LIMIT, formatDuration, paginate, toActivityFilter } from "@/lib/activity";
 import type { ActionTypeFilter, StatusFilter } from "@/lib/activity";
 import type { ActivityRecord } from "@/lib/bindings";
 import { relativeTime } from "@/lib/status";
@@ -26,10 +26,17 @@ const ACTION_CHIPS: { value: ActionTypeFilter; label: string }[] = [
 const STATUS_CHIPS: { value: StatusFilter; label: string; tone?: string }[] = [
   { value: "all", label: "Any outcome" },
   { value: "success", label: "Succeeded" },
-  { value: "failed", label: "Failed", tone: "text-destructive" },
+  // `text-status-failed`, not `text-destructive`. The two are near-neighbours
+  // in hue and easy to swap by eye, but `--destructive` measures 4.34:1 on the
+  // page and 3.94:1 on the chip's own fill in LIGHT mode - under the 4.5:1
+  // floor in both, which means this label shipped failing and C1's fill made
+  // it worse. `--status-failed` is the app's own ink for exactly this meaning
+  // and clears the floor everywhere: 5.30/4.81 light, 6.83/5.22 dark
+  // (`_generators/contrast.py`).
+  { value: "failed", label: "Failed", tone: "text-status-failed" },
 ];
 
-export function ActivityScreen() {
+export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null }) {
   const [actionType, setActionType] = useState<ActionTypeFilter>("all");
   const [status, setStatus] = useState<StatusFilter>("all");
 
@@ -44,11 +51,13 @@ export function ActivityScreen() {
   // audit trail that answers "no failures" when it means "none in the last 60
   // rows" is worse than one with no filter at all.
   //
-  // A group filter is deliberately NOT among these fields (N3, BL-NI-93 (group
-  // filter needs a repo-set constraint)): the same "before the LIMIT" rule that
-  // justifies action/outcome going server-side rules out a repo-membership
-  // filter that only the frontend can express today. See that backlog row.
-  const activity = useActivity(toActivityFilter(actionType, status));
+  // The group scope rides along (A2). It is not this screen's own control -
+  // the sidebar owns it, and the sidebar now marks it here as well as on
+  // Repos, so this screen has to honour it or the mark is a lie. An earlier
+  // comment here said a group filter could not go server-side; BL-NI-93
+  // closed that, and `activity::list` resolves membership in SQL before its
+  // own LIMIT, the same as every other field.
+  const activity = useActivity(toActivityFilter(actionType, status, activeGroupId));
   // The activity row carries a repoId and no name, so the names come from the
   // repo list. A repo REMOVED after its rows were written has no entry here, and
   // that is the honest outcome: the receipt says "Unknown repo" rather than
@@ -63,11 +72,31 @@ export function ActivityScreen() {
 
   const selected = (activity.data ?? []).find((r) => r.id === selectedId) ?? null;
 
-  // Whether a filter is narrowing the view, so an empty result can say which
+  // Whether anything is narrowing the view, so an empty result can say which
   // kind of empty it is. Without this, selecting "Updates" plus "Failed" on a
   // healthy library renders "No activity yet", which reads as "RepoSync has
   // never done anything" when it actually means "nothing has ever gone wrong".
-  const filtered = actionType !== "all" || status !== "all";
+  //
+  // The group counts as a narrowing even though its control is in the
+  // sidebar: an empty Activity list under an engaged group is "nothing has
+  // happened in THIS group", and saying "No activity yet" there would be
+  // wrong in the same way, with the added trap that the control that caused
+  // it is not on this screen.
+  const chipsFiltered = actionType !== "all" || status !== "all";
+  const filtered = chipsFiltered || activeGroupId !== null;
+
+  // Three ways to be empty, three sentences, because each one has a different
+  // thing to go and undo. Naming the group separately matters because its
+  // control is NOT on this screen - it is the sidebar's engaged group - so
+  // "clear the filters" alone sends the reader hunting a toolbar that cannot
+  // explain what they are looking at.
+  const emptyDescription = !filtered
+    ? "Checks and updates will show up here as soon as RepoSync runs one."
+    : activeGroupId === null
+      ? "No entries match the selected action and outcome. Clear the filters to see everything."
+      : chipsFiltered
+        ? "No entries match this group and the selected action and outcome. Clear the group in the sidebar, or the filters here, to see everything."
+        : "Nothing has happened in this group yet. Clear the group in the sidebar to see everything.";
 
   // Columns, in the ratified order (N3, ui-delivery-plan.md ledger B6): Time
   // (never wraps, a round-five correction), Repository, Action (its own column,
@@ -124,6 +153,25 @@ export function ActivityScreen() {
         header: "Outcome",
         width: "108px",
         cell: (row) => <OutcomeChip status={row.status} />,
+      },
+      {
+        // AC2 + C1: "Duration", not "Took". Duration is the standard term in
+        // job-run interfaces (GitHub Actions, GitLab, Jenkins all use it);
+        // "Took" reads as prose in a column header. Right-aligned and
+        // tabular-nums so a column of them compares by eye, which is the only
+        // reason to put a duration in a table at all.
+        id: "duration",
+        header: "Duration",
+        width: "88px",
+        align: "right",
+        cell: (row) => {
+          const text = formatDuration(row.durationMs);
+          // `null` renders the primitive's muted dash. A record with no
+          // duration is not a zero-length operation.
+          return text === null ? null : (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">{text}</span>
+          );
+        },
       },
       {
         id: "summary",
@@ -221,11 +269,7 @@ export function ActivityScreen() {
             <EmptyState
               icon={History}
               title={filtered ? "Nothing matches this filter" : "No activity yet"}
-              description={
-                filtered
-                  ? "No entries match the selected action and outcome. Clear the filters to see everything."
-                  : "Checks and updates will show up here as soon as RepoSync runs one."
-              }
+              description={emptyDescription}
               compact
             />
           }

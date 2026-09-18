@@ -21,6 +21,7 @@ import { RepoDetailPanel, REPO_DETAIL_TITLE_ID } from "@/components/repo-detail"
 import { AddReposDialog } from "@/components/add-repos-dialog";
 import { PageShell } from "@/components/page-shell";
 import { useBackendEvents, useRepoGroupMemberships, useRepoList, useSummaryToday } from "@/hooks/queries";
+import { groupScope } from "@/lib/group-scope";
 import { checkFailureMessage, deriveStatus, STATUS_ICON, STATUS_STYLE } from "@/lib/status";
 
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
@@ -29,6 +30,7 @@ export function DashboardScreen({
   onOpenRepos,
   activeGroupId,
   groups,
+  onLibraryChanged,
 }: {
   onOpenRepos: () => void;
   /**
@@ -39,9 +41,16 @@ export function DashboardScreen({
    */
   activeGroupId: number | null;
   groups: GroupSummary[];
+  /**
+   * Refreshes the SHELL's own snapshots. This screen can add a repository and
+   * its drawer can remove one or change its groups, and none of those emit a
+   * backend event, so without this the sidebar's count and attention dot keep
+   * describing the library as it was (Codex review of PRs #93-#96, finding 2).
+   */
+  onLibraryChanged: () => void;
 }) {
   const repos = useRepoList(ALL_FILTER);
-  const summary = useSummaryToday();
+  const summary = useSummaryToday(activeGroupId);
   // Bulk membership read (BL-NI-22's pattern, lifted from repos.tsx) - the
   // only frontend-only ingredient the group-scoping decision below needed.
   const memberships = useRepoGroupMemberships();
@@ -56,6 +65,15 @@ export function DashboardScreen({
   }, [reposRefetch, summaryRefetch, membershipsRefetch]);
   useBackendEvents(refetch);
 
+  // A local mutation refreshes this screen AND the shell. Kept separate from
+  // `refetch` so the event path above does not fire the shell's refresh too:
+  // the shell already subscribes to the same events itself, and routing both
+  // through one callback would double every background refetch.
+  const refetchAll = useCallback(() => {
+    refetch();
+    onLibraryChanged();
+  }, [refetch, onLibraryChanged]);
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -66,16 +84,21 @@ export function DashboardScreen({
     [activeGroupId, groups],
   );
   const membershipMap = memberships.data;
-  // A group filter is set but the bulk membership read hasn't resolved (or
-  // failed) yet. Every scoped number below must wait for this rather than
-  // render a fabricated zero (finding 7 / BL-NI-22's sibling honesty rule,
-  // repos.tsx's own `inGroupCount === null` guard) - see the render below.
-  const membershipPending = activeGroupId !== null && membershipMap === null;
-
-  const inActiveGroup = useCallback(
-    (repoId: number) => activeGroupId === null || (membershipMap?.get(repoId)?.includes(activeGroupId) ?? false),
+  // The scoping rule itself lives in `lib/group-scope.ts` rather than here,
+  // because SB3 and SB4 gave it a second consumer: the sidebar's attention
+  // dot and repo count. A second copy of this rule is exactly how the dot
+  // ends up claiming attention over a Dashboard that reports All clear.
+  //
+  // `scope.pending` is "a group filter is set but the bulk membership read
+  // hasn't resolved (or failed) yet". Every scoped number must wait for it
+  // rather than render a fabricated zero (finding 7 / BL-NI-22's sibling
+  // honesty rule, repos.tsx's own `inGroupCount === null` guard).
+  const scope = useMemo(
+    () => groupScope(activeGroupId, membershipMap),
     [activeGroupId, membershipMap],
   );
+  const membershipPending = scope.pending;
+  const inActiveGroup = scope.includes;
 
   // Look up each attention item's live facts so its icon/color can follow the
   // repo's actual current status (finding 10 / BL-NI-27), rather than always
@@ -144,15 +167,16 @@ export function DashboardScreen({
    * resolved, falling back to a degraded but still honest "a group" /
    * "this group" phrasing otherwise.
    */
-  const scopedCount = useCallback(
-    (items: SummaryItem[]) => (activeGroupId === null ? items.length : items.filter((it) => inActiveGroup(it.repoId)).length),
-    [activeGroupId, inActiveGroup],
-  );
-
-  const underWatchCount = useMemo(() => {
-    if (repos.data === null) return null;
-    return activeGroupId === null ? repos.data.length : repos.data.filter((r) => inActiveGroup(r.id)).length;
-  }, [repos.data, activeGroupId, inActiveGroup]);
+  // D6: `summary_today` now takes the group and constrains every query in SQL,
+  // so these lists ARRIVE scoped. Intersecting them again here would be a
+  // second authority for one fact, and the wrong one - the backend can scope
+  // `noChangeCount`, a bare integer with no repo-id list, and this side never
+  // could. `scopedCount` is gone with it; the tiles read the fields directly.
+  //
+  // `underWatchCount` still scopes here, because it counts REPOS rather than
+  // summary items and `repo_list` has no group parameter. That is the one
+  // remaining client-side intersection, and `scope` exists for it.
+  const underWatchCount = useMemo(() => scope.countRepos(repos.data), [scope, repos.data]);
 
   return (
     <PageShell
@@ -236,14 +260,19 @@ export function DashboardScreen({
                     shows EXACTLY this tile's population, scoped or not. See
                     the PR body for why the other three tiles are NOT wired.
                   */}
+                  {/*
+                    D6: no "(all repos)" qualifier on the hint any more. It
+                    existed because `noChangeCount` was the one number that
+                    could not be scoped - a bare integer with no repo-id list
+                    to intersect (BL-NI-96). `summary_today` takes the group
+                    now and constrains it in SQL with everything else, so the
+                    number under a scoped headline IS scoped, and a caveat
+                    saying otherwise would be the false statement.
+                  */}
                   <Tile
                     label="Under watch"
                     value={underWatchCount ?? "-"}
-                    hint={
-                      activeGroupId !== null
-                        ? `${s.noChangeCount} checked, no change (all repos)`
-                        : `${s.noChangeCount} checked, no change`
-                    }
+                    hint={`${s.noChangeCount} checked, no change`}
                     onClick={onOpenRepos}
                   />
                   {/*
@@ -269,14 +298,14 @@ export function DashboardScreen({
                     hint="dirty or failed"
                     alert={attentionItems.length > 0}
                   />
-                  <Tile label="Updated today" value={scopedCount(s.updated)} hint="fast-forwarded, clean" />
-                  <Tile label="New releases" value={scopedCount(s.newReleases)} hint="upstream tags" />
+                  <Tile label="Updated today" value={s.updatedCount} hint="fast-forwarded, clean" />
+                  <Tile label="New releases" value={s.releasesCount} hint="upstream tags" />
                 </div>
 
                 <Card>
                   <CardHeader>
                     <CardTitle>Needs attention</CardTitle>
-                    <button onClick={onOpenRepos} className="ml-auto text-xs font-medium text-primary">
+                    <button onClick={onOpenRepos} className="ml-auto text-xs font-medium text-primary-ink">
                       Open Repos
                     </button>
                   </CardHeader>
@@ -319,11 +348,11 @@ export function DashboardScreen({
         aria-labelledby={REPO_DETAIL_TITLE_ID}
       >
         {selectedId !== null && (
-          <RepoDetailPanel id={selectedId} onChanged={refetch} onClose={() => setSelectedId(null)} />
+          <RepoDetailPanel id={selectedId} onChanged={refetchAll} onClose={() => setSelectedId(null)} />
         )}
       </Drawer>
 
-      <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
+      <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetchAll} />
     </PageShell>
   );
 }

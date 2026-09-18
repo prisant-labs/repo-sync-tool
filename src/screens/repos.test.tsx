@@ -48,6 +48,8 @@ function repo(overrides: Partial<RepoSummary> = {}): RepoSummary {
     lastLocalCommitAt: null,
     activeBranch: "main",
     upstreamState: "tracking",
+    headState: "branch",
+    updateMode: "pull_ff_only",
     stars: null,
     forks: null,
     license: null,
@@ -88,6 +90,7 @@ const MINIMAL_DETAIL: RepoDetail = {
   headSha: "abcdef1234567890",
   upstreamBranch: "origin/main",
   upstreamState: null,
+  headState: "branch",
   lastLocalCommitAt: null,
   lastUpdatedAt: null,
   lastAttemptedAt: null,
@@ -132,7 +135,7 @@ const GROUPS: GroupSummary[] = [{ id: 1, name: "Work", color: "#4477ff", repoCou
 function renderScreen(
   repos: RepoSummary[],
   memberships: RepoGroupMembership[] = [],
-  options: { activeGroupId?: number | null; membershipsPending?: boolean } = {},
+  options: { activeGroupId?: number | null; membershipsPending?: boolean; addOpen?: boolean } = {},
 ) {
   mockCommand(commands, "repoList", async () => ok(repos));
   if (options.membershipsPending) {
@@ -146,6 +149,8 @@ function renderScreen(
   const toast = vi.fn();
   const onClearGroup = vi.fn();
   const onGroupsChanged = vi.fn();
+  const onLibraryChanged = vi.fn();
+  const onAddOpenChange = vi.fn();
   const view = render(
     <ToastContext.Provider value={toast}>
       <ReposScreen
@@ -153,10 +158,13 @@ function renderScreen(
         groups={GROUPS}
         onClearGroup={onClearGroup}
         onGroupsChanged={onGroupsChanged}
+        addOpen={options.addOpen ?? false}
+        onAddOpenChange={onAddOpenChange}
+        onLibraryChanged={onLibraryChanged}
       />
     </ToastContext.Provider>,
   );
-  return { toast, onClearGroup, onGroupsChanged, ...view };
+  return { toast, onClearGroup, onGroupsChanged, onLibraryChanged, onAddOpenChange, ...view };
 }
 
 beforeEach(() => {
@@ -225,11 +233,40 @@ describe("ReposScreen table", () => {
     expect(cellsFor("repo-c")[9].textContent).toBe("3");
   });
 
-  it("renders the branch name, and 'detached' only for a real detached HEAD (not the never-inspected/unborn-HEAD null cases)", async () => {
+  // RR6. An empty Branch cell had three causes and one rendering. `headState`
+  // (migration 0011) is the observation that separates the two `isDetached`
+  // never could, so each now says what it is.
+  it("names all four reasons a Branch cell is empty, rather than one dash for four facts (RR6)", async () => {
     renderScreen([
-      repo({ id: 1, localName: "repo-a", activeBranch: "feature/x" }),
-      repo({ id: 2, localName: "repo-b", activeBranch: null, isDetached: true }),
-      repo({ id: 3, localName: "repo-c", activeBranch: null, isDetached: false }),
+      repo({ id: 1, localName: "repo-a", activeBranch: "feature/x", headState: "branch" }),
+      repo({ id: 2, localName: "repo-b", activeBranch: null, isDetached: true, headState: "detached" }),
+      repo({ id: 3, localName: "repo-c", activeBranch: null, isDetached: false, headState: "unborn" }),
+      // `headState: null` is the fourth fact the column carries: no inspection
+      // has recorded it since 0011 added the column. Rendering "no commits"
+      // here would be an observation nobody made.
+      //
+      // But NULL is two facts, not one, and `lastCheckedAt` is what separates
+      // them. Never checked: nothing has looked, so "never run" is true.
+      // Checked, and still null: something looked and could not tell, which is
+      // what the Rust side now records when HEAD will not read at all. Calling
+      // that "never run" would swap one confident wrong answer for another,
+      // which is the whole reason this column exists.
+      repo({
+        id: 4,
+        localName: "repo-d",
+        activeBranch: null,
+        isDetached: false,
+        headState: null,
+        lastCheckedAt: null,
+      }),
+      repo({
+        id: 5,
+        localName: "repo-e",
+        activeBranch: null,
+        isDetached: false,
+        headState: null,
+        lastCheckedAt: 1_700_000_000,
+      }),
     ]);
     await screen.findByText("repo-a");
 
@@ -240,9 +277,26 @@ describe("ReposScreen table", () => {
 
     expect(branchCellFor("repo-a").textContent).toBe("feature/x");
     expect(branchCellFor("repo-b").textContent).toBe("detached");
-    // repo-c: never inspected or an unborn HEAD - neither gets the word
-    // "detached"; it renders the empty dash like any other empty cell.
-    expect(branchCellFor("repo-c").textContent).toBe("-");
+    expect(branchCellFor("repo-c").textContent).toBe("no commits");
+    expect(branchCellFor("repo-d").textContent).toBe("never run");
+    expect(branchCellFor("repo-e").textContent).toBe("unreadable");
+  });
+
+  it("never infers a HEAD state from a missing branch name alone", async () => {
+    // The defect the column used to have, stated as a test: an unborn HEAD and
+    // an uninspected repo produce IDENTICAL rows apart from `headState`, so
+    // anything deriving the label from the other fields would give them the
+    // same answer. Both rows below are identical except that field.
+    renderScreen([
+      repo({ id: 1, localName: "same-a", activeBranch: null, headState: "unborn" }),
+      repo({ id: 2, localName: "same-b", activeBranch: null, headState: null }),
+    ]);
+    await screen.findByText("same-a");
+
+    const branchCellFor = (name: string) =>
+      within(screen.getByText(name).closest('[role="row"]') as HTMLElement).getAllByRole("cell")[2];
+
+    expect(branchCellFor("same-a").textContent).not.toBe(branchCellFor("same-b").textContent);
   });
 
   it("renders the Folder column from localPath", async () => {
@@ -427,6 +481,39 @@ describe("ReposScreen table", () => {
     }
   });
 
+  it("keeps the SELECTED status chip visible at zero, so a filter narrowing to nothing is never invisible", async () => {
+    // AC-17 / Codex review of PRs #93-#96, finding 3. Select Behind, then
+    // search for the in-sync repo. The scoped counts make Behind zero, and the
+    // old `counts[s] > 0` guard unmounted the chip while `chip` stayed
+    // "behind" - leaving an empty table whose only applied filter was no
+    // longer on screen.
+    renderScreen([
+      repo({ id: 1, localName: "repo-behind", behindCount: 2 }),
+      repo({ id: 2, localName: "repo-sync" }),
+    ]);
+    await screen.findByText("repo-behind");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Behind/ }));
+    await user.type(screen.getByPlaceholderText("Filter by name"), "repo-sync");
+
+    // The table is empty: the Behind filter still applies to a search that
+    // matches only an in-sync repo.
+    await waitFor(() => expect(screen.queryByText("repo-behind")).toBeNull());
+    expect(screen.queryByText("repo-sync")).toBeNull();
+
+    // ...and the chip responsible for that is still on screen, reading zero.
+    const behind = screen.getByRole("button", { name: /^Behind/ });
+    expect(behind).toBeDefined();
+    expect(behind.textContent).toContain("0");
+
+    // An unselected zero chip still does NOT render: this widens the guard for
+    // the selected chip only, it does not show every status all the time.
+    for (const label of [/^Dirty/, /^Failed/, /^Paused/, /^Ahead/]) {
+      expect(screen.queryByRole("button", { name: label })).toBeNull();
+    }
+  });
+
   it("the table has a valid accessible tree: table > rowgroup > row, and a row carries no button role or tabIndex", async () => {
     renderScreen([repo()]);
     await screen.findByText("repo-a");
@@ -516,6 +603,35 @@ describe("ReposScreen table", () => {
     for (const row of screen.getAllByRole("row")) {
       expect(row.hasAttribute("aria-current")).toBe(false);
     }
+  });
+
+  it("removing the LAST repository tells the shell, which no event ever would", async () => {
+    // Codex review of PRs #93-#96, finding 2. `repo_remove` emits no backend
+    // event, so the sidebar's count and attention dot only correct themselves
+    // on the next check, update or metadata refresh. Remove the last repository
+    // and there is nothing left to check: no `scheduler:tick` will ever carry
+    // `checked > 0`, so nothing corrects them at all until a restart. The
+    // screen has to say so itself.
+    mockCommand(commands, "repoGet", async () => ok(MINIMAL_DETAIL));
+    mockCommand(commands, "groupList", async () => ok([]));
+    mockCommand(commands, "groupsForRepo", async () => ok([]));
+    mockCommand(commands, "settingsGet", async () => ok(MINIMAL_SETTINGS));
+    const remove = mockCommand(commands, "repoRemove", async () => ok(null));
+    for (const ev of [events.repoStateChanged]) {
+      vi.spyOn(ev, "listen").mockResolvedValue(() => {});
+    }
+    const { onLibraryChanged } = renderScreen([repo()]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Open details" }));
+    // Remove lives in the drawer's Settings tab, behind a two-step confirm.
+    await user.click(await screen.findByRole("tab", { name: "Settings" }));
+    await user.click(await screen.findByRole("button", { name: /Remove from RepoSync/ }));
+    await user.click(await screen.findByRole("button", { name: /^Remove$/ }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onLibraryChanged).toHaveBeenCalled());
   });
 });
 

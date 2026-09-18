@@ -44,11 +44,42 @@ export function ReposScreen({
   groups,
   onClearGroup,
   onGroupsChanged,
+  addOpen,
+  onAddOpenChange,
+  onLibraryChanged,
 }: {
   activeGroupId: number | null;
   groups: GroupSummary[];
   onClearGroup: () => void;
   onGroupsChanged: () => void;
+  /**
+   * L4: whether the Add-repositories dialog is open. The STATE lives in the
+   * shell; the dialog itself stays here.
+   *
+   * That split is not arbitrary. The dialog has to stay on this screen
+   * because `repo_add` emits no backend event, so `onAdded` wired to this
+   * screen's own refetch is the only thing that makes a new repo appear in
+   * the table. But the sidebar's add button lives above this screen and
+   * outlives it - this component unmounts on every navigation - so a flag
+   * owned here could not survive the very navigation the button performs.
+   *
+   * Controlled rather than a request counter plus an effect: an effect that
+   * calls `setState` synchronously is a cascading render, and the lint rule
+   * that says so is right.
+   */
+  addOpen: boolean;
+  onAddOpenChange: (open: boolean) => void;
+  /**
+   * Refreshes the SHELL's own repo list, summary and membership snapshots.
+   *
+   * Every mutation on this screen has to call it, because none of them emit a
+   * backend event: `repo_add`, `repo_remove` and a group-membership toggle all
+   * change what the sidebar shows and announce nothing (Codex review of PRs
+   * #93-#96, finding 2). Refreshing only this screen's copy leaves the count
+   * beside Repos and the attention dot describing a library that no longer
+   * exists.
+   */
+  onLibraryChanged: () => void;
 }) {
   const repos = useRepoList(ALL_FILTER);
   const refetch = repos.refetch;
@@ -58,7 +89,7 @@ export function ReposScreen({
   const [busyId, setBusyId] = useState<number | null>(null);
   const [checkAllBusy, setCheckAllBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
+
   const [query, setQuery] = useState("");
   const [chip, setChip] = useState<Chip>("all");
 
@@ -89,11 +120,16 @@ export function ReposScreen({
 
   // After an assignment change in the drawer, refresh the list, the membership
   // map, and the sidebar group counts together.
+  // Also the drawer's remove and its group toggles, which is why the shell is
+  // told here too: `repo_remove` emits no event, and removing the LAST
+  // repository leaves nothing for a scheduler tick to check, so no later event
+  // would ever correct the sidebar.
   const handleRepoChanged = useCallback(() => {
     refetch();
     refetchMemberships();
     onGroupsChanged();
-  }, [refetch, refetchMemberships, onGroupsChanged]);
+    onLibraryChanged();
+  }, [refetch, refetchMemberships, onGroupsChanged, onLibraryChanged]);
 
   // The Folder cell's click target (walk item R5). Errors get a toast rather
   // than being swallowed the way `checkNow` swallows its own: a failed folder
@@ -174,6 +210,32 @@ export function ReposScreen({
     }
   }, [toast]);
 
+  /**
+   * The population the status chips actually filter: the group and name
+   * filters applied, the STATUS filter deliberately not - that is the
+   * dimension the chips themselves select, so counting after it would make
+   * every chip read 0 except the engaged one.
+   *
+   * `null` means the bulk membership read has not resolved while a group is
+   * engaged, so the population is not knowable yet - the same rule
+   * `inGroupCount` below already follows, and the reason the counts are not
+   * simply zero in that window.
+   *
+   * This used to count `list`, the whole unfiltered library, which meant that
+   * with a group engaged the toolbar read "All 2 / In sync 2" above a single
+   * row. A count attached to a filter has to count what that filter will
+   * actually show, or it is not a count of anything the user can see.
+   */
+  const countBase = useMemo(() => {
+    if (activeGroupId !== null && membershipMap === null) return null;
+    const q = query.trim().toLowerCase();
+    return list.filter((r) => {
+      if (activeGroupId !== null && !membershipMap?.get(r.id)?.includes(activeGroupId)) return false;
+      if (q && !r.localName.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [list, query, activeGroupId, membershipMap]);
+
   const counts = useMemo(() => {
     const c: Record<RepoStatus, number> = {
       sync: 0,
@@ -184,9 +246,9 @@ export function ReposScreen({
       paused: 0,
       noUpstream: 0,
     };
-    for (const r of list) c[deriveStatus(r)] += 1;
+    for (const r of countBase ?? []) c[deriveStatus(r)] += 1;
     return c;
-  }, [list]);
+  }, [countBase]);
 
   // Repos in the active group (before the status / name filters narrow
   // further). `null` means "not yet known" (the membership read is still loading
@@ -198,15 +260,13 @@ export function ReposScreen({
     return list.filter((r) => membershipMap.get(r.id)?.includes(activeGroupId)).length;
   }, [list, membershipMap, activeGroupId]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return list.filter((r) => {
-      if (activeGroupId !== null && !membershipMap?.get(r.id)?.includes(activeGroupId)) return false;
-      if (chip !== "all" && deriveStatus(r) !== chip) return false;
-      if (q && !r.localName.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [list, query, chip, activeGroupId, membershipMap]);
+  // The rows are the same population as the chip counts, with the status
+  // dimension applied. Sharing `countBase` is what keeps the two from
+  // drifting: the counts cannot describe a different set than the table shows.
+  const filtered = useMemo(
+    () => (countBase ?? []).filter((r) => chip === "all" || deriveStatus(r) === chip),
+    [countBase, chip],
+  );
 
   // Columns, in the ratified order (README settled list + ui-delivery-plan.md
   // ledger B5): Repository (first, frozen, the only flexible width), Status,
@@ -294,20 +354,53 @@ export function ReposScreen({
       {
         id: "branch",
         header: "Branch",
-        width: "104px",
+        // 116px, not 104: RR6's longest label ("no commits") wrapped onto two
+        // lines inside a fixed 52px row at the old width. Caught in a
+        // screenshot, not by a test - nothing in jsdom measures text.
+        width: "116px",
         icon: GitBranch,
         cell: (r) => {
-          // `activeBranch` is `null` on three distinct conditions (its own doc
-          // comment on `RepoSummary`): never inspected, a detached HEAD, and an
-          // unborn HEAD. `isDetached` distinguishes only the detached case.
-          // Rendering "detached" (rather than the empty dash) for that one case
-          // is the honest middle ground: a repo checked out to a commit really
-          // is on no branch, which is a fact worth a word, not silence: this is
-          // color (muted ink) + icon (the column's own GitBranch glyph, which
-          // only appears when this returns non-null) + word.
+          // RR6: an empty Branch cell has three distinct causes, and this now
+          // says which. `activeBranch` is `null` for all three; `isDetached`
+          // could only ever separate one of them, so the other two - an unborn
+          // HEAD and a repo nothing has inspected - collapsed into one bare
+          // dash that explained neither.
+          //
+          // `headState` is what the last inspection OBSERVED (migration 0011).
+          // `null` there means no inspection has recorded it, which is the
+          // "never run" case, and it is why this reads `headState` rather than
+          // inferring from `headSha`: no head SHA also happens when the commit
+          // exists but cannot be read, and labelling a damaged repo "no
+          // commits" would be a confident wrong answer.
+          //
+          // Wording is jp's own, from the round-three row bench: "detached",
+          // "no commits", "never run". Each is muted ink plus the column's
+          // GitBranch glyph, which only appears when this returns non-null - so
+          // a labelled reason still reads as subordinate to a real branch name.
           if (r.activeBranch !== null) return r.activeBranch;
-          if (r.isDetached) return <span className="text-muted-foreground">detached</span>;
-          return null;
+          const reason =
+            r.headState === "detached"
+              ? "detached"
+              : r.headState === "unborn"
+                ? "no commits"
+                : r.headState === null
+                  ? // NULL is TWO facts, not one, and telling them apart needs a
+                    // second field. It means "no inspection recorded this",
+                    // which is "never run" for a repo nothing has looked at -
+                    // and ALSO what an inspection writes when it looked and
+                    // could not tell, because HEAD would not read (the Rust
+                    // side stopped calling that "unborn" in this same change).
+                    // Saying "never run" about a repo checked ten minutes ago
+                    // would just swap one confident wrong answer for another.
+                    r.lastCheckedAt === null
+                    ? "never run"
+                    : "unreadable"
+                  : // `branch` with no `activeBranch` is not a state inspect can
+                    // produce, so there is nothing honest to say about it.
+                    null;
+          return reason === null ? null : (
+            <span className="text-muted-foreground">{reason}</span>
+          );
         },
       },
       {
@@ -469,10 +562,32 @@ export function ReposScreen({
                   />
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
+                  {/* `countBase?.length` rather than a `?? 0`: an unknown
+                      population shows the chip with NO number, never a
+                      fabricated zero. */}
+                  <FilterChip
+                    label="All"
+                    count={countBase?.length}
+                    active={chip === "all"}
+                    onClick={() => setChip("all")}
+                  />
+                  {/* A chip renders when it has something to show OR when it is
+                      the SELECTED filter, even at zero (AC-17, Codex review of
+                      PRs #93-#96, finding 3).
+
+                      `counts[s] > 0` alone was safe while the counts were the
+                      whole library: a selected chip could not reach zero without
+                      the library itself emptying. Scoping the counts to the group
+                      and the search (the fix in PR #95) broke that. Select
+                      Behind, then search for an in-sync repo, and the Behind chip
+                      unmounts while `chip` stays "behind" - so the table filters
+                      to nothing and the only filter still applied is the one
+                      control no longer on screen. An empty table with a visible
+                      reason is fine; an empty table with an invisible one is the
+                      defect. */}
                   {STATUS_ORDER.map(
                     (s) =>
-                      counts[s] > 0 && (
+                      (counts[s] > 0 || chip === s) && (
                         <FilterChip
                           key={s}
                           label={STATUS_STYLE[s].label}
@@ -517,7 +632,7 @@ export function ReposScreen({
       // PR #73, finding 1).
       fill
       actions={
-        <Button size="sm" onClick={() => setAddOpen(true)}>
+        <Button size="sm" onClick={() => onAddOpenChange(true)}>
           <Plus /> Add repos
         </Button>
       }
@@ -541,7 +656,7 @@ export function ReposScreen({
               title="No repositories yet"
               description="Scan a folder or add a single path to start tracking sync status."
               action={
-                <Button onClick={() => setAddOpen(true)}>
+                <Button onClick={() => onAddOpenChange(true)}>
                   <Plus /> Add repositories
                 </Button>
               }
@@ -629,7 +744,14 @@ export function ReposScreen({
         )}
       </Drawer>
 
-      <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
+      <AddReposDialog
+        open={addOpen}
+        onClose={() => onAddOpenChange(false)}
+        onAdded={() => {
+          refetch();
+          onLibraryChanged();
+        }}
+      />
     </PageShell>
   );
 }

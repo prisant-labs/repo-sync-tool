@@ -10,7 +10,54 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ## [Unreleased]
 
+### Added
+- **The Activity list shows how long each check or update took**, in a Duration
+  column. Entries recorded before durations were tracked show a dash rather
+  than a zero.
+
+- **The sidebar tells you when something needs attention**, with a small
+  amber dot on Dashboard. It appears only when a repository is dirty or its
+  last check failed, and it respects the group you have selected: if the only
+  repository needing attention is outside that group, no dot, because the
+  Dashboard it points at would say All clear.
+- **The sidebar shows how many repositories you are tracking**, next to Repos.
+  Selected a group? It counts that group. Nothing to count yet, or not known
+  yet, shows nothing rather than a zero.
+- **An Add repositories button in the sidebar**, above Settings, reachable
+  from any screen instead of only from the Repos and Dashboard headers.
+
 ### Changed
+- **An empty Branch column now says why it is empty.** A repository can have no
+  branch name for three different reasons - it is checked out to a commit
+  rather than a branch, it has no commits yet, or RepoSync has not looked at it
+  yet - and all three used to show the same dash. They now read "detached",
+  "no commits" and "never run". Repositories added before this update show
+  "never run" until their next check.
+- **Dashboard numbers are fully scoped to the selected group.** The "checked,
+  no change" line under Under watch used to count your whole library even with
+  a group selected, and said "(all repos)" because it could not do better. It
+  counts the group now, so the caveat is gone.
+
+- **The sidebar now reads Dashboard, Repos, Activity**, and Groups sits as a
+  plain line beneath the whole list rather than indented under Repos behind a
+  vertical guide line. Groups are not a sub-part of the Repos screen, and the
+  old indent said they were.
+- **The group you have selected stays marked in the sidebar on every screen.**
+  It used to lose its highlight the moment you left Repos, even though the
+  filter itself was still applied - so the app was narrowing what you saw
+  without showing you why.
+- **The Activity list now honours the selected group.** Previously it showed
+  every repository's history regardless, which meant the sidebar could say you
+  were scoped to a group while the list in front of you was not. When nothing
+  matches, the empty message names the group and says where to clear it, since
+  that control is in the sidebar and not on the Activity screen.
+- **Filter buttons and status labels now look like one family.** The filters
+  above a list were outlined ovals while the statuses inside it were filled
+  blocks, so the same word - "Behind" as something you can filter by, "Behind"
+  as something a repository is - was drawn two different ways one line apart.
+  Filters are now filled too: plain grey until you turn one on, blue when it is
+  on.
+
 - **Every action on a repository is now in one row at the top of its detail
   panel.** They used to be split across two rows further down, inside the
   Overview tab, which meant switching back to Overview before you could open a
@@ -23,6 +70,65 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **A damaged repository could be reported as having no commits.** When RepoSync
+  could not read a repository's HEAD at all - a corrupt reference, an unreadable
+  file - it recorded that as "no commits yet", which is a confident and
+  reassuring answer to a question it had not actually answered. Its Branch column
+  now reads "unreadable", which is what it actually knows. A repository that
+  genuinely has no commits still reads "no commits", and one nothing has looked
+  at yet still reads "never run".
+- **A filter you had selected could vanish while it was still filtering.** Pick
+  Behind, then type a name that matches only an in-sync repository, and the
+  Behind button disappeared while the list stayed filtered to Behind. The result
+  was an empty table with nothing on screen explaining why. The selected filter
+  now stays visible, showing zero.
+- **The sidebar could keep counting repositories you had removed.** Adding or
+  removing a repository, or changing its groups, refreshed the screen you were
+  on but not the sidebar beside it. Removing your last repository was the worst
+  case: with nothing left to check, nothing would ever correct the count, so it
+  stayed wrong until you restarted the app.
+- **Three more places where text sat below the contrast level the project
+  requires, all measured rather than estimated.** The dash marking an empty
+  table cell and the small icons beside cell values were being faded, which put
+  the dash at 2.29:1 against 4.5:1; both are now drawn at full strength. The
+  success and failure badges on a repository's activity list were built from a
+  see-through tint that let the row's hover colour through, measuring 4.14:1
+  when hovered while passing at rest; they now use the same solid badge the rest
+  of the app uses. And the marker on the selected sidebar item fell to 2.91:1
+  against its own highlight when the blue was deepened, so it now uses the blue
+  the app reserves for text.
+- **The user guide described a keyboard shortcut that does not exist.** It said
+  you could Tab to a row in the Repos list and press Enter or Space to open that
+  repository's details. Rows stopped being focusable some time ago, on purpose,
+  because wrapping a keyboard-operable row around its own buttons made Enter
+  ambiguous. The keyboard path is the row's own buttons, including a chevron
+  labelled "Open details", and the guide now says so. Nothing about the app
+  changed here; the documentation was wrong, which for a keyboard user is worse
+  than saying nothing.
+- **Buttons in dark mode were hard to read.** The white label on RepoSync's blue
+  buttons sat below the contrast level the project requires, in every dark-mode
+  window since the theme shipped. The blue is slightly deeper now, which fixes
+  it, and the app checks this automatically from here on so it cannot come back
+  unnoticed.
+- **Filter counts on the Repos screen were counting the wrong repositories.**
+  With a group selected, the buttons above the list reported totals for your
+  whole library rather than for the group, so "All 2" could sit above a single
+  row.
+
+- **The "Failed" filter on the Activity screen was too faint to read in light
+  mode.** It used the app's general-purpose error red rather than the red the
+  status taxonomy uses for a failed check, and that shade fell below the
+  contrast level the project requires. Measured, not estimated.
+
+- **Faint text is readable again in several places, and the success badge on a
+  receipt now carries an icon.** The blue used for links, the RepoSync wordmark,
+  filter chips and the highlighted group in the sidebar was tuned to sit behind
+  white text, which made it too pale to read as text itself - worst in dark mode,
+  where it fell below the contrast level the project requires. It now uses a
+  second, darker shade wherever it appears as words rather than as a background.
+  Separately, the outcome badge on an activity receipt was showing colour alone;
+  it now shows a tick or a cross as well, so it still reads in greyscale or if you
+  cannot easily tell red from green.
 - **The folder path on the Repos list now opens the folder.** It has always shown
   an "Open in File Explorer" tooltip and done nothing when you clicked it. It is
   now a real button, it can be reached with the Tab key, and if the folder has

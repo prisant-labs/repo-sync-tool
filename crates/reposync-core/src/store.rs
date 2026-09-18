@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use sqlx::{Row, SqlitePool};
 
 use crate::error::AppError;
-use crate::git::SystemGitEngine;
+use crate::git::{HeadState, SystemGitEngine};
 use crate::ipc::{
     GroupSummary, RepoDetail, RepoFilter, RepoGroupMembership, RepoId, RepoSummary, ScanCandidate,
     ScanResult, Settings, UpdateMode, UpdatePolicy,
@@ -47,11 +47,13 @@ pub async fn repo_list(
             r.id AS id, r.local_name AS local_name, r.local_path AS local_path, \
             r.remote_origin_url AS remote_origin_url, \
             r.host_type AS host_type, r.enabled AS enabled, \
+            r.update_mode AS update_mode, \
             s.ahead_count AS ahead_count, s.behind_count AS behind_count, \
             s.is_dirty AS is_dirty, s.is_detached AS is_detached, \
             s.auto_paused AS auto_paused, s.last_checked_at AS last_checked_at, \
             s.last_error_code AS last_error_code, \
             s.active_branch AS active_branch, \
+            s.head_state AS head_state, \
             s.upstream_state AS upstream_state, \
             s.last_local_commit_at AS last_local_commit_at, \
             m.latest_release_tag AS latest_release_tag, \
@@ -110,6 +112,8 @@ pub async fn repo_list(
             open_pr_count: r.try_get("open_pr_count")?,
             last_local_commit_at: r.try_get("last_local_commit_at")?,
             active_branch: r.try_get("active_branch")?,
+            head_state: head_state_from_row(r.try_get("head_state")?),
+            update_mode: r.try_get("update_mode")?,
             upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
             stars: r.try_get("stars")?,
             forks: r.try_get("forks")?,
@@ -134,6 +138,17 @@ fn upstream_state_from_row(raw: Option<String>) -> Option<UpstreamState> {
     raw.as_deref().and_then(UpstreamState::from_db_str)
 }
 
+/// Read the persisted HEAD observation (RR6).
+///
+/// Same rule as [`upstream_state_from_row`], for the same reason: a NULL column
+/// is a row that predates migration `0011` and has not been inspected since, and
+/// an unrecognized string was written by a newer build. Neither is evidence that
+/// HEAD is on a branch, and mapping either onto `Branch` would invent the
+/// reassuring answer - the UI renders `None` as "never run".
+fn head_state_from_row(raw: Option<String>) -> Option<HeadState> {
+    raw.as_deref().and_then(HeadState::from_db_str)
+}
+
 /// Get the full detail of a single tracked repo, or [`AppError::NotFound`] if no
 /// such repo exists. Joins `repos` + `repo_local_state` + `repo_remote_meta`.
 pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppError> {
@@ -144,7 +159,7 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
             r.default_branch AS default_branch, r.update_mode AS update_mode, \
             r.check_frequency_min AS check_frequency_min, r.enabled AS enabled, \
             r.created_at AS created_at, r.notes AS notes, \
-            s.active_branch AS active_branch, s.head_sha AS head_sha, \
+            s.active_branch AS active_branch, s.head_state AS head_state, s.head_sha AS head_sha, \
             s.upstream_branch AS upstream_branch, s.upstream_state AS upstream_state, \
             s.ahead_count AS ahead_count, \
             s.behind_count AS behind_count, s.is_dirty AS is_dirty, \
@@ -201,6 +216,7 @@ pub async fn repo_get(pool: &SqlitePool, id: RepoId) -> Result<RepoDetail, AppEr
         active_branch: r.try_get("active_branch")?,
         head_sha: r.try_get("head_sha")?,
         upstream_branch: r.try_get("upstream_branch")?,
+        head_state: head_state_from_row(r.try_get("head_state")?),
         upstream_state: upstream_state_from_row(r.try_get("upstream_state")?),
         last_local_commit_at: r.try_get("last_local_commit_at")?,
         last_updated_at: r.try_get("last_updated_at")?,

@@ -1,12 +1,20 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { Activity, AlertTriangle, LayoutDashboard, List, Settings, X } from "lucide-react";
+import { Activity, AlertTriangle, LayoutDashboard, List, Plus, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { events } from "@/lib/bindings";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { GroupsNav } from "@/components/groups-nav";
-import { useDbRecoveryNotice, useGroups } from "@/hooks/queries";
+import {
+  useBackendEvents,
+  useDbRecoveryNotice,
+  useGroups,
+  useRepoGroupMemberships,
+  useRepoList,
+  useSummaryToday,
+} from "@/hooks/queries";
+import { groupScope } from "@/lib/group-scope";
 import { DashboardScreen } from "@/screens/dashboard";
 import { ReposScreen } from "@/screens/repos";
 import { ActivityScreen } from "@/screens/activity";
@@ -14,25 +22,37 @@ import { SettingsScreen } from "@/screens/settings";
 
 type View = "dashboard" | "repos" | "activity" | "settings";
 
+// Every tracked repo, unfiltered - the shell's own read, narrowed afterwards
+// by group rather than by the backend, because the sidebar needs the group
+// intersection anyway and `repo_list` has no group parameter.
+const ALL_REPOS = { enabledOnly: null, hostType: null, query: null };
+
 const VIEWS: readonly View[] = ["dashboard", "repos", "activity", "settings"];
 
 function isView(value: string): value is View {
   return (VIEWS as readonly string[]).includes(value);
 }
 
-// Ratified sidebar order (ui-delivery-plan.md ledger B1 / N5, sidebar
-// restructure and toolbar consolidation): Dashboard,
-// Activity, Repos - with Groups nested one level beneath Repos (rendered
-// separately below, not in this array) - then Settings, bottom-docked
-// (its own nav below, separated by a hairline and pushed down with
-// `mt-auto`). Split into two arrays rather than one flat NAV so the render
-// below can place Settings at the sidebar's foot without reordering `VIEWS`/
+// Sidebar order (SB6): Dashboard, Repos, Activity - then Settings,
+// bottom-docked (its own nav below, separated by a hairline and pushed down
+// with `mt-auto`). Groups renders below this list as a plain line under the
+// WHOLE nav (A1), not as a subtree of Repos.
+//
+// SB6 and A1 both REVERSE the earlier ratified N5 / ledger-B1 shape, which
+// put Activity above Repos and nested Groups one level beneath Repos behind
+// an indent and a guide rail. The reversal is recorded in
+// `_local/design/3-decisions/ui-delivery-plan.md` (H.1 for the order, F.1
+// confirmed at J.1 for the placement), which is the only file that may
+// record a decision.
+//
+// Still split into two arrays rather than one flat NAV so the render below
+// can place Settings at the sidebar's foot without reordering `VIEWS`/
 // `isView`, which the tray's `navigate:requested` handler validates against
 // and must not change shape.
 const PRIMARY_NAV: { id: View; label: string; Icon: typeof LayoutDashboard }[] = [
   { id: "dashboard", label: "Dashboard", Icon: LayoutDashboard },
-  { id: "activity", label: "Activity", Icon: Activity },
   { id: "repos", label: "Repos", Icon: List },
+  { id: "activity", label: "Activity", Icon: Activity },
 ];
 const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = {
   id: "settings",
@@ -45,7 +65,7 @@ const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = 
  * Settings entry.
  *
  * Active state (N5, corrected post-review): moved off the accent tint
- * (`bg-primary/10 text-primary`) onto the ratified neutral 1B surface ramp -
+ * (`bg-primary/10 text-primary-ink`) onto the ratified neutral 1B surface ramp -
  * `bg-sidebar-accent` is the same `0.935`/`0.269` well step `--muted` already
  * sits on. `text-foreground` on `bg-sidebar-accent` is 16.35:1 in light,
  * 14.48:1 in dark (`_generators/contrast.py`).
@@ -65,7 +85,7 @@ const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = 
  * cannot fix this; it needs a lever outside the greyscale ramp entirely.
  *
  * The fix moves SEVERAL levers on active, none of them tunable-into-collision
- * by a background alpha: a 2px LEFT ACCENT BAR in `--primary` (a hue no
+ * by a background alpha: a 2px LEFT ACCENT BAR in `--primary-ink` (a hue no
  * resting or hovered item ever carries, so it cannot converge with hover no
  * matter how the neutral ramp is tuned), the flat `bg-sidebar-accent` fill,
  * and `font-semibold`. The border is reserved (`border-l-2 border-transparent`
@@ -82,11 +102,27 @@ function NavButton({
   Icon,
   active,
   onClick,
+  badge,
+  dot,
+  dotLabel,
 }: {
   label: string;
   Icon: typeof LayoutDashboard;
   active: boolean;
   onClick: () => void;
+  /**
+   * SB4: a count rendered at the row's right edge. `null` renders NOTHING,
+   * and that distinction is the whole point - `null` means "not knowable
+   * yet", which a `0` would misreport as "none". A real zero (an empty
+   * library) also renders nothing, matching the composite, which hides the
+   * badge and the dot entirely on a fresh install: "Repos 0" beside "No
+   * repositories yet" is noise, not information.
+   */
+  badge?: number | null;
+  /** SB3: a status dot at the row's right edge. Same null-vs-false rule. */
+  dot?: boolean;
+  /** What the dot means, for anyone who cannot see a coloured circle. */
+  dotLabel?: string;
 }) {
   return (
     <button
@@ -95,12 +131,47 @@ function NavButton({
       className={cn(
         "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-sm transition-colors",
         active
-          ? "border-l-primary bg-sidebar-accent font-semibold text-foreground"
+          ? "border-l-primary-ink bg-sidebar-accent font-semibold text-foreground"
           : "font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground",
       )}
     >
       <Icon className="size-[17px]" />
-      {label}
+      <span className="flex-1 text-left">{label}</span>
+      {dot === true && (
+        <>
+          {/*
+            The dot is a shape with a meaning, so it is hidden from the
+            accessible name and the meaning is supplied as words beside it.
+            NOT `role="status"`: that declares a live region, which would make
+            a screen reader announce the dot every time a background check
+            changes it, on every screen, unprompted.
+          */}
+          <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-status-dirty" />
+          <span className="sr-only">{`, ${dotLabel}`}</span>
+        </>
+      )}
+      {badge != null && badge > 0 && (
+        <>
+          <span
+            aria-hidden
+            className={cn(
+              "shrink-0 rounded-full px-1.5 font-mono text-[10px] tabular-nums",
+              active ? "bg-background text-foreground" : "bg-muted text-muted-foreground",
+            )}
+          >
+            {badge}
+          </span>
+          {/*
+            A bare "2" in the accessible name reads as "Repos 2", which could
+            be a count, a version, or a keyboard hint. The count is real
+            information a sighted user gets, so it is not hidden - it is said
+            properly instead.
+          */}
+          <span className="sr-only">
+            {badge === 1 ? ", 1 repository" : `, ${badge} repositories`}
+          </span>
+        </>
+      )}
     </button>
   );
 }
@@ -141,6 +212,94 @@ export function AppShell() {
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
   const toast = useToast();
+
+  /**
+   * SB3 and SB4: the sidebar reports two facts about the library it is a rail
+   * for - whether anything needs attention (a dot on Dashboard) and how many
+   * repositories there are (a count on Repos).
+   *
+   * Both are SCOPED to the engaged group, and that is not a free choice. The
+   * screens they point at are already scoped, so an unscoped dot over a scoped
+   * Dashboard says "something needs you" above a screen that says "All clear",
+   * and the user cannot tell which one is lying.
+   *
+   * They are scoped by two different mechanisms, for a reason. The DOT reads
+   * `attentionCount` off a summary the BACKEND scoped (D6): `summary_today`
+   * takes the group and constrains every query in SQL. The COUNT scopes here
+   * via `lib/group-scope.ts`, because `repo_list` has no group parameter. Both
+   * point at screens fed by the same two sources, so neither can disagree with
+   * its destination.
+   *
+   * These reads duplicate Dashboard's own while Dashboard is showing. They go
+   * to local SQLite through an IPC call that is already made on every screen
+   * change, so the cost is small and the alternative - lifting Dashboard's
+   * entire scoping block into the shell and threading it back down - is a far
+   * larger change than the two indicators justify.
+   */
+  const shellRepos = useRepoList(ALL_REPOS);
+  const shellSummary = useSummaryToday(activeGroupId);
+  const shellMemberships = useRepoGroupMemberships();
+  const reposRefetch = shellRepos.refetch;
+  const summaryRefetch = shellSummary.refetch;
+  const membershipsRefetch = shellMemberships.refetch;
+  /**
+   * Re-read all three shell snapshots.
+   *
+   * Two callers, for two different reasons, and the second one is why this is
+   * named and not inline.
+   *
+   * BACKEND EVENTS. Without this the dot is a snapshot from mount: a check that
+   * turns a repo dirty in the background would leave the rail claiming All clear.
+   *
+   * LOCAL MUTATIONS, which emit no event at all (Codex review of PRs #93-#96,
+   * finding 2). `repo_add`, `repo_remove` and a group-membership toggle change
+   * what these three queries return and announce nothing, so each screen was
+   * refreshing its OWN copy and leaving the sidebar's. The worst case is not a
+   * brief lag: remove the last repository and there is nothing left to check, so
+   * no `scheduler:tick` will ever carry `checked > 0`, and the count beside Repos
+   * stays wrong until the app restarts. Every screen that mutates the library
+   * calls this.
+   */
+  const refreshShell = useCallback(() => {
+    reposRefetch();
+    summaryRefetch();
+    membershipsRefetch();
+  }, [reposRefetch, summaryRefetch, membershipsRefetch]);
+  useBackendEvents(refreshShell);
+
+  const scope = useMemo(
+    () => groupScope(activeGroupId, shellMemberships.data),
+    [activeGroupId, shellMemberships.data],
+  );
+  const repoCount = scope.countRepos(shellRepos.data);
+  // D6: the summary ARRIVES scoped now - `summary_today` takes the group and
+  // constrains its queries in SQL - so this reads the field rather than
+  // intersecting the list again. `data` is null while the read is in flight
+  // (and `clearDataOnDepsChange` makes a group change re-enter that state), so
+  // the dot is absent rather than stale during the switch.
+  const needsAttention = (shellSummary.data?.attentionCount ?? 0) > 0;
+
+  /**
+   * L4: the sidebar's add-repo button does not own the Add-repositories
+   * dialog - it asks the Repos screen to open its own.
+   *
+   * Lifting `AddReposDialog` into the shell looked simpler and is wrong:
+   * `repo_add` emits no backend event (see the `events` list in bindings.ts),
+   * so `ReposScreen` learns about a new repo only through the `onAdded`
+   * callback wired to its own refetch. A shell-owned dialog would add repos
+   * that the table behind it does not show until something else happens to
+   * refetch.
+   *
+   * The open/closed flag lives HERE rather than on the Repos screen because
+   * this button outlives that screen: `ReposScreen` unmounts on every
+   * navigation, so a flag owned there could not survive the very navigation
+   * this button performs. The screen takes it as a controlled prop.
+   */
+  const [addOpen, setAddOpen] = useState(false);
+  function requestAddRepos() {
+    setView("repos");
+    setAddOpen(true);
+  }
 
   // E-02 AC7 / BL-NI-33: the one-time database-recovery notice, read once at
   // launch. It surfaces only when the startup migration failed and the old
@@ -195,7 +354,7 @@ export function AppShell() {
             R
           </div>
           <span className="font-semibold">
-            Repo<span className="text-primary">Sync</span>
+            Repo<span className="text-primary-ink">Sync</span>
           </span>
           <span className="ml-auto font-mono text-[11px] text-muted-foreground">
             {appVersion ?? "..."}
@@ -203,25 +362,36 @@ export function AppShell() {
         </div>
         <nav className="flex flex-col gap-0.5 px-2.5 py-2">
           {PRIMARY_NAV.map(({ id, label, Icon }) => (
-            <NavButton key={id} label={label} Icon={Icon} active={view === id} onClick={() => setView(id)} />
+            <NavButton
+              key={id}
+              label={label}
+              Icon={Icon}
+              active={view === id}
+              onClick={() => setView(id)}
+              badge={id === "repos" ? repoCount : undefined}
+              dot={id === "dashboard" ? needsAttention : undefined}
+              dotLabel={
+                // Lower case: this lands mid-name, after "Dashboard, ".
+                activeGroupId === null
+                  ? "some repositories need attention"
+                  : "some repositories in this group need attention"
+              }
+            />
           ))}
         </nav>
 
         {/*
-          Groups, nested one level beneath Repos (ui-delivery-plan.md ledger
-          B1 / N5, coverage-matrix.md section 1). The indent plus the left
-          guide rail are what say "this belongs to Repos" rather than "this is
-          a second top-level nav list"; no mockup specified an exact value, so
-          this materialization is provisional and named in the PR body for
-          veto. Every shipped Groups behaviour (matrix section 2) is
-          unchanged: only this wrapper and GroupsNav's own outer spacing
-          moved, nothing inside it did.
+          Groups: a plain line under the WHOLE nav (A1, asked for again at
+          J.1 - "under the whole nav. I thought that was clarified elsewhere
+          several times"). The indent and the left guide rail that used to
+          say "this belongs to Repos" are gone, because the placement itself
+          is no longer a claim about ownership. Every shipped Groups
+          behaviour is unchanged; only this wrapper moved.
         */}
-        <div className="ml-[23px] flex min-h-0 flex-1 flex-col border-l border-border pl-2">
+        <div className="flex min-h-0 flex-1 flex-col">
           <GroupsNav
             groups={groups}
             activeGroupId={activeGroupId}
-            railActive={view === "repos"}
             onSelectGroup={selectGroup}
             onClearActiveGroup={clearActiveGroup}
             refetchGroups={groupsState.refetch}
@@ -229,11 +399,33 @@ export function AppShell() {
         </div>
 
         {/*
-          Settings, bottom-docked (N5): pushed to the sidebar's foot with
-          `mt-auto` and separated from Groups above it by a hairline, rather
-          than living in the primary nav list.
+          L4: add-repo above the hairline over Settings, icon and label LEFT
+          aligned, in a reverse-contrast colour DISTINCT from the nav
+          selection. Distinct is the requirement that shapes it: the nav's
+          active item already owns the accent (a 2px `--primary` bar), so this
+          button uses the neutral inversion instead - `bg-foreground` with
+          `text-background`, 16.35:1 light and 14.48:1 dark on the sidebar,
+          and no hue at all, so it can never be mistaken for "you are here".
+          Hover darkens the fill rather than filtering brightness, which would
+          also lighten the text.
         */}
-        <nav className="mt-auto border-t border-border px-2.5 py-2">
+        <div className="mt-auto px-2.5 pb-2">
+          <button
+            type="button"
+            onClick={requestAddRepos}
+            className="flex w-full items-center gap-3 rounded-md bg-foreground px-2.5 py-2 text-left text-sm font-semibold text-background transition-colors hover:bg-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <Plus className="size-[17px] shrink-0" />
+            Add repositories
+          </button>
+        </div>
+
+        {/*
+          Settings, bottom-docked (SB5): separated from what is above it by a
+          hairline, rather than living in the primary nav list. `mt-auto` moved
+          up to the add-repo block, which is now the first thing in the foot.
+        */}
+        <nav className="border-t border-border px-2.5 py-2">
           <NavButton
             label={SETTINGS_NAV.label}
             Icon={SETTINGS_NAV.Icon}
@@ -318,6 +510,7 @@ export function AppShell() {
               onOpenRepos={() => setView("repos")}
               activeGroupId={activeGroupId}
               groups={groups}
+              onLibraryChanged={refreshShell}
             />
           )}
           {view === "repos" && (
@@ -326,9 +519,12 @@ export function AppShell() {
               groups={groups}
               onClearGroup={clearActiveGroup}
               onGroupsChanged={groupsState.refetch}
+              addOpen={addOpen}
+              onAddOpenChange={setAddOpen}
+              onLibraryChanged={refreshShell}
             />
           )}
-          {view === "activity" && <ActivityScreen />}
+          {view === "activity" && <ActivityScreen activeGroupId={activeGroupId} />}
           {view === "settings" && <SettingsScreen dark={dark} onToggleTheme={toggle} />}
         </div>
       </main>

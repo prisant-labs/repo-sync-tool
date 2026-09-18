@@ -3,6 +3,7 @@ import type { ActivityRecord } from "@/lib/bindings";
 import {
   ACTIVITY_FETCH_LIMIT,
   ACTIVITY_PAGE_LIMIT,
+  formatDuration,
   formatReceipt,
   paginate,
   toActivityFilter,
@@ -120,9 +121,43 @@ describe("formatReceipt", () => {
   });
 });
 
+describe("formatDuration", () => {
+  it("keeps sub-second work in milliseconds, the resolution a git operation is judged at", () => {
+    expect(formatDuration(0)).toBe("0 ms");
+    expect(formatDuration(412)).toBe("412 ms");
+    expect(formatDuration(999)).toBe("999 ms");
+  });
+
+  it("switches to one decimal of seconds once the extra digits are noise", () => {
+    expect(formatDuration(1000)).toBe("1.0 s");
+    expect(formatDuration(1240)).toBe("1.2 s");
+    expect(formatDuration(59_940)).toBe("59.9 s");
+  });
+
+  it("switches to minutes and zero-padded seconds past a minute", () => {
+    expect(formatDuration(60_000)).toBe("1m 00s");
+    expect(formatDuration(63_000)).toBe("1m 03s");
+    expect(formatDuration(3_600_000)).toBe("60m 00s");
+  });
+
+  it("carries rather than printing 60 seconds", () => {
+    // 119_600 ms rounds to 60 seconds inside minute 1, which would render
+    // "1m 60s" - a value no clock shows and that reads as a bug.
+    expect(formatDuration(119_600)).toBe("2m 00s");
+  });
+
+  it("returns null for an absent duration, never a zero", () => {
+    // A row written before durations were recorded, or an operation that
+    // never completed, has no duration. "0 ms" is a different claim: it says
+    // the work took no time. The table renders null as its muted dash.
+    expect(formatDuration(null)).toBeNull();
+  });
+});
+
 /**
- * `toActivityFilter` maps two chip selections onto the wire filter, and the one
- * rule that matters is that "all" becomes `null` rather than the string "all".
+ * `toActivityFilter` maps the two chip selections plus the shell's engaged
+ * group onto the wire filter, and the one rule that matters is that "all"
+ * becomes `null` rather than the string "all".
  *
  * The backend treats a null field as "no constraint" and applies a literal
  * equality comparison otherwise. Sending "all" would therefore ask for rows
@@ -133,7 +168,7 @@ describe("formatReceipt", () => {
  */
 describe("toActivityFilter", () => {
   it("maps the unfiltered selection to all-null, not to the string 'all'", () => {
-    expect(toActivityFilter("all", "all")).toEqual({
+    expect(toActivityFilter("all", "all", null)).toEqual({
       repoId: null,
       groupId: null,
       actionType: null,
@@ -143,7 +178,7 @@ describe("toActivityFilter", () => {
   });
 
   it("passes a concrete action type through and leaves status unconstrained", () => {
-    expect(toActivityFilter("update", "all")).toEqual({
+    expect(toActivityFilter("update", "all", null)).toEqual({
       repoId: null,
       groupId: null,
       actionType: "update",
@@ -153,7 +188,7 @@ describe("toActivityFilter", () => {
   });
 
   it("passes a concrete status through and leaves action type unconstrained", () => {
-    expect(toActivityFilter("all", "failed")).toEqual({
+    expect(toActivityFilter("all", "failed", null)).toEqual({
       repoId: null,
       groupId: null,
       actionType: null,
@@ -163,7 +198,7 @@ describe("toActivityFilter", () => {
   });
 
   it("combines both axes independently", () => {
-    expect(toActivityFilter("check", "success")).toEqual({
+    expect(toActivityFilter("check", "success", null)).toEqual({
       repoId: null,
       groupId: null,
       actionType: "check",
@@ -172,27 +207,54 @@ describe("toActivityFilter", () => {
     });
   });
 
+  // A2: the sidebar marks the engaged group on the Activity screen too, so
+  // the screen has to actually honour it - a mark over an unfiltered list is
+  // the same class of lie as a count derived from a capped page. The backend
+  // resolves membership server-side, before its own LIMIT (BL-NI-93, closed),
+  // so the scope goes on the wire rather than narrowing the fetched page.
+  it("carries the engaged group onto the wire, alongside the two chip axes", () => {
+    expect(toActivityFilter("all", "all", 7)).toEqual({
+      repoId: null,
+      groupId: 7,
+      actionType: null,
+      status: null,
+      limit: ACTIVITY_FETCH_LIMIT,
+    });
+  });
+
+  it("leaves the group unconstrained when no group is engaged", () => {
+    expect(toActivityFilter("check", "failed", null).groupId).toBeNull();
+  });
+
   it("requests one MORE row than it displays, so truncation is knowable", () => {
     // The core's own default is 200 and its ceiling is 1000, so an explicit limit
     // is always sent rather than letting the backend default apply silently. The
     // +1 is the sentinel: a response capped at N cannot distinguish "exactly N
     // matches" from "far more than N", so the screen asks for N+1 and treats the
     // extra row's arrival as the evidence that older entries exist.
-    expect(toActivityFilter("all", "all").limit).toBe(ACTIVITY_FETCH_LIMIT);
+    expect(toActivityFilter("all", "all", null).limit).toBe(ACTIVITY_FETCH_LIMIT);
     expect(ACTIVITY_FETCH_LIMIT).toBe(ACTIVITY_PAGE_LIMIT + 1);
     expect(ACTIVITY_PAGE_LIMIT).toBeGreaterThan(0);
   });
 
-  it("never scopes to a repo or a group, since no control sets either yet", () => {
-    // Guards against a future edit wiring repoId/groupId here without also
-    // adding the control and the label that say the view is scoped. A silently
-    // repo- or group-scoped audit trail is worse than an unscoped one - the
-    // same bug class BL-NI-93's own backend fix exists to make honest, not
-    // reintroduce on the frontend side.
+  it("never invents a scope: repoId stays null, and groupId is only ever what the caller passed", () => {
+    // The original guard here said "never scopes to a repo OR a group, since
+    // no control sets either yet". Half of that expired: A2 gave the group a
+    // control (the sidebar's engaged group, marked on this screen too) and a
+    // label (the empty state names it), so a group scope is now visible
+    // rather than silent, which is the property that guard existed to
+    // protect. The repo half has neither and still holds.
+    //
+    // What replaces it is the same protection restated: this function may
+    // pass a scope through, never originate one. A silently scoped audit
+    // trail is worse than an unscoped one - the bug class BL-NI-93's backend
+    // fix exists to make honest, not to reintroduce on the frontend side.
     for (const a of ["all", "check", "update"] as const) {
       for (const s of ["all", "success", "failed"] as const) {
-        expect(toActivityFilter(a, s).repoId).toBeNull();
-        expect(toActivityFilter(a, s).groupId).toBeNull();
+        expect(toActivityFilter(a, s, null).repoId).toBeNull();
+        expect(toActivityFilter(a, s, 4).repoId).toBeNull();
+        expect(toActivityFilter(a, s, null).groupId).toBeNull();
+        expect(toActivityFilter(a, s, 4).groupId).toBe(4);
       }
     }
   });

@@ -17,9 +17,25 @@ export function useRepoDetail(id: number | null) {
   return useAsync(() => (id === null ? Promise.resolve(null) : unwrap(commands.repoGet(id))), [id]);
 }
 
-/** Today's daily summary (local-day roll-up). */
-export function useSummaryToday() {
-  return useAsync(() => unwrap(commands.summaryToday()), []);
+/**
+ * Today's daily summary (local-day roll-up), scoped to `groupId` when one is
+ * engaged (D6).
+ *
+ * The scoping is done in SQL rather than by intersecting the result here. That
+ * matters for one number specifically: `noChangeCount` is a bare integer with
+ * no repo-id list attached, so a client-side intersection can scope every field
+ * EXCEPT that one - which is why the Dashboard's "Under watch" hint used to
+ * carry an "(all repos)" caveat. There is nothing left to caveat.
+ *
+ * `clearDataOnDepsChange` for the same reason `useActivity` has it: the dep IS
+ * the scope, so holding the previous result across a group change renders the
+ * old group's numbers under the new group's name. A blank for a beat claims
+ * nothing; a stale number claims something false.
+ */
+export function useSummaryToday(groupId: number | null) {
+  return useAsync(() => unwrap(commands.summaryToday(groupId)), [groupId], {
+    clearDataOnDepsChange: true,
+  });
 }
 
 /**

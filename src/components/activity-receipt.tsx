@@ -1,4 +1,4 @@
-import { ClipboardCopy, X } from "lucide-react";
+import { CheckCircle2, ClipboardCopy, X, XCircle } from "lucide-react";
 import type { ActivityRecord } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
@@ -188,16 +188,34 @@ function Fact({
   );
 }
 
-/** The activity row's own `status` string, which is not the repo status taxonomy. */
+/**
+ * The activity row's own `status` string, which is not the repo status taxonomy.
+ *
+ * Kept identical to `screens/activity.tsx`'s `OutcomeChip`, deliberately: the two
+ * render the same value and had drifted apart on both of the things that make this
+ * chip legible.
+ *
+ * The tint is /10, not /15. `activity.tsx` measured /15 at 4.40:1 in light mode
+ * against its own background - under the 4.5:1 AA floor DESIGN.md requires of small
+ * text - and /10 at 4.60:1 (failed 5.34:1). This copy still carried /15 and so
+ * shipped below the floor.
+ *
+ * The icon is the third channel. DESIGN.md requires colour PLUS icon PLUS word, and
+ * the pill's shape is identical in both states, so it carries no information. Without
+ * the differing glyph this chip is unreadable in grayscale and to a red-green
+ * colourblind reader.
+ */
 function StatusChip({ status }: { status: string }) {
   const bad = status === "failed" || status === "error";
+  const Icon = bad ? XCircle : CheckCircle2;
   return (
     <span
       className={cn(
-        "inline-flex w-fit rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
-        bad ? "bg-status-failed/15 text-status-failed" : "bg-status-sync/15 text-status-sync",
+        "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
+        bad ? "bg-status-failed/10 text-status-failed" : "bg-status-sync/10 text-status-sync",
       )}
     >
+      <Icon aria-hidden className="size-3" />
       {status}
     </span>
   );

@@ -11,6 +11,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-ink: var(--primary-ink);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -201,6 +202,14 @@
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
   --primary: oklch(0.52 0.19 264); /* Graphite accent blue */
+  /* The accent as TEXT, not as a fill. `--primary` is tuned to carry white on top
+     of it, so it is too light to read AS text on our own surfaces: measured with
+     _generators/contrast.py it is 4.27:1 on the sidebar's bg-primary/10 wash and
+     4.44:1 on the bare dark sidebar, both under the 4.5:1 AA floor DESIGN.md
+     requires. Same hue and chroma, darker in light mode and lighter in dark, so
+     nothing about the treatment changes - only the ink clears the floor. This is
+     the same tint/ink split the --status-* pairs below already use. */
+  --primary-ink: oklch(0.48 0.19 264);
   --primary-foreground: oklch(0.985 0 0);
   /* These three remain one value under three names, which is its own defect
      (a "secondary button" and a "muted well" cannot both be tuned while they
@@ -291,7 +300,29 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.6 0.16 264); /* Graphite accent blue (dark) */
+  /* Graphite accent blue (dark). 0.54, not the 0.6 that shipped: white text
+     on the 0.6 fill measures 3.87:1, under the 4.5:1 floor, so every primary
+     button in dark mode shipped failing. Found by the contrast gate in
+     `lib/contrast.test.ts` on its first run - the same defect shape as D-1,
+     D-14 and D-17, and the fourth of them.
+     0.54 puts white at 4.98:1, deliberately past 4.5 rather than at it, so a
+     later nudge does not silently re-break it. It also brings dark into line
+     with light, which was already 5.49:1 - the dark accent was the outlier,
+     not the rule. Everything downstream improves or is unaffected: the /10
+     group tint and /15 chip tint get marginally darker, which RAISES
+     `--primary-ink`'s contrast on them.
+
+     ONE THING DOWNSTREAM DID NOT SURVIVE, and the first version of this note
+     asserted it had. The 2px nav bar was measured against the SIDEBAR, where
+     it still clears the 3:1 non-text floor at 3.45:1 - but an ACTIVE nav item
+     is the only time that bar is drawn, and an active item's fill is
+     `--sidebar-accent`, not the sidebar. Against the surface it actually sits
+     on, the deeper accent took it from 3.74:1 to 2.91:1, under the floor.
+     Found by the Codex review of PRs #93-#96; the bar now uses
+     `--primary-ink`, and BOTH of its neighbours are in the contrast gate so
+     the easier one can no longer be the only one checked. */
+  --primary: oklch(0.54 0.16 264);
+  --primary-ink: oklch(0.66 0.16 264);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
