@@ -12,8 +12,8 @@ linked-plan: null
 linked-strategy-brief: null
 linked-release: null
 depends_on: [E-06, E-09, E-10, E-11, E-16, E-17]
-ac-count: 16
-source-count: 10
+ac-count: 17
+source-count: 11
 source: No tracked spec has ever owned this screen. Written from the user guide (the only tracked description of the intended behaviour), DESIGN.md, the shipped code, and the design decision register at `_local/design/3-decisions/ui-delivery-plan.md`.
 ---
 
@@ -71,7 +71,7 @@ The criteria below are written from four kinds of source, and each one says whic
    the decision id and its handle rather than relying on the reader opening it.
 
 Rejected alternative: **splitting this into several smaller specs** (one for the table, one for
-filtering, one for the row actions). Sixteen criteria is above the usual comfortable ceiling for one
+filtering, one for the row actions). Seventeen criteria is above the usual comfortable ceiling for one
 spec, and the split was considered. It was rejected because the Repos screen is a single surface with
 a single set of interacting behaviours: the filters, the counts, the group scope and the columns are
 not separable without each spec having to restate the others. The nineteen sibling specs are each one
@@ -198,6 +198,13 @@ effort covering one coherent thing, and this is one coherent thing.
   belongs to the sync-model slice rather than to this screen. Source: session log 2026-09-18
   (outstanding issues). [S5]
 
+- [ ] **AC-17: A status filter that is selected stays visible even when it matches nothing.** A chip
+  renders when its count is above zero OR when it is the selected filter, so a filter that is still
+  narrowing the table can never be invisible. Without this, selecting Behind and then searching for
+  an in-sync repository leaves an empty table beside chips reading All 1 and In sync 1, with nothing
+  on screen explaining why no rows are shown. Source: the Codex adversarial review of PRs #93 to #96,
+  finding 3, 2026-09-18. [S11]
+
 ## Dependencies
 
 - **Upstream:** E-06 (the IPC contract that defines `RepoSummary`, which is what a row renders),
@@ -240,7 +247,7 @@ not contain.
 3. **The group control's shape in the toolbar** (P7.4, and conflict 5). After decision C1 gave the
    filter chips a filled language, the group control is the only outlined round pill sitting beside
    filled chips. Neither the seam nor its resolution is settled.
-4. **Whether sixteen criteria in one spec is the right unit.** The usual guidance is to split above
+4. **Whether seventeen criteria in one spec is the right unit.** The usual guidance is to split above
    ten. It was kept as one because the Repos screen's filters, counts, scope and columns cannot be
    specified independently of each other without restating each other. If the maintainer disagrees,
    the natural split is the table and its columns in one spec, and filtering and scoping in another.
@@ -259,6 +266,7 @@ not contain.
 | S8 | `docs/internal/release-plans/README.md` (the effort folder and promote flow) | A (tracked) | The placement of this spec |
 | S9 | `src/screens/repos.tsx` (column definitions at 314 to 487; the row keyboard decision at 433 to 444 and 668 to 686; `countBase` at 216 to 255) | A (shipped code) | AC-7, AC-13, AC-14 |
 | S10 | The Codex adversarial review of PR #73, finding 2 (the nested keyboard row) | B (a review record, cited in a code comment rather than read directly) | AC-14 |
+| S11 | The Codex adversarial review of PRs #93 to #96, 2026-09-18, saved at `_local/codex/2026-09-18_adversarial-review_prs-93-96.md` | A (a review record, read directly, and its finding verified against the code) | AC-17 |
 
 ## Revisions
 
