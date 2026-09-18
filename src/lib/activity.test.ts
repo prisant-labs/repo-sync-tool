@@ -3,6 +3,7 @@ import type { ActivityRecord } from "@/lib/bindings";
 import {
   ACTIVITY_FETCH_LIMIT,
   ACTIVITY_PAGE_LIMIT,
+  formatDuration,
   formatReceipt,
   paginate,
   toActivityFilter,
@@ -117,6 +118,39 @@ describe("formatReceipt", () => {
   it("keeps a zero exit code rather than treating it as absent", () => {
     expect(formatReceipt(record({ exitCode: 0 }), "r")).toContain("exit: 0");
     expect(formatReceipt(record({ durationMs: 0 }), "r")).toContain("duration: 0 ms");
+  });
+});
+
+describe("formatDuration", () => {
+  it("keeps sub-second work in milliseconds, the resolution a git operation is judged at", () => {
+    expect(formatDuration(0)).toBe("0 ms");
+    expect(formatDuration(412)).toBe("412 ms");
+    expect(formatDuration(999)).toBe("999 ms");
+  });
+
+  it("switches to one decimal of seconds once the extra digits are noise", () => {
+    expect(formatDuration(1000)).toBe("1.0 s");
+    expect(formatDuration(1240)).toBe("1.2 s");
+    expect(formatDuration(59_940)).toBe("59.9 s");
+  });
+
+  it("switches to minutes and zero-padded seconds past a minute", () => {
+    expect(formatDuration(60_000)).toBe("1m 00s");
+    expect(formatDuration(63_000)).toBe("1m 03s");
+    expect(formatDuration(3_600_000)).toBe("60m 00s");
+  });
+
+  it("carries rather than printing 60 seconds", () => {
+    // 119_600 ms rounds to 60 seconds inside minute 1, which would render
+    // "1m 60s" - a value no clock shows and that reads as a bug.
+    expect(formatDuration(119_600)).toBe("2m 00s");
+  });
+
+  it("returns null for an absent duration, never a zero", () => {
+    // A row written before durations were recorded, or an operation that
+    // never completed, has no duration. "0 ms" is a different claim: it says
+    // the work took no time. The table renders null as its muted dash.
+    expect(formatDuration(null)).toBeNull();
   });
 });
 

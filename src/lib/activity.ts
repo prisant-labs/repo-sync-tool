@@ -125,6 +125,30 @@ export function toActivityFilter(
 }
 
 /**
+ * How long an operation took, in the shortest form that stays honest.
+ *
+ * `null` in, `null` out: a record with no duration renders the table's own
+ * muted dash rather than a fabricated "0 ms". That distinction is the whole
+ * reason this is not `${ms} ms` inline - a row written before durations were
+ * recorded, or one for an operation that never completed, has no duration,
+ * and zero is a different claim.
+ *
+ * Sub-second stays in milliseconds because that is the resolution a git
+ * operation is actually judged at; past a second the extra digits are noise,
+ * so one decimal; past a minute the minutes are what matter. Fixed decimals
+ * rather than significant figures so a COLUMN of these stays aligned.
+ */
+export function formatDuration(ms: number | null): string | null {
+  if (ms === null) return null;
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  // 119_600 ms is 1m 60s by naive rounding, which reads as a bug. Carry it.
+  return seconds === 60 ? `${minutes + 1}m 00s` : `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+/**
  * Split a fetched page into what to render and whether anything was cut off.
  *
  * Pure, so the boundary cases that a rendered list makes awkward to check

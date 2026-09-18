@@ -13,7 +13,17 @@ export default tseslint.config(
     // Tauri codegen assets (non-source `.js` files) that must never be linted.
     // Without this, `eslint .` fails on any machine that has built the Rust side
     // (CI passes only because it lints a fresh checkout with no `target/` yet).
-    ignores: ["dist", "src-tauri", "target"],
+    // `_local` is the gitignored design tree: benches, generators and
+    // prototypes, none of it shipped and none of it written to this config's
+    // rules. Without it here `pnpm lint` fails repo-wide for anyone who has
+    // that tree on disk, dying on a bench script with `return` outside a
+    // function - a failure that says nothing about `src/` and that CI never
+    // sees, because `_local` is not committed.
+    // Both spellings on purpose. Windows resolves the directory
+    // case-insensitively but eslint's ignore matching is case-SENSITIVE, and
+    // `.gitignore` line 28 spells it `_LOCAL/` while the working tree spells
+    // it `_local` - so a single entry silently misses on one of them.
+    ignores: ["dist", "src-tauri", "target", "_local", "_LOCAL"],
   },
   {
     files: ["**/*.{ts,tsx}"],

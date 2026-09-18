@@ -11,6 +11,10 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Added
+- **The Activity list shows how long each check or update took**, in a Duration
+  column. Entries recorded before durations were tracked show a dash rather
+  than a zero.
+
 - **The sidebar tells you when something needs attention**, with a small
   amber dot on Dashboard. It appears only when a repository is dirty or its
   last check failed, and it respects the group you have selected: if the only
@@ -55,6 +59,16 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **Buttons in dark mode were hard to read.** The white label on RepoSync's blue
+  buttons sat below the contrast level the project requires, in every dark-mode
+  window since the theme shipped. The blue is slightly deeper now, which fixes
+  it, and the app checks this automatically from here on so it cannot come back
+  unnoticed.
+- **Filter counts on the Repos screen were counting the wrong repositories.**
+  With a group selected, the buttons above the list reported totals for your
+  whole library rather than for the group, so "All 2" could sit above a single
+  row.
+
 - **The "Failed" filter on the Activity screen was too faint to read in light
   mode.** It used the app's general-purpose error red rather than the red the
   status taxonomy uses for a failed check, and that shade fell below the
