@@ -1,0 +1,42 @@
+-- 0011_head_state.sql - persist what HEAD actually is, so an empty Branch cell
+-- can say WHICH kind of empty it is (RR6).
+--
+-- `repo_local_state.active_branch` is NULL for three genuinely different
+-- reasons: a detached HEAD, an unborn HEAD (a repository with no commits yet),
+-- and a repo nothing has inspected. `is_detached` separates the first. The other
+-- two were indistinguishable, because both leave `active_branch`, `head_sha` and
+-- `last_local_commit_at` all NULL - so the Repos table collapsed them into one
+-- bare dash and could not honestly label either.
+--
+-- WHY A COLUMN RATHER THAN A DERIVATION. The cheaper fix was to read
+-- `head_sha IS NULL AND NOT is_detached` as "unborn". That is lossy, and in the
+-- direction that matters: `git/inspect.rs` yields no `head_sha` when the commit
+-- exists but cannot be READ (`peel_to_commit` fails), which is a repository
+-- fault, not a repository with no commits. The derivation would label a damaged
+-- object store as "no commits" - a confident, wrong, and reassuring answer, the
+-- same shape of defect BL-NI-77 was filed about. `git2` knows which case it is at
+-- the moment it looks; nothing downstream can recover it. So it is recorded where
+-- it is observed.
+--
+-- NULLABLE, WITH NO DEFAULT, ON PURPOSE. Backfilling any of the three values
+-- would assert an observation no inspection made. NULL means "not observed since
+-- this column existed" - a fourth fact, genuinely different from the three real
+-- states, which is exactly what the UI needs to render "never run" rather than
+-- guessing. It resolves itself the first time each repo is inspected or checked.
+-- Consumers must treat NULL as unknown and must not infer `branch` from it.
+--
+-- `is_detached` STAYS. This is additive-only, and the two are written from one
+-- inspection inside one statement, so they cannot drift. `head_state` is the
+-- authority going forward; `is_detached` remains for every existing reader.
+--
+-- Values are the `HeadState::as_db_str` strings: 'branch', 'detached', 'unborn'.
+-- Stable in the same sense as `upstream_state`'s: a contract with rows already
+-- written on users' machines and with a frontend that branches on them.
+--
+-- repo_local_state has no inbound foreign keys, so a plain ALTER TABLE ADD COLUMN
+-- is safe and needs no table rebuild.
+--
+-- Migration discipline (see migrations/README.md): additive-only. 0001-0010 are
+-- FROZEN; this is the only new file.
+
+ALTER TABLE repo_local_state ADD COLUMN head_state TEXT;

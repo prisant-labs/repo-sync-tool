@@ -381,7 +381,34 @@ pub struct RepoSummary {
     ///
     /// A fully, successfully inspected repo can therefore honestly report
     /// `None` here; it is never a fabricated "no branch."
+    ///
+    /// Which of the three it is, is answered by the sibling
+    /// [`RepoSummary::head_state`] (RR6) - added after this doc first noted
+    /// that unborn and never-inspected were indistinguishable.
     pub active_branch: Option<String>,
+    /// What HEAD is, as the last inspection observed it (RR6): a branch, a
+    /// detached HEAD, or unborn. This is what lets an empty Branch cell say
+    /// WHICH kind of empty it is instead of rendering one bare dash for three
+    /// different facts.
+    ///
+    /// `None` means NOT OBSERVED - no inspection has recorded it since
+    /// migration `0011` added the column. Like
+    /// [`RepoSummary::upstream_state`], consumers must render that as unknown
+    /// ("never run") and must not infer `Branch` from it. It resolves itself
+    /// the first time the repo is checked.
+    pub head_state: Option<crate::git::HeadState>,
+    /// How this repo updates (`repos.update_mode`). Mirrors
+    /// [`RepoDetail::update_mode`] exactly: same column, same non-nullable
+    /// read, same `String` rather than the [`UpdateMode`] enum, so list and
+    /// detail can never disagree.
+    ///
+    /// On the bulk list read because the ratified sync model (J.4) labels a
+    /// repo's apply button with its OWN configured mode and hides the button
+    /// entirely for `check_only` / `fetch_only`. A table cannot do that from
+    /// the detail read, and the drawer currently hardcodes `pull_ff_only`
+    /// regardless of configuration, which this field is the prerequisite for
+    /// fixing.
+    pub update_mode: String,
     /// The upstream relationship as the policy engine last classified it
     /// (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync
     /// from one whose upstream was deleted and therefore cannot sync at all.
@@ -447,6 +474,10 @@ pub struct RepoDetail {
     pub active_branch: Option<String>,
     pub head_sha: Option<String>,
     pub upstream_branch: Option<String>,
+    /// See [`RepoSummary::head_state`]. Repeated here for the same reason
+    /// every other summary field is: the detail view must never disagree with
+    /// the list view about the same repo.
+    pub head_state: Option<crate::git::HeadState>,
     /// See [`RepoSummary::upstream_state`]. Repeated here because the detail
     /// drawer derives its own status badge from this type, so omitting it would
     /// leave the drawer saying "In sync" about a repo the list already knows
@@ -856,6 +887,8 @@ mod tests {
             // Deliberately the Deleted variant rather than Tracking: the round-trip
             // has to prove a non-default variant survives, and Deleted is the one
             // the UI branches on (BL-NI-77).
+            head_state: Some(crate::git::HeadState::Branch),
+            update_mode: "pull_ff_only".into(),
             upstream_state: Some(crate::policy::UpstreamState::Deleted),
             stars: Some(42),
             forks: Some(7),
@@ -889,6 +922,7 @@ mod tests {
             active_branch: Some("main".into()),
             head_sha: Some("abc123".into()),
             upstream_branch: Some("origin/main".into()),
+            head_state: Some(crate::git::HeadState::Branch),
             upstream_state: Some(crate::policy::UpstreamState::Tracking),
             last_local_commit_at: Some(1_699_500_000),
             last_updated_at: Some(1_700_000_000),

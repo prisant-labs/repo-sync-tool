@@ -46,6 +46,8 @@ function repo(overrides: Partial<RepoSummary> = {}): RepoSummary {
     lastLocalCommitAt: null,
     activeBranch: "main",
     upstreamState: "tracking",
+    headState: "branch",
+    updateMode: "pull_ff_only",
     stars: null,
     forks: null,
     license: null,
@@ -98,6 +100,7 @@ const MINIMAL_DETAIL: RepoDetail = {
   headSha: "abcdef1234567890",
   upstreamBranch: "origin/main",
   upstreamState: null,
+  headState: "branch",
   lastLocalCommitAt: null,
   lastUpdatedAt: null,
   lastAttemptedAt: null,
@@ -148,10 +151,17 @@ function renderScreen(
     membershipsPending?: boolean;
     onOpenRepos?: () => void;
     groups?: GroupSummary[];
+    /** What the backend returns when a group IS engaged (D6). */
+    scopedSummary?: DailySummary;
   } = {},
 ) {
   mockCommand(commands, "repoList", async () => ok(repos));
-  mockCommand(commands, "summaryToday", async () => ok(dailySummary));
+  // D6: `summary_today` takes the group and scopes IN SQL, so the mock has to
+  // scope too. A mock that ignores `groupId` and returns the same rows for
+  // every group would let a screen that dropped its own scoping still pass.
+  mockCommand(commands, "summaryToday", async (groupId) =>
+    ok(options.scopedSummary && groupId !== null ? options.scopedSummary : dailySummary),
+  );
   if (options.membershipsPending) {
     mockCommand(commands, "repoGroupMemberships", () => new Promise(() => {}));
   } else {
@@ -241,12 +251,12 @@ describe("Dashboard tiles", () => {
 });
 
 describe("Dashboard group scoping", () => {
-  it("scopes Under watch, Need attention, Updated today and New releases to the active group, and marks the unscopable in-sync hint explicitly", async () => {
+  it("scopes every tile to the active group, with no caveat left on the in-sync hint (D6)", async () => {
     const repos = [
       repo({ id: 1, localName: "in-group", isDirty: true }),
       repo({ id: 2, localName: "out-of-group", lastErrorCode: "git.auth_failed" }),
     ];
-    const dailySummary = summary({
+    const unscoped = summary({
       attentionCount: 2,
       noChangeCount: 40,
       attention: [
@@ -254,19 +264,30 @@ describe("Dashboard group scoping", () => {
         summaryItem({ repoId: 2, localName: "out-of-group", detail: "git.auth_failed" }),
       ],
     });
-    renderScreen(repos, dailySummary, [{ repoId: 1, groupIds: [1] }], { activeGroupId: 1 });
+    // What the backend returns for group 1: `noChangeCount` scoped too, which
+    // is the number a client-side intersection could never reach.
+    const scoped = summary({
+      attentionCount: 1,
+      noChangeCount: 7,
+      attention: [summaryItem({ repoId: 1, localName: "in-group", detail: "uncommitted changes" })],
+    });
+    renderScreen(repos, unscoped, [{ repoId: 1, groupIds: [1] }], {
+      activeGroupId: 1,
+      scopedSummary: scoped,
+    });
 
     await screen.findByText("Scoped to Work");
-    // Under watch: only repo 1 is a member of group 1.
+    // Under watch counts REPOS, so it is still scoped on this side -
+    // `repo_list` has no group parameter.
     const underWatchTile = screen.getByRole("button", { name: /Under watch/ });
     expect(within(underWatchTile).getByText("1")).toBeDefined();
-    // The no-change hint cannot be scoped (no per-repo id list backs
-    // noChangeCount) and says so rather than silently sitting under a
-    // scoped headline.
-    expect(within(underWatchTile).getByText("40 checked, no change (all repos)")).toBeDefined();
+    // D6: the hint used to read "(all repos)" because `noChangeCount` could
+    // not be scoped. It can now, so the qualifier is gone - and its absence is
+    // the assertion, because leaving it would make a true number read false.
+    expect(within(underWatchTile).getByText("7 checked, no change")).toBeDefined();
+    expect(within(underWatchTile).queryByText(/all repos/)).toBeNull();
 
-    // Need attention scopes its count AND its list together (same filter,
-    // one source): only "in-group" qualifies, "out-of-group" is excluded.
+    // The attention list arrives scoped rather than being filtered here.
     expect(screen.getByText("in-group")).toBeDefined();
     expect(screen.queryByText("out-of-group")).toBeNull();
   });
@@ -335,7 +356,7 @@ describe("Dashboard group scoping", () => {
     // The count is STILL correctly scoped: 1, not 2 - proving this is a
     // labeling gap, not a filtering one.
     expect(within(underWatchTile).getByText("1")).toBeDefined();
-    expect(within(underWatchTile).getByText("9 checked, no change (all repos)")).toBeDefined();
+    expect(within(underWatchTile).getByText("9 checked, no change")).toBeDefined();
     expect(screen.getByText("No dirty or failed repositories in this group.")).toBeDefined();
   });
 });

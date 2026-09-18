@@ -134,7 +134,7 @@ export const commands = {
 	 *  local-day window ([`crate::localtime::local_day_window`]) because reposync-core is
 	 *  timezone-free, then the core aggregates the day's activity + state read-only.
 	 */
-	summaryToday: () => typedError<DailySummary, AppErrorPayload>(__TAURI_INVOKE("summary_today")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
+	summaryToday: (groupId: number | null) => typedError<DailySummary, AppErrorPayload>(__TAURI_INVOKE("summary_today", { groupId })).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Get the current week's summary (V1.1 stub). */
 	summaryWeek: () => typedError<WeeklySummary, AppErrorPayload>(__TAURI_INVOKE("summary_week")).then((v) => ((v.status === "error" ? { ...v, error: ({...v.error,context:v.error.context==null?v.error.context:v.error.context}) } : v) as typeof v)),
 	/**  Read the settings singleton. */
@@ -674,6 +674,33 @@ export type GroupSummary = {
 };
 
 /**
+ *  What HEAD actually is, as one inspection observed it (RR6).
+ * 
+ *  `active_branch` is `None` for three genuinely different reasons and the
+ *  frontend needs to say which: a detached HEAD, an unborn HEAD (a repo with no
+ *  commits yet), or a repo nothing has inspected. `is_detached` separates the
+ *  first; the other two were indistinguishable, because both leave
+ *  `active_branch`, `head_sha` and `last_local_commit_at` all NULL.
+ * 
+ *  Deriving this in the store from `head_sha.is_none() && !is_detached` would
+ *  be lossy: `inspect` also yields no `head_sha` when the commit exists but
+ *  cannot be READ, which is a failure, not an unborn repo. The fact is only
+ *  unambiguous where it is observed, so it is recorded there.
+ * 
+ *  Persisted as a string in `repo_local_state.head_state` (migration `0011`).
+ *  A NULL column means NOT OBSERVED - the same fourth fact `upstream_state`
+ *  carries, with the same rule: consumers render it as unknown and must not
+ *  infer `Branch` from it.
+ */
+export type HeadState = 
+/**  HEAD resolves to a named local branch. `active_branch` carries its name. */
+"branch" | 
+/**  HEAD points directly at a commit rather than a branch. */
+"detached" | 
+/**  HEAD exists but points at no commit: a repository with no commits yet. */
+"unborn";
+
+/**
  *  Typed `repo:metadata-refreshed` event (E-17 finding 3): emitted once per background
  *  GitHub metadata refresh pass that changed at least one repo, so the aggregate list
  *  view refetches exactly once. Additive E-06 amendment (was a flagged V1.1 surface in
@@ -767,6 +794,12 @@ export type RepoDetail = {
 	activeBranch: string | null,
 	headSha: string | null,
 	upstreamBranch: string | null,
+	/**
+	 *  See [`RepoSummary::head_state`]. Repeated here for the same reason
+	 *  every other summary field is: the detail view must never disagree with
+	 *  the list view about the same repo.
+	 */
+	headState: HeadState | null,
 	/**
 	 *  See [`RepoSummary::upstream_state`]. Repeated here because the detail
 	 *  drawer derives its own status badge from this type, so omitting it would
@@ -914,8 +947,39 @@ export type RepoSummary = {
 	 * 
 	 *  A fully, successfully inspected repo can therefore honestly report
 	 *  `None` here; it is never a fabricated "no branch."
+	 * 
+	 *  Which of the three it is, is answered by the sibling
+	 *  [`RepoSummary::head_state`] (RR6) - added after this doc first noted
+	 *  that unborn and never-inspected were indistinguishable.
 	 */
 	activeBranch: string | null,
+	/**
+	 *  What HEAD is, as the last inspection observed it (RR6): a branch, a
+	 *  detached HEAD, or unborn. This is what lets an empty Branch cell say
+	 *  WHICH kind of empty it is instead of rendering one bare dash for three
+	 *  different facts.
+	 * 
+	 *  `None` means NOT OBSERVED - no inspection has recorded it since
+	 *  migration `0011` added the column. Like
+	 *  [`RepoSummary::upstream_state`], consumers must render that as unknown
+	 *  ("never run") and must not infer `Branch` from it. It resolves itself
+	 *  the first time the repo is checked.
+	 */
+	headState: HeadState | null,
+	/**
+	 *  How this repo updates (`repos.update_mode`). Mirrors
+	 *  [`RepoDetail::update_mode`] exactly: same column, same non-nullable
+	 *  read, same `String` rather than the [`UpdateMode`] enum, so list and
+	 *  detail can never disagree.
+	 * 
+	 *  On the bulk list read because the ratified sync model (J.4) labels a
+	 *  repo's apply button with its OWN configured mode and hides the button
+	 *  entirely for `check_only` / `fetch_only`. A table cannot do that from
+	 *  the detail read, and the drawer currently hardcodes `pull_ff_only`
+	 *  regardless of configuration, which this field is the prerequisite for
+	 *  fixing.
+	 */
+	updateMode: string,
 	/**
 	 *  The upstream relationship as the policy engine last classified it
 	 *  (BL-NI-77), carried so the UI can tell a repo that is genuinely in sync

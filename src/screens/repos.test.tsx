@@ -48,6 +48,8 @@ function repo(overrides: Partial<RepoSummary> = {}): RepoSummary {
     lastLocalCommitAt: null,
     activeBranch: "main",
     upstreamState: "tracking",
+    headState: "branch",
+    updateMode: "pull_ff_only",
     stars: null,
     forks: null,
     license: null,
@@ -88,6 +90,7 @@ const MINIMAL_DETAIL: RepoDetail = {
   headSha: "abcdef1234567890",
   upstreamBranch: "origin/main",
   upstreamState: null,
+  headState: "branch",
   lastLocalCommitAt: null,
   lastUpdatedAt: null,
   lastAttemptedAt: null,
@@ -230,11 +233,18 @@ describe("ReposScreen table", () => {
     expect(cellsFor("repo-c")[9].textContent).toBe("3");
   });
 
-  it("renders the branch name, and 'detached' only for a real detached HEAD (not the never-inspected/unborn-HEAD null cases)", async () => {
+  // RR6. An empty Branch cell had three causes and one rendering. `headState`
+  // (migration 0011) is the observation that separates the two `isDetached`
+  // never could, so each now says what it is.
+  it("names all three reasons a Branch cell is empty, rather than one dash for three facts (RR6)", async () => {
     renderScreen([
-      repo({ id: 1, localName: "repo-a", activeBranch: "feature/x" }),
-      repo({ id: 2, localName: "repo-b", activeBranch: null, isDetached: true }),
-      repo({ id: 3, localName: "repo-c", activeBranch: null, isDetached: false }),
+      repo({ id: 1, localName: "repo-a", activeBranch: "feature/x", headState: "branch" }),
+      repo({ id: 2, localName: "repo-b", activeBranch: null, isDetached: true, headState: "detached" }),
+      repo({ id: 3, localName: "repo-c", activeBranch: null, isDetached: false, headState: "unborn" }),
+      // `headState: null` is the fourth fact the column carries: no inspection
+      // has recorded it since 0011 added the column. Rendering "no commits"
+      // here would be an observation nobody made.
+      repo({ id: 4, localName: "repo-d", activeBranch: null, isDetached: false, headState: null }),
     ]);
     await screen.findByText("repo-a");
 
@@ -245,9 +255,25 @@ describe("ReposScreen table", () => {
 
     expect(branchCellFor("repo-a").textContent).toBe("feature/x");
     expect(branchCellFor("repo-b").textContent).toBe("detached");
-    // repo-c: never inspected or an unborn HEAD - neither gets the word
-    // "detached"; it renders the empty dash like any other empty cell.
-    expect(branchCellFor("repo-c").textContent).toBe("-");
+    expect(branchCellFor("repo-c").textContent).toBe("no commits");
+    expect(branchCellFor("repo-d").textContent).toBe("never run");
+  });
+
+  it("never infers a HEAD state from a missing branch name alone", async () => {
+    // The defect the column used to have, stated as a test: an unborn HEAD and
+    // an uninspected repo produce IDENTICAL rows apart from `headState`, so
+    // anything deriving the label from the other fields would give them the
+    // same answer. Both rows below are identical except that field.
+    renderScreen([
+      repo({ id: 1, localName: "same-a", activeBranch: null, headState: "unborn" }),
+      repo({ id: 2, localName: "same-b", activeBranch: null, headState: null }),
+    ]);
+    await screen.findByText("same-a");
+
+    const branchCellFor = (name: string) =>
+      within(screen.getByText(name).closest('[role="row"]') as HTMLElement).getAllByRole("cell")[2];
+
+    expect(branchCellFor("same-a").textContent).not.toBe(branchCellFor("same-b").textContent);
   });
 
   it("renders the Folder column from localPath", async () => {

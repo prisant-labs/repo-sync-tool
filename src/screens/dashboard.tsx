@@ -42,7 +42,7 @@ export function DashboardScreen({
   groups: GroupSummary[];
 }) {
   const repos = useRepoList(ALL_FILTER);
-  const summary = useSummaryToday();
+  const summary = useSummaryToday(activeGroupId);
   // Bulk membership read (BL-NI-22's pattern, lifted from repos.tsx) - the
   // only frontend-only ingredient the group-scoping decision below needed.
   const memberships = useRepoGroupMemberships();
@@ -150,15 +150,15 @@ export function DashboardScreen({
    * resolved, falling back to a degraded but still honest "a group" /
    * "this group" phrasing otherwise.
    */
-  // Both of these now delegate to the shared scope. `scopedCount` keeps its
-  // non-null return because every caller renders it inside a branch that has
-  // already checked `membershipPending`; `underWatchCount` keeps its nullable
-  // one because its own render is that check.
-  const scopedCount = useCallback(
-    (items: SummaryItem[]) => scope.countItems(items) ?? 0,
-    [scope],
-  );
-
+  // D6: `summary_today` now takes the group and constrains every query in SQL,
+  // so these lists ARRIVE scoped. Intersecting them again here would be a
+  // second authority for one fact, and the wrong one - the backend can scope
+  // `noChangeCount`, a bare integer with no repo-id list, and this side never
+  // could. `scopedCount` is gone with it; the tiles read the fields directly.
+  //
+  // `underWatchCount` still scopes here, because it counts REPOS rather than
+  // summary items and `repo_list` has no group parameter. That is the one
+  // remaining client-side intersection, and `scope` exists for it.
   const underWatchCount = useMemo(() => scope.countRepos(repos.data), [scope, repos.data]);
 
   return (
@@ -243,14 +243,19 @@ export function DashboardScreen({
                     shows EXACTLY this tile's population, scoped or not. See
                     the PR body for why the other three tiles are NOT wired.
                   */}
+                  {/*
+                    D6: no "(all repos)" qualifier on the hint any more. It
+                    existed because `noChangeCount` was the one number that
+                    could not be scoped - a bare integer with no repo-id list
+                    to intersect (BL-NI-96). `summary_today` takes the group
+                    now and constrains it in SQL with everything else, so the
+                    number under a scoped headline IS scoped, and a caveat
+                    saying otherwise would be the false statement.
+                  */}
                   <Tile
                     label="Under watch"
                     value={underWatchCount ?? "-"}
-                    hint={
-                      activeGroupId !== null
-                        ? `${s.noChangeCount} checked, no change (all repos)`
-                        : `${s.noChangeCount} checked, no change`
-                    }
+                    hint={`${s.noChangeCount} checked, no change`}
                     onClick={onOpenRepos}
                   />
                   {/*
@@ -276,8 +281,8 @@ export function DashboardScreen({
                     hint="dirty or failed"
                     alert={attentionItems.length > 0}
                   />
-                  <Tile label="Updated today" value={scopedCount(s.updated)} hint="fast-forwarded, clean" />
-                  <Tile label="New releases" value={scopedCount(s.newReleases)} hint="upstream tags" />
+                  <Tile label="Updated today" value={s.updatedCount} hint="fast-forwarded, clean" />
+                  <Tile label="New releases" value={s.releasesCount} hint="upstream tags" />
                 </div>
 
                 <Card>

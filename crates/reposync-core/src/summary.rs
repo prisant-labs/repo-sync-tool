@@ -116,6 +116,7 @@ fn classify_row(status: &str, action_type: &str, has_range: bool) -> Option<DayB
 pub async fn summary_today(
     pool: &SqlitePool,
     window: &DayWindow,
+    group_id: Option<i64>,
 ) -> Result<DailySummary, AppError> {
     // Reject a malformed window up front rather than silently mislabelling the result
     // (Codex review finding 4).
@@ -132,16 +133,35 @@ pub async fn summary_today(
     // BTreeMap keys (repo_id) iterate ascending, so the item lists are stable.
     let mut by_repo: BTreeMap<i64, Agg> = BTreeMap::new();
 
+    // GROUP SCOPING (D6). The constraint goes in SQL, in every one of this
+    // function's three queries, rather than being applied to the result by the
+    // caller. That is not a style choice: `no_change_count` is a bare integer
+    // with no repo-id list attached (BL-NI-96), so a caller intersecting the
+    // ITEM lists against group membership could scope every number except that
+    // one - which is why the Dashboard's "Under watch" hint had to carry an
+    // "(all repos)" caveat. Scoping here scopes all four.
+    //
+    // The `EXISTS` shape is `activity::list`'s (BL-NI-93): a group constrains a
+    // SET of repos, and sqlx 0.9's `SqlSafeStr` requires a compile-time static
+    // query string, which rules out a dynamically sized `repo_id IN (...)`. The
+    // `?` is bound twice - once for the NULL test, once inside the subquery -
+    // so a `None` group applies no constraint at all.
     let rows = sqlx::query(
         "SELECT ar.repo_id AS repo_id, ar.action_type AS action_type, ar.status AS status, \
                 ar.commit_range AS commit_range, ar.summary AS summary, r.local_name AS local_name \
          FROM activity_records ar \
          JOIN repos r ON r.id = ar.repo_id \
          WHERE ar.timestamp >= ? AND ar.timestamp < ? \
+           AND (? IS NULL OR EXISTS ( \
+             SELECT 1 FROM repo_groups rg \
+             WHERE rg.repo_id = ar.repo_id AND rg.group_id = ? \
+           )) \
          ORDER BY ar.timestamp ASC, ar.id ASC",
     )
     .bind(window.start_unix)
     .bind(window.end_unix)
+    .bind(group_id)
+    .bind(group_id)
     .fetch_all(pool)
     .await?;
 
@@ -182,14 +202,24 @@ pub async fn summary_today(
     //    The id set lets the no-change tally exclude a repo that needs attention, so a
     //    dirty repo with a clean check today is reported as attention, not as a calm
     //    "no change" (finding 1b: the buckets are disjoint, attention wins).
+    //    The group guard wraps the whole attention predicate in parentheses.
+    //    Without them, SQL precedence binds `AND` tighter than `OR` and the
+    //    condition would read "errored, OR (dirty AND in the group)" - every
+    //    errored repo in the library would leak into a scoped view.
     let attention_rows = sqlx::query(
         "SELECT rls.repo_id AS repo_id, rls.last_error_code AS last_error_code, \
                 rls.is_dirty AS is_dirty, r.local_name AS local_name \
          FROM repo_local_state rls \
          JOIN repos r ON r.id = rls.repo_id \
-         WHERE rls.last_error_code IS NOT NULL OR rls.is_dirty = 1 \
+         WHERE (rls.last_error_code IS NOT NULL OR rls.is_dirty = 1) \
+           AND (? IS NULL OR EXISTS ( \
+             SELECT 1 FROM repo_groups rg \
+             WHERE rg.repo_id = rls.repo_id AND rg.group_id = ? \
+           )) \
          ORDER BY rls.repo_id ASC",
     )
+    .bind(group_id)
+    .bind(group_id)
     .fetch_all(pool)
     .await?;
 
@@ -245,10 +275,16 @@ pub async fn summary_today(
          JOIN repos r ON r.id = rrm.repo_id \
          WHERE rrm.latest_release_at IS NOT NULL \
            AND rrm.latest_release_at >= ? AND rrm.latest_release_at < ? \
+           AND (? IS NULL OR EXISTS ( \
+             SELECT 1 FROM repo_groups rg \
+             WHERE rg.repo_id = rrm.repo_id AND rg.group_id = ? \
+           )) \
          ORDER BY rrm.repo_id ASC",
     )
     .bind(window.start_unix)
     .bind(window.end_unix)
+    .bind(group_id)
+    .bind(group_id)
     .fetch_all(pool)
     .await?;
 
@@ -378,6 +414,22 @@ mod tests {
         .unwrap();
     }
 
+    /// Put `repo` in `group`, creating the group row on first use.
+    async fn seed_membership(pool: &SqlitePool, repo: i64, group: i64, group_name: &str) {
+        sqlx::query("INSERT OR IGNORE INTO groups (id, name) VALUES (?, ?)")
+            .bind(group)
+            .bind(group_name)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO repo_groups (repo_id, group_id) VALUES (?, ?)")
+            .bind(repo)
+            .bind(group)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
     async fn seed_release(pool: &SqlitePool, repo: i64, tag: &str, at: i64) {
         sqlx::query(
             "INSERT INTO repo_remote_meta (repo_id, latest_release_tag, latest_release_at) \
@@ -424,7 +476,7 @@ mod tests {
         record_update(&pool, d, noon + 3600, "success", Some("ccc..ddd")).await;
         record_check(&pool, e, noon, "failed").await;
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(s.updated_count, 2, "a and d updated");
         assert_eq!(
             s.no_change_count, 2,
@@ -441,6 +493,103 @@ mod tests {
         assert_eq!(s.date, "2026-06-29");
     }
 
+    // --- D6: group scoping -----------------------------------------------------
+    //
+    // The reason this is in SQL rather than left to the caller: `no_change_count`
+    // is a bare integer with no repo-id list attached (BL-NI-96), so a caller
+    // intersecting the ITEM lists against group membership can scope every
+    // number except that one. Scoping here scopes all four, which is what D6
+    // asks for ("the number itself is scoped, no caveat line").
+
+    #[tokio::test]
+    async fn every_number_is_scoped_to_the_group_including_no_change_count() {
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+        let noon = w.start_unix + 43_200;
+
+        // `inside` is in group 1; `outside` is in no group at all.
+        let inside = seed_repo(&pool, "inside").await;
+        let outside = seed_repo(&pool, "outside").await;
+        seed_membership(&pool, inside, 1, "work").await;
+
+        record_update(&pool, inside, noon, "success", Some("aaa..bbb")).await;
+        record_check(&pool, outside, noon, "success").await;
+        seed_release(&pool, inside, "v2.0.0", w.start_unix + 100).await;
+        seed_release(&pool, outside, "v9.9.9", w.start_unix + 100).await;
+
+        let all = summary_today(&pool, &w, None).await.unwrap();
+        assert_eq!(all.updated_count, 1);
+        assert_eq!(all.no_change_count, 1, "outside's check, unscoped");
+        assert_eq!(all.releases_count, 2);
+
+        let scoped = summary_today(&pool, &w, Some(1)).await.unwrap();
+        assert_eq!(scoped.updated_count, 1, "inside updated");
+        assert_eq!(
+            scoped.no_change_count, 0,
+            "outside's no-change must not be counted under a group it is not in - \
+             this is the number a caller-side intersection could never fix"
+        );
+        assert_eq!(scoped.releases_count, 1);
+        assert_eq!(scoped.new_releases[0].repo_id, inside);
+    }
+
+    #[tokio::test]
+    async fn an_errored_repo_outside_the_group_does_not_leak_into_attention() {
+        // The precedence trap. The attention predicate is "errored OR dirty";
+        // ANDing a group guard onto it without wrapping it in parentheses would
+        // parse as "errored, OR (dirty AND in the group)", because SQL binds AND
+        // tighter than OR - and every errored repo in the library would appear
+        // in every scoped view. The bug would be invisible on any fixture whose
+        // out-of-group repo happens to be dirty rather than errored.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+
+        let inside = seed_repo(&pool, "inside").await;
+        let outside_errored = seed_repo(&pool, "outside-errored").await;
+        let outside_dirty = seed_repo(&pool, "outside-dirty").await;
+        seed_membership(&pool, inside, 1, "work").await;
+
+        seed_state(&pool, inside, None, 1).await;
+        seed_state(&pool, outside_errored, Some("fetch_failed"), 0).await;
+        seed_state(&pool, outside_dirty, None, 1).await;
+
+        let scoped = summary_today(&pool, &w, Some(1)).await.unwrap();
+        let ids: Vec<i64> = scoped.attention.iter().map(|i| i.repo_id).collect();
+        assert_eq!(ids, vec![inside], "only the in-group repo wants attention");
+        assert_eq!(scoped.attention_count, 1);
+
+        let all = summary_today(&pool, &w, None).await.unwrap();
+        assert_eq!(all.attention_count, 3, "unscoped still sees all three");
+    }
+
+    #[tokio::test]
+    async fn an_empty_group_reports_zeroes_rather_than_the_whole_library() {
+        // A group with no members must not fall through to "no constraint".
+        // `? IS NULL` is the only thing that disables the guard, and a real id
+        // that matches nothing is a different case from `None`.
+        let tmp = TempDir::new().unwrap();
+        let pool = fresh_pool(tmp.path()).await;
+        let w = window();
+        let noon = w.start_unix + 43_200;
+
+        let r = seed_repo(&pool, "busy").await;
+        record_update(&pool, r, noon, "success", None).await;
+        seed_state(&pool, r, Some("fetch_failed"), 0).await;
+        // Group 7 exists but contains nothing.
+        sqlx::query("INSERT INTO groups (id, name) VALUES (7, 'empty')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let scoped = summary_today(&pool, &w, Some(7)).await.unwrap();
+        assert_eq!(scoped.updated_count, 0);
+        assert_eq!(scoped.attention_count, 0);
+        assert_eq!(scoped.no_change_count, 0);
+        assert!(scoped.updated.is_empty() && scoped.attention.is_empty());
+    }
+
     #[tokio::test]
     async fn releases_detected_only_within_today_window() {
         // AC4: a release is counted only when its OWN date (`latest_release_at`) falls
@@ -455,7 +604,7 @@ mod tests {
         seed_release(&pool, f, "v2.0.0", w.start_unix + 100).await; // today
         seed_release(&pool, g, "v1.0.0", w.start_unix - 100).await; // yesterday
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(s.releases_count, 1);
         assert_eq!(s.new_releases.len(), 1);
         assert_eq!(s.new_releases[0].repo_id, f);
@@ -478,7 +627,7 @@ mod tests {
         seed_state(&pool, i, None, 1).await;
         seed_state(&pool, j, None, 0).await;
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(s.attention_count, 2);
         let ids: Vec<i64> = s.attention.iter().map(|x| x.repo_id).collect();
         assert_eq!(ids, vec![h, i]);
@@ -523,7 +672,7 @@ mod tests {
         .await
         .unwrap();
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(
             s.attention_count, 0,
             "a clean, error-free repo is not attention no matter how far behind it is"
@@ -590,7 +739,7 @@ mod tests {
             .await
             .unwrap();
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(
             s.attention_count, 1,
             "a repo the scheduler recorded an auth failure against must need attention, \
@@ -608,7 +757,7 @@ mod tests {
             .record(&due(failing), w.start_unix, RepoStatus::Active)
             .await
             .unwrap();
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(
             s.attention_count, 0,
             "a recovered repo must drop out of attention; a code that never clears \
@@ -633,7 +782,7 @@ mod tests {
         record_update(&pool, end_minus_1, w.end_unix - 1, "success", Some("x..y")).await;
         record_update(&pool, at_end, w.end_unix, "success", Some("x..y")).await;
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(
             s.updated_count, 2,
             "only start and end-1 fall in [start, end)"
@@ -650,7 +799,7 @@ mod tests {
         let pool = fresh_pool(tmp.path()).await;
         let w = window();
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(s.updated_count, 0);
         assert_eq!(s.releases_count, 0);
         assert_eq!(s.attention_count, 0);
@@ -677,7 +826,7 @@ mod tests {
             count_rows(&pool, "repo_local_state").await,
             count_rows(&pool, "repo_remote_meta").await,
         );
-        let _ = summary_today(&pool, &w).await.unwrap();
+        let _ = summary_today(&pool, &w, None).await.unwrap();
         let after = (
             count_rows(&pool, "activity_records").await,
             count_rows(&pool, "repo_local_state").await,
@@ -715,7 +864,7 @@ mod tests {
             .await;
         }
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(
             s.updated_count, 1,
             "only the rebase with a range is an update"
@@ -740,7 +889,7 @@ mod tests {
         let q = seed_repo(&pool, "q").await; // clean check today, calm state
         record_check(&pool, q, noon, "success").await;
 
-        let s = summary_today(&pool, &w).await.unwrap();
+        let s = summary_today(&pool, &w, None).await.unwrap();
         assert_eq!(s.attention_count, 1);
         assert_eq!(s.attention[0].repo_id, p);
         assert_eq!(
@@ -762,7 +911,7 @@ mod tests {
             end_unix: 1000 * DAY,
         };
         assert!(
-            summary_today(&pool, &bad).await.is_err(),
+            summary_today(&pool, &bad, None).await.is_err(),
             "an inverted window must be rejected, not silently mislabelled"
         );
     }

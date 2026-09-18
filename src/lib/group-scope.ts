@@ -2,12 +2,18 @@
  * One authority for "does this repo fall inside the engaged group", shared by
  * every surface that reports a scoped number.
  *
- * This used to live inline in `dashboard.tsx` as a `useCallback` plus two
- * `useMemo`s. SB3 and SB4 put a second consumer in the sidebar - an attention
- * dot on Dashboard and a repo count on Repos - and a second copy of this rule
- * is how the dot ends up claiming attention that the Dashboard it points at
- * reports as All clear. Two numbers derived from one fact must be derived from
- * one function.
+ * This used to live inline in `dashboard.tsx`. SB3 and SB4 put a second
+ * consumer in the sidebar - an attention dot on Dashboard and a repo count on
+ * Repos - and a second copy of this rule is how the dot ends up claiming
+ * attention that the Dashboard it points at reports as All clear. Two numbers
+ * derived from one fact must be derived from one function.
+ *
+ * It scopes REPOS only. It used to scope summary items too, and no longer
+ * does: `summary_today` takes the group and constrains every query in SQL
+ * (D6), which is strictly better because it can also scope `noChangeCount` - a
+ * bare integer with no repo-id list that nothing on this side could intersect.
+ * Keeping a client-side copy would be a second authority for a fact the
+ * backend now owns. `repo_list` has no group parameter, so repos stay here.
  *
  * `null` is the load-bearing return value. A group can be engaged while the
  * bulk membership read is still in flight, and every scoped number must WAIT
@@ -33,11 +39,6 @@ export type GroupScope = {
    * yet. Pass the raw `useRepoList` data, `null` included.
    */
   countRepos: (repos: readonly { id: number }[] | null) => number | null;
-  /**
-   * How many of these summary items are in scope, or `null` if that cannot be
-   * known yet. Pass the raw `DailySummary` list, `null` included.
-   */
-  countItems: (items: readonly { repoId: number }[] | null) => number | null;
 };
 
 export function groupScope(
@@ -54,12 +55,6 @@ export function groupScope(
     countRepos: (repos) => {
       if (repos === null || pending) return null;
       return activeGroupId === null ? repos.length : repos.filter((r) => includes(r.id)).length;
-    },
-    countItems: (items) => {
-      if (items === null || pending) return null;
-      return activeGroupId === null
-        ? items.length
-        : items.filter((it) => includes(it.repoId)).length;
     },
   };
 }

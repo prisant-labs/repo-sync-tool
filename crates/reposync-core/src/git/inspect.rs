@@ -8,7 +8,7 @@ use std::path::Path;
 use git2::{Repository, StatusOptions};
 
 use crate::error::AppError;
-use crate::git::{AheadBehind, InspectResult};
+use crate::git::{AheadBehind, HeadState, InspectResult};
 
 /// Inspect a repository's local state using git2.
 ///
@@ -39,6 +39,24 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
         }
     });
 
+    // RR6: what HEAD actually is, decided here where all three cases are
+    // visible at once. Detached first, because a detached HEAD is also not a
+    // branch and would otherwise fall through to `Unborn`. `head.is_none()`
+    // is the unborn case: `repo.head()` errors on a repository with no
+    // commits, which is the one condition that leaves nothing to peel.
+    //
+    // A detached HEAD whose commit cannot be READ still reports `Detached` -
+    // the question this answers is what HEAD points AT, not whether the
+    // object store could be read, and conflating the two is what made
+    // deriving this from a null `head_sha` lossy.
+    let head_state = if is_detached {
+        HeadState::Detached
+    } else if head.is_none() {
+        HeadState::Unborn
+    } else {
+        HeadState::Branch
+    };
+
     // Dirty = any tracked or untracked (non-ignored) change present.
     let mut status_opts = StatusOptions::new();
     status_opts.include_untracked(true);
@@ -63,6 +81,7 @@ pub fn inspect(repo_path: &Path) -> Result<InspectResult, AppError> {
         is_detached,
         upstream_branch,
         last_commit_at,
+        head_state,
     })
 }
 
@@ -375,5 +394,55 @@ mod tests {
         let ab = ahead_behind(tmp.path()).expect("ahead_behind ok");
         assert_eq!(ab.ahead, None);
         assert_eq!(ab.behind, None);
+    }
+
+    // --- RR6: head_state tells the three "no branch" cases apart --------------
+    //
+    // These three assertions are the whole reason the field exists. The Repos
+    // table rendered one bare dash for all of them, and the two below that are
+    // NOT detached were indistinguishable from each other in the database:
+    // `active_branch`, `head_sha` and `last_local_commit_at` are all NULL for
+    // both an unborn HEAD and a repo nothing has inspected.
+
+    #[test]
+    fn head_state_is_branch_for_an_ordinary_checkout() {
+        let tmp = TempDir::new().expect("tempdir");
+        init_repo_with_commit(tmp.path());
+
+        let got = inspect(tmp.path()).expect("inspect");
+        assert_eq!(got.head_state, HeadState::Branch);
+        assert!(got.active_branch.is_some(), "a branch checkout names it");
+    }
+
+    #[test]
+    fn head_state_is_unborn_for_a_repo_with_no_commits() {
+        let tmp = TempDir::new().expect("tempdir");
+        git2::Repository::init(tmp.path()).expect("init");
+
+        let got = inspect(tmp.path()).expect("inspect an unborn repo");
+        assert_eq!(got.head_state, HeadState::Unborn);
+        // The three fields that used to be the only evidence, all absent -
+        // which is exactly why they could not answer the question.
+        assert_eq!(got.active_branch, None);
+        assert_eq!(got.head_sha, None);
+        assert_eq!(got.last_commit_at, None);
+        assert!(!got.is_detached, "unborn is not detached");
+    }
+
+    #[test]
+    fn head_state_is_detached_and_beats_the_unborn_branch_of_the_test() {
+        let tmp = TempDir::new().expect("tempdir");
+        init_repo_with_commit(tmp.path());
+        let repo = git2::Repository::open(tmp.path()).expect("open");
+        let oid = repo.head().unwrap().target().unwrap();
+        repo.set_head_detached(oid).unwrap();
+
+        let got = inspect(tmp.path()).expect("inspect");
+        // Detached is checked FIRST in `inspect`: a detached HEAD is also not a
+        // branch, so an ordering slip would report it as Unborn - a repo with
+        // commits described as having none.
+        assert_eq!(got.head_state, HeadState::Detached);
+        assert_eq!(got.active_branch, None);
+        assert!(got.head_sha.is_some(), "a detached HEAD still has a commit");
     }
 }

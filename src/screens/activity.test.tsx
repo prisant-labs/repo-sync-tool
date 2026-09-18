@@ -58,6 +58,8 @@ function repo(overrides: Partial<RepoSummary> = {}): RepoSummary {
     lastLocalCommitAt: null,
     activeBranch: "main",
     upstreamState: "tracking",
+    headState: "branch",
+    updateMode: "pull_ff_only",
     stars: null,
     forks: null,
     license: null,
