@@ -12,8 +12,8 @@ linked-plan: null
 linked-strategy-brief: null
 linked-release: null
 depends_on: [E-06, E-09, E-10, E-11, E-16, E-17]
-ac-count: 17
-source-count: 11
+ac-count: 19
+source-count: 12
 source: No tracked spec has ever owned this screen. Written from the user guide (the only tracked description of the intended behaviour), DESIGN.md, the shipped code, and the design decision register at `_local/design/3-decisions/ui-delivery-plan.md`.
 ---
 
@@ -71,7 +71,7 @@ The criteria below are written from four kinds of source, and each one says whic
    the decision id and its handle rather than relying on the reader opening it.
 
 Rejected alternative: **splitting this into several smaller specs** (one for the table, one for
-filtering, one for the row actions). Seventeen criteria is above the usual comfortable ceiling for one
+filtering, one for the row actions). Nineteen criteria is above the usual comfortable ceiling for one
 spec, and the split was considered. It was rejected because the Repos screen is a single surface with
 a single set of interacting behaviours: the filters, the counts, the group scope and the columns are
 not separable without each spec having to restate the others. The nineteen sibling specs are each one
@@ -94,8 +94,8 @@ effort covering one coherent thing, and this is one coherent thing.
   question) is unanswered, so AC-7 describes the columns that ship today and does not claim they are
   the right ones. A sync-mode column is specified nowhere, which is why the `updateMode` field
   shipped with no column behind it.
-- **The sync model and the "Sync all" wording.** Conflict 2 ("Sync all" against the no-generic-Sync
-  model) is unresolved.
+- **The sync model and the "Sync all" wording.** Conflict 2 is unresolved, and open question 2 says
+  why it is less settled than it is usually described as being.
 - **The repository detail drawer's internals.** The drawer opens from this screen; what it contains
   belongs to its own effort.
 - **A card-based alternative to the column table.** Deferred by the maintainer to a future release
@@ -104,6 +104,10 @@ effort covering one coherent thing, and this is one coherent thing.
   (backlog BL-NI-114, batch check results reported in stacking toasts) with an undecided shape.
 - **Bulk assignment of repositories to groups**, which the user guide states does not exist in this
   release.
+- **Whether an empty cell renders blank or as a dash.** The register settles blank; the shared table
+  ships a dash, and the composite's own drawing hedges on whether the rule is table-wide or numeric
+  columns only. A separate change made the dash readable, because while it exists it has to be.
+  Removing it is this open decision, not that fix.
 
 ## Contract / deliverables
 
@@ -141,15 +145,22 @@ effort covering one coherent thing, and this is one coherent thing.
   and In sync, and a name filter box narrows it further by typing. Source: `docs/user-guide.md`
   section 4. [S1]
 - [ ] **AC-7: The table renders exactly ten columns**, in this order: Repository, Status, Branch,
-  Ahead, Behind, Groups, Folder, Checked, Stars, Forks. Their minimum widths sum to 1106px, which is
-  what puts the table's natural floor near the 1143px figure the open column question argues about.
+  Ahead, Behind, Groups, Folder, Checked, Stars, Forks, followed by an unlabelled actions column.
   This criterion is DESCRIPTIVE, not prescriptive: it pins today's set so a silent addition or removal
   is visible, and it becomes prescriptive only when the maintainer answers composite pin 39 (the
-  1143px default-column question). Two things are worth flagging while it stays descriptive. The
-  shipped ten and the target ten are NOT the same ten: the target set names a sync-mode column, and
-  the shipped set instead carries Stars and Forks. And the `updateMode` field exists on the wire with
-  nothing rendering it, precisely because that answer is outstanding. Source: `src/screens/repos.tsx`
-  lines 314 to 487 (the column definitions); open question 1 below; session log 2026-09-18. [S5][S9]
+  1143px default-column question). Source: `src/screens/repos.tsx` lines 314 to 487 (the column
+  definitions). [S9]
+
+  > **The shipped ten and the settled ten are two different sets of ten, and it is worth being exact
+  > about that.** The register settles the default as Repository, Status, Source, Sync mode, Branch,
+  > Ahead, Behind, Checked, Updated, Functions, explicitly dropping Groups, Stars and Forks. So the
+  > shipped set is neither a subset nor a superset of the settled one. Three of its columns are not in
+  > the settled set at all, and three settled columns have never been built. Two of those three are
+  > blocked rather than merely unbuilt: a sync-mode column waits on pin 39, which is why `updateMode`
+  > ships on the wire with nothing rendering it, and an "updated" column has no field to read at all,
+  > because the repository summary the table renders carries no last-updated timestamp. That backend
+  > gap appears in no tracked document and is recorded here for the first time. Source: design
+  > decision register, section J.2; composite pin 39. [S3][S12]
 - [x] **AC-8: Release and pull-request information renders in the signal register, never a status
   colour.** The six status colours are reserved for repository freshness; release and pull-request
   chips use the separate magenta signal colour, so a new-release badge can never be read as a sync
@@ -205,6 +216,18 @@ effort covering one coherent thing, and this is one coherent thing.
   on screen explaining why no rows are shown. Source: the Codex adversarial review of PRs #93 to #96,
   finding 3, 2026-09-18. [S11]
 
+- [ ] **AC-18: Every status a repository can be in is reachable as a filter.** One is not. The chip
+  row iterates a fixed list of six statuses that omits "no upstream", so a repository in that state is
+  counted in the All total, renders its status in the table, and cannot be isolated by any chip. The
+  user can see the state exists and has no way to ask for it. Source: `src/screens/repos.tsx` line 38
+  (the status order) against `src/lib/status.ts`, which defines seven. [S9]
+- [ ] **AC-19: One fact has one authority.** The rule for whether a repository falls inside the
+  engaged group is implemented twice: once in a shared module the sidebar and the Dashboard use, and
+  again inline on this screen, twice over. The observable consequence is that the sidebar's repository
+  count and this screen's All chip can disagree, because the shared module never sees this screen's
+  name filter. That module's own documentation says it exists precisely to stop this. Source:
+  `src/lib/group-scope.ts` against `src/screens/repos.tsx` lines 216 to 248. [S9]
+
 ## Dependencies
 
 - **Upstream:** E-06 (the IPC contract that defines `RepoSummary`, which is what a row renders),
@@ -242,12 +265,24 @@ not contain.
    question). It gates AC-7, and it separately gates the sync-mode column, which is why the
    `updateMode` field shipped on the wire with nothing rendering it. Until this is answered, AC-7
    records what ships rather than what should.
-2. **The sync model and the "Sync all" wording** (conflict 2, "Sync all" against the
-   no-generic-Sync model). It gates any criterion about a bulk update action on this screen.
-3. **The group control's shape in the toolbar** (P7.4, and conflict 5). After decision C1 gave the
-   filter chips a filled language, the group control is the only outlined round pill sitting beside
-   filled chips. Neither the seam nor its resolution is settled.
-4. **Whether seventeen criteria in one spec is the right unit.** The usual guidance is to split above
+2. **The sync model and the "Sync all" wording** (conflict 2). This is less settled than it looks
+   from outside, and the distinction matters. The sync model that "Sync all" supposedly conflicts with
+   is recorded in the register as a RECOMMENDATION the maintainer asked for, not as a mark he made,
+   and his own recorded words on it are "I don't know what to do with this information". His own
+   wording, "Sync all", is marked Keep in three separate places. So this is not two settled decisions
+   in tension; it is a kept phrase against an unratified proposal. Independently of the name, no
+   bulk-apply command exists in the backend at all, so any criterion here would describe something
+   that cannot be built yet.
+3. **The group control's shape**, which is a different question from where it sits. The two get run
+   together and should not be. Nothing settles the shape. After decision C1 gave filter chips a filled
+   language, the group control is the only outlined round pill left in the app, and the two register
+   items that would settle the tag family are marked Keep and Unsure respectively, which is not an
+   answer. Treat the shape as an open criteria gap rather than assuming C1 converts it.
+4. **Where the group scope is shown** (conflict 5). The register keeps the scope folded into the
+   toolbar's own control, which is built, and a later, more specific requirement asks for it above the
+   filter row. These may be two different things, a filter CONTROL and a scope INDICATOR, and the
+   composite draws both. It gates any criterion about where a user looks to see what is scoping them.
+5. **Whether nineteen criteria in one spec is the right unit.** The usual guidance is to split above
    ten. It was kept as one because the Repos screen's filters, counts, scope and columns cannot be
    specified independently of each other without restating each other. If the maintainer disagrees,
    the natural split is the table and its columns in one spec, and filtering and scoping in another.
@@ -267,6 +302,7 @@ not contain.
 | S9 | `src/screens/repos.tsx` (column definitions at 314 to 487; the row keyboard decision at 433 to 444 and 668 to 686; `countBase` at 216 to 255) | A (shipped code) | AC-7, AC-13, AC-14 |
 | S10 | The Codex adversarial review of PR #73, finding 2 (the nested keyboard row) | B (a review record, cited in a code comment rather than read directly) | AC-14 |
 | S11 | The Codex adversarial review of PRs #93 to #96, 2026-09-18, saved at `_local/codex/2026-09-18_adversarial-review_prs-93-96.md` | A (a review record, read directly, and its finding verified against the code) | AC-17 |
+| S12 | `src/lib/bindings.ts`: the repository summary the table renders carries no last-updated timestamp, while the detail type does | A (generated from the Rust wire types) | AC-7 |
 
 ## Revisions
 
