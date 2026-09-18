@@ -300,7 +300,19 @@
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.6 0.16 264); /* Graphite accent blue (dark) */
+  /* Graphite accent blue (dark). 0.54, not the 0.6 that shipped: white text
+     on the 0.6 fill measures 3.87:1, under the 4.5:1 floor, so every primary
+     button in dark mode shipped failing. Found by the contrast gate in
+     `lib/contrast.test.ts` on its first run - the same defect shape as D-1,
+     D-14 and D-17, and the fourth of them.
+     0.54 puts white at 4.98:1, deliberately past 4.5 rather than at it, so a
+     later nudge does not silently re-break it. It also brings dark into line
+     with light, which was already 5.49:1 - the dark accent was the outlier,
+     not the rule. Everything downstream improves or is unaffected: the /10
+     group tint and /15 chip tint get marginally darker, which RAISES
+     `--primary-ink`'s contrast on them, and the 2px nav bar stays far past
+     the 3:1 non-text floor against the sidebar. */
+  --primary: oklch(0.54 0.16 264);
   --primary-ink: oklch(0.66 0.16 264);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.269 0 0);

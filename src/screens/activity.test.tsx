@@ -89,12 +89,25 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * Which cell index a column's values land in, read from the rendered headers
+ * rather than hard-coded. Adding a column used to break every positional
+ * assertion in this file with a message about the wrong value rather than the
+ * wrong index, which is a slow way to learn that nothing is actually broken.
+ */
+function columnIndex(header: string): number {
+  const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
+  const i = headers.indexOf(header);
+  if (i === -1) throw new Error(`No "${header}" column. Rendered: ${headers.join(", ")}`);
+  return i;
+}
+
 describe("ActivityScreen table", () => {
   it("renders the five ratified columns, closing BL-NI-89's serialized-row structure", async () => {
     renderScreen([record()]);
 
     await screen.findByRole("columnheader", { name: "Time" });
-    for (const name of ["Time", "Repository", "Action", "Outcome", "Summary"]) {
+    for (const name of ["Time", "Repository", "Action", "Outcome", "Duration", "Summary"]) {
       expect(screen.getByRole("columnheader", { name })).toBeDefined();
     }
   });
@@ -103,13 +116,16 @@ describe("ActivityScreen table", () => {
     renderScreen([record({ actionType: "check", status: "failed", summary: "Auth failed" })]);
     await screen.findByText("Auth failed");
 
-    // Column order (activity.tsx): time, repo, action, outcome, summary,
-    // actions - action is cell index 2, outcome index 3.
+    // Column order (activity.tsx): time, repo, action, outcome, duration,
+    // summary, actions. Indexed by HEADER rather than by a hard-coded
+    // number, because the last two times a column was added every positional
+    // assertion in this file broke and said nothing about what was wrong.
     const row = screen.getByText("Auth failed").closest('[role="row"]') as HTMLElement;
-    const cells = within(row).getAllByRole("cell");
-    expect(cells[2].textContent).toBe("check");
-    expect(cells[3].textContent).toBe("failed");
-    expect(cells[4].textContent).toBe("Auth failed");
+    const cell = (header: string) =>
+      within(row).getAllByRole("cell")[columnIndex(header)].textContent;
+    expect(cell("Action")).toBe("check");
+    expect(cell("Outcome")).toBe("failed");
+    expect(cell("Summary")).toBe("Auth failed");
     // Never the old serialized form.
     expect(screen.queryByText(/mode=|outcome=/)).toBeNull();
   });
@@ -120,7 +136,7 @@ describe("ActivityScreen table", () => {
 
     // There is exactly one data row; find it via its outcome chip text.
     const dataRow = screen.getByText("success").closest('[role="row"]') as HTMLElement;
-    expect(within(dataRow).getAllByRole("cell")[4].textContent).toBe("-");
+    expect(within(dataRow).getAllByRole("cell")[columnIndex("Summary")].textContent).toBe("-");
   });
 
   it("resolves the repo name for the row, and dashes when the repo has no known name (e.g. removed)", async () => {

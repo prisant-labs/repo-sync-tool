@@ -66,7 +66,7 @@ perceptually consistent across light and dark from a single hue per state. The b
 the shadcn/ui neutral scale; RepoSync adds the accent hue and the six status tokens.
 
 ### Interaction accent (one blue, `--primary`)
-- **Graphite blue** `oklch(0.52 0.19 264)` light / `oklch(0.6 0.16 264)` dark; focus ring `--ring: oklch(0.62 0.15 264)`. Primary buttons, links, focus. Means "you can act here." **Never** used to convey repo status. The primary sidebar nav's active state moved OFF using this accent as a background FILL as of N5 (sidebar restructure and toolbar consolidation, Components below) - the fill itself is now the neutral ramp - but a Codex adversarial review of that change found the neutral ramp too narrow (~0.01 L) to tell active from hover apart on lightness alone, so active reintroduced the accent in a different, narrower form: a 2px positional marker (a left bar), never a wash. The accent also still marks the engaged GROUP filter's tint in the Groups section, a separate, narrower exception - and as of A2 that tint paints on every screen, not only Repos. It does not collide with the nav's own active state because the two are different claims carried on different attributes (`aria-current` for where you are, `aria-pressed` for what is engaged) and on deliberately unequal visual levers (a flat opaque fill plus a bar plus semibold, versus a light tint alone). The accent is ALSO the engaged state of a filter chip as of C1, below.
+- **Graphite blue** `oklch(0.52 0.19 264)` light / `oklch(0.54 0.16 264)` dark; focus ring `--ring: oklch(0.62 0.15 264)`. Primary buttons, links, focus. The dark value was `0.6` until 2026-09-17, where white text on it measured **3.87:1** - every primary button in dark mode shipped under the 4.5:1 floor. `0.54` puts it at 4.98:1, deliberately clear of the floor rather than on it, and in line with light's 5.49:1; the dark accent was the outlier. Found by the contrast gate (`src/lib/contrast.test.ts`) on its first run. Means "you can act here." **Never** used to convey repo status. The primary sidebar nav's active state moved OFF using this accent as a background FILL as of N5 (sidebar restructure and toolbar consolidation, Components below) - the fill itself is now the neutral ramp - but a Codex adversarial review of that change found the neutral ramp too narrow (~0.01 L) to tell active from hover apart on lightness alone, so active reintroduced the accent in a different, narrower form: a 2px positional marker (a left bar), never a wash. The accent also still marks the engaged GROUP filter's tint in the Groups section, a separate, narrower exception - and as of A2 that tint paints on every screen, not only Repos. It does not collide with the nav's own active state because the two are different claims carried on different attributes (`aria-current` for where you are, `aria-pressed` for what is engaged) and on deliberately unequal visual levers (a flat opaque fill plus a bar plus semibold, versus a light tint alone). The accent is ALSO the engaged state of a filter chip as of C1, below.
 
 #### The accent as text (`--primary-ink`)
 `--primary` is tuned to carry white **on top of it**, which makes it too light to read **as**
@@ -174,6 +174,36 @@ the two color languages never mix.
 sits on. Light gray small text on a gray surface is prohibited. Secondary and small text
 still meet WCAG AA; "muted" means lower in the hierarchy, pushed toward ink, never toward
 the background.
+
+
+### The contrast gate
+
+`src/lib/contrast.test.ts` measures every shipped colour pair against its WCAG
+floor, reading the token values out of `src/index.css` itself so that editing a
+token is what makes it fail. `src/lib/contrast.ts` is a TypeScript port of the
+`contrast.py` that has measured every colour decision in this project but lives
+in the gitignored `_local/` tree, where CI could never run it.
+
+It exists because four shipped accessibility failures were found in four
+sessions, every one of them the same shape - a declared token pair that a code
+comment reasoned about and nobody computed:
+
+| | What | Measured |
+|---|---|---|
+| **D-1** | the activity receipt chip | fixed in PR #92 |
+| **D-14** | the engaged group row, accent on the /10 wash | 4.27:1 light, 3.99:1 dark |
+| **D-17** | the Activity "Failed" filter, `--destructive` as text | 4.34:1 light |
+| **D-18** | white on the dark-mode primary button | 3.87:1 dark |
+
+**What it cannot catch, which matters as much as what it can:** the pair list is
+written by hand. A new `text-*` on a new `bg-*` is invisible to the gate until
+someone adds a row. It is a registry of what we have decided to keep honest, not
+a scan of what the app paints - jsdom computes no colours, so a real scan needs a
+browser. Adding a pair means adding a row in the same change.
+
+Alpha is composited in gamma-encoded sRGB, the CSS default. Compositing in
+linear light instead inflates every washed ratio, which would have turned D-14
+from a fail into a pass.
 
 ## 3. Typography
 

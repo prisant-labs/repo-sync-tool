@@ -197,6 +197,32 @@ export function ReposScreen({
     }
   }, [toast]);
 
+  /**
+   * The population the status chips actually filter: the group and name
+   * filters applied, the STATUS filter deliberately not - that is the
+   * dimension the chips themselves select, so counting after it would make
+   * every chip read 0 except the engaged one.
+   *
+   * `null` means the bulk membership read has not resolved while a group is
+   * engaged, so the population is not knowable yet - the same rule
+   * `inGroupCount` below already follows, and the reason the counts are not
+   * simply zero in that window.
+   *
+   * This used to count `list`, the whole unfiltered library, which meant that
+   * with a group engaged the toolbar read "All 2 / In sync 2" above a single
+   * row. A count attached to a filter has to count what that filter will
+   * actually show, or it is not a count of anything the user can see.
+   */
+  const countBase = useMemo(() => {
+    if (activeGroupId !== null && membershipMap === null) return null;
+    const q = query.trim().toLowerCase();
+    return list.filter((r) => {
+      if (activeGroupId !== null && !membershipMap?.get(r.id)?.includes(activeGroupId)) return false;
+      if (q && !r.localName.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [list, query, activeGroupId, membershipMap]);
+
   const counts = useMemo(() => {
     const c: Record<RepoStatus, number> = {
       sync: 0,
@@ -207,9 +233,9 @@ export function ReposScreen({
       paused: 0,
       noUpstream: 0,
     };
-    for (const r of list) c[deriveStatus(r)] += 1;
+    for (const r of countBase ?? []) c[deriveStatus(r)] += 1;
     return c;
-  }, [list]);
+  }, [countBase]);
 
   // Repos in the active group (before the status / name filters narrow
   // further). `null` means "not yet known" (the membership read is still loading
@@ -221,15 +247,13 @@ export function ReposScreen({
     return list.filter((r) => membershipMap.get(r.id)?.includes(activeGroupId)).length;
   }, [list, membershipMap, activeGroupId]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return list.filter((r) => {
-      if (activeGroupId !== null && !membershipMap?.get(r.id)?.includes(activeGroupId)) return false;
-      if (chip !== "all" && deriveStatus(r) !== chip) return false;
-      if (q && !r.localName.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [list, query, chip, activeGroupId, membershipMap]);
+  // The rows are the same population as the chip counts, with the status
+  // dimension applied. Sharing `countBase` is what keeps the two from
+  // drifting: the counts cannot describe a different set than the table shows.
+  const filtered = useMemo(
+    () => (countBase ?? []).filter((r) => chip === "all" || deriveStatus(r) === chip),
+    [countBase, chip],
+  );
 
   // Columns, in the ratified order (README settled list + ui-delivery-plan.md
   // ledger B5): Repository (first, frozen, the only flexible width), Status,
@@ -492,7 +516,15 @@ export function ReposScreen({
                   />
                 </div>
                 <div className="flex flex-wrap gap-1.5">
-                  <FilterChip label="All" count={list.length} active={chip === "all"} onClick={() => setChip("all")} />
+                  {/* `countBase?.length` rather than a `?? 0`: an unknown
+                      population shows the chip with NO number, never a
+                      fabricated zero. */}
+                  <FilterChip
+                    label="All"
+                    count={countBase?.length}
+                    active={chip === "all"}
+                    onClick={() => setChip("all")}
+                  />
                   {STATUS_ORDER.map(
                     (s) =>
                       counts[s] > 0 && (

@@ -9,7 +9,7 @@ import { FilterChip } from "@/components/filter-chip";
 import { ActivityReceipt, ACTIVITY_RECEIPT_TITLE_ID } from "@/components/activity-receipt";
 import { PageShell } from "@/components/page-shell";
 import { useActivity, useRepoList } from "@/hooks/queries";
-import { ACTIVITY_PAGE_LIMIT, paginate, toActivityFilter } from "@/lib/activity";
+import { ACTIVITY_PAGE_LIMIT, formatDuration, paginate, toActivityFilter } from "@/lib/activity";
 import type { ActionTypeFilter, StatusFilter } from "@/lib/activity";
 import type { ActivityRecord } from "@/lib/bindings";
 import { relativeTime } from "@/lib/status";
@@ -153,6 +153,25 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
         header: "Outcome",
         width: "108px",
         cell: (row) => <OutcomeChip status={row.status} />,
+      },
+      {
+        // AC2 + C1: "Duration", not "Took". Duration is the standard term in
+        // job-run interfaces (GitHub Actions, GitLab, Jenkins all use it);
+        // "Took" reads as prose in a column header. Right-aligned and
+        // tabular-nums so a column of them compares by eye, which is the only
+        // reason to put a duration in a table at all.
+        id: "duration",
+        header: "Duration",
+        width: "88px",
+        align: "right",
+        cell: (row) => {
+          const text = formatDuration(row.durationMs);
+          // `null` renders the primitive's muted dash. A record with no
+          // duration is not a zero-length operation.
+          return text === null ? null : (
+            <span className="font-mono text-xs tabular-nums text-muted-foreground">{text}</span>
+          );
+        },
       },
       {
         id: "summary",
