@@ -748,9 +748,12 @@ pub async fn activity_list(
 /// timezone-free, then the core aggregates the day's activity + state read-only.
 #[tauri::command]
 #[specta::specta]
-pub async fn summary_today(state: tauri::State<'_, AppState>) -> Result<DailySummary, AppError> {
+pub async fn summary_today(
+    state: tauri::State<'_, AppState>,
+    group_id: Option<i64>,
+) -> Result<DailySummary, AppError> {
     let window = crate::localtime::local_day_window();
-    reposync_core::summary::summary_today(&state.pool, &window).await
+    reposync_core::summary::summary_today(&state.pool, &window, group_id).await
 }
 
 /// Get the current week's summary (V1.1 stub).

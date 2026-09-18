@@ -27,6 +27,17 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   from any screen instead of only from the Repos and Dashboard headers.
 
 ### Changed
+- **An empty Branch column now says why it is empty.** A repository can have no
+  branch name for three different reasons - it is checked out to a commit
+  rather than a branch, it has no commits yet, or RepoSync has not looked at it
+  yet - and all three used to show the same dash. They now read "detached",
+  "no commits" and "never run". Repositories added before this update show
+  "never run" until their next check.
+- **Dashboard numbers are fully scoped to the selected group.** The "checked,
+  no change" line under Under watch used to count your whole library even with
+  a group selected, and said "(all repos)" because it could not do better. It
+  counts the group now, so the caveat is gone.
+
 - **The sidebar now reads Dashboard, Repos, Activity**, and Groups sits as a
   plain line beneath the whole list rather than indented under Repos behind a
   vertical guide line. Groups are not a sub-part of the Repos screen, and the

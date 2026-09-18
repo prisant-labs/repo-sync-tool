@@ -341,20 +341,43 @@ export function ReposScreen({
       {
         id: "branch",
         header: "Branch",
-        width: "104px",
+        // 116px, not 104: RR6's longest label ("no commits") wrapped onto two
+        // lines inside a fixed 52px row at the old width. Caught in a
+        // screenshot, not by a test - nothing in jsdom measures text.
+        width: "116px",
         icon: GitBranch,
         cell: (r) => {
-          // `activeBranch` is `null` on three distinct conditions (its own doc
-          // comment on `RepoSummary`): never inspected, a detached HEAD, and an
-          // unborn HEAD. `isDetached` distinguishes only the detached case.
-          // Rendering "detached" (rather than the empty dash) for that one case
-          // is the honest middle ground: a repo checked out to a commit really
-          // is on no branch, which is a fact worth a word, not silence: this is
-          // color (muted ink) + icon (the column's own GitBranch glyph, which
-          // only appears when this returns non-null) + word.
+          // RR6: an empty Branch cell has three distinct causes, and this now
+          // says which. `activeBranch` is `null` for all three; `isDetached`
+          // could only ever separate one of them, so the other two - an unborn
+          // HEAD and a repo nothing has inspected - collapsed into one bare
+          // dash that explained neither.
+          //
+          // `headState` is what the last inspection OBSERVED (migration 0011).
+          // `null` there means no inspection has recorded it, which is the
+          // "never run" case, and it is why this reads `headState` rather than
+          // inferring from `headSha`: no head SHA also happens when the commit
+          // exists but cannot be read, and labelling a damaged repo "no
+          // commits" would be a confident wrong answer.
+          //
+          // Wording is jp's own, from the round-three row bench: "detached",
+          // "no commits", "never run". Each is muted ink plus the column's
+          // GitBranch glyph, which only appears when this returns non-null - so
+          // a labelled reason still reads as subordinate to a real branch name.
           if (r.activeBranch !== null) return r.activeBranch;
-          if (r.isDetached) return <span className="text-muted-foreground">detached</span>;
-          return null;
+          const reason =
+            r.headState === "detached"
+              ? "detached"
+              : r.headState === "unborn"
+                ? "no commits"
+                : r.headState === null
+                  ? "never run"
+                  : // `branch` with no `activeBranch` is not a state inspect can
+                    // produce, so there is nothing honest to say about it.
+                    null;
+          return reason === null ? null : (
+            <span className="text-muted-foreground">{reason}</span>
+          );
         },
       },
       {

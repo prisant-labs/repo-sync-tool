@@ -19,6 +19,62 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
+/// What HEAD actually is, as one inspection observed it (RR6).
+///
+/// `active_branch` is `None` for three genuinely different reasons and the
+/// frontend needs to say which: a detached HEAD, an unborn HEAD (a repo with no
+/// commits yet), or a repo nothing has inspected. `is_detached` separates the
+/// first; the other two were indistinguishable, because both leave
+/// `active_branch`, `head_sha` and `last_local_commit_at` all NULL.
+///
+/// Deriving this in the store from `head_sha.is_none() && !is_detached` would
+/// be lossy: `inspect` also yields no `head_sha` when the commit exists but
+/// cannot be READ, which is a failure, not an unborn repo. The fact is only
+/// unambiguous where it is observed, so it is recorded there.
+///
+/// Persisted as a string in `repo_local_state.head_state` (migration `0011`).
+/// A NULL column means NOT OBSERVED - the same fourth fact `upstream_state`
+/// carries, with the same rule: consumers render it as unknown and must not
+/// infer `Branch` from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadState {
+    /// HEAD resolves to a named local branch. `active_branch` carries its name.
+    Branch,
+    /// HEAD points directly at a commit rather than a branch.
+    Detached,
+    /// HEAD exists but points at no commit: a repository with no commits yet.
+    Unborn,
+}
+
+impl HeadState {
+    /// The stable string persisted in `repo_local_state.head_state` and carried
+    /// to the frontend on `RepoSummary`.
+    ///
+    /// Stable in the same sense as [`crate::policy::UpstreamState::as_db_str`]:
+    /// a contract with rows already on users' machines and with a frontend that
+    /// branches on them, renamed only with a migration.
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            HeadState::Branch => "branch",
+            HeadState::Detached => "detached",
+            HeadState::Unborn => "unborn",
+        }
+    }
+
+    /// Parse the persisted string back. `None` for both a NULL column and an
+    /// unrecognized value, and the caller must treat that as UNKNOWN rather
+    /// than substituting a state - see the type doc.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "branch" => Some(HeadState::Branch),
+            "detached" => Some(HeadState::Detached),
+            "unborn" => Some(HeadState::Unborn),
+            _ => None,
+        }
+    }
+}
+
 /// Result of a cheap, read-only repository inspection (git2).
 #[derive(Debug, Clone)]
 pub struct InspectResult {
@@ -32,6 +88,12 @@ pub struct InspectResult {
     /// `last_checked_at` ("when RepoSync last looked"): this is "how stale is the
     /// checkout's HEAD".
     pub last_commit_at: Option<i64>,
+    /// What HEAD is, observed rather than inferred (RR6). See [`HeadState`].
+    ///
+    /// Always `Some` here: an inspection that returns at all HAS observed HEAD.
+    /// The `Option` lives at the storage and wire boundary, where NULL means
+    /// "no inspection has recorded this yet".
+    pub head_state: HeadState,
 }
 
 /// Classification of a `git fetch` outcome (AC10 / BL-NI-05).

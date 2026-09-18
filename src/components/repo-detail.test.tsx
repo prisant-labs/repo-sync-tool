@@ -57,6 +57,7 @@ const DETAIL: RepoDetail = {
   localPath: "C:\\repos\\example",
   remoteOriginUrl: "https://github.com/example/example.git",
   defaultBranch: "main",
+  headState: "branch",
   updateMode: "fetch_only",
   checkFrequencyMin: 0,
   createdAt: 1_690_000_000,

@@ -67,6 +67,8 @@ const REPO: RepoSummary = {
   lastLocalCommitAt: null,
   activeBranch: "main",
   upstreamState: "tracking",
+  headState: "branch",
+  updateMode: "pull_ff_only",
   stars: null,
   forks: null,
   license: null,
@@ -83,7 +85,11 @@ function mockShellCommands(
   mockCommand(commands, "dbRecoveryNotice", async () => ok({ recovered: false, backupPath: null }));
   mockCommand(commands, "groupList", async () => ok(groups));
   mockCommand(commands, "repoList", async () => ok(repos));
-  mockCommand(commands, "summaryToday", async () => ok(summary));
+  // D6: the backend scopes the summary, so the mock does. A mock that ignored
+  // `groupId` would let a sidebar that dropped its scoping still pass SB3.
+  mockCommand(commands, "summaryToday", async (groupId) =>
+    ok(groupId === null ? summary : { ...summary, attentionCount: 0, attention: [] }),
+  );
   mockCommand(commands, "repoGroupMemberships", async () => ok([{ repoId: 1, groupIds: [1] }]));
 }
 

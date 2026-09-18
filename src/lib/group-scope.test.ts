@@ -17,7 +17,6 @@ const MEMBERSHIPS: MembershipMap = new Map([
 ]);
 
 const REPOS = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
-const ITEMS = [{ repoId: 1 }, { repoId: 2 }, { repoId: 3 }];
 
 describe("groupScope", () => {
   it("includes every repo and counts everything when no group is engaged", () => {
@@ -26,7 +25,6 @@ describe("groupScope", () => {
     expect(s.pending).toBe(false);
     expect(REPOS.every((r) => s.includes(r.id))).toBe(true);
     expect(s.countRepos(REPOS)).toBe(4);
-    expect(s.countItems(ITEMS)).toBe(3);
   });
 
   it("counts only the engaged group's members", () => {
@@ -36,7 +34,6 @@ describe("groupScope", () => {
     expect(s.includes(2)).toBe(false);
     expect(s.includes(3)).toBe(true);
     expect(s.countRepos(REPOS)).toBe(2);
-    expect(s.countItems(ITEMS)).toBe(2);
   });
 
   it("treats a repo with no membership row at all as outside every group", () => {
@@ -56,7 +53,6 @@ describe("groupScope", () => {
 
     expect(s.pending).toBe(true);
     expect(s.countRepos(REPOS)).toBeNull();
-    expect(s.countItems(ITEMS)).toBeNull();
   });
 
   it("is NOT pending when no group is engaged, even with no membership map", () => {
@@ -70,6 +66,5 @@ describe("groupScope", () => {
 
   it("returns null for data that has not loaded, scoped or not", () => {
     expect(groupScope(null, MEMBERSHIPS).countRepos(null)).toBeNull();
-    expect(groupScope(null, MEMBERSHIPS).countItems(null)).toBeNull();
   });
 });

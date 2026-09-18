@@ -219,12 +219,16 @@ export function AppShell() {
    * repositories there are (a count on Repos).
    *
    * Both are SCOPED to the engaged group, and that is not a free choice. The
-   * screens they point at are already scoped: Dashboard intersects its
-   * attention list against group membership, and Repos filters its table the
-   * same way. An unscoped dot over a scoped Dashboard says "something needs
-   * you" above a screen that says "All clear", and the user cannot tell which
-   * one is lying. The scoping rule itself is `lib/group-scope.ts`, shared with
-   * Dashboard so the two cannot drift apart.
+   * screens they point at are already scoped, so an unscoped dot over a scoped
+   * Dashboard says "something needs you" above a screen that says "All clear",
+   * and the user cannot tell which one is lying.
+   *
+   * They are scoped by two different mechanisms, for a reason. The DOT reads
+   * `attentionCount` off a summary the BACKEND scoped (D6): `summary_today`
+   * takes the group and constrains every query in SQL. The COUNT scopes here
+   * via `lib/group-scope.ts`, because `repo_list` has no group parameter. Both
+   * point at screens fed by the same two sources, so neither can disagree with
+   * its destination.
    *
    * These reads duplicate Dashboard's own while Dashboard is showing. They go
    * to local SQLite through an IPC call that is already made on every screen
@@ -233,7 +237,7 @@ export function AppShell() {
    * larger change than the two indicators justify.
    */
   const shellRepos = useRepoList(ALL_REPOS);
-  const shellSummary = useSummaryToday();
+  const shellSummary = useSummaryToday(activeGroupId);
   const shellMemberships = useRepoGroupMemberships();
   const reposRefetch = shellRepos.refetch;
   const summaryRefetch = shellSummary.refetch;
@@ -253,12 +257,12 @@ export function AppShell() {
     [activeGroupId, shellMemberships.data],
   );
   const repoCount = scope.countRepos(shellRepos.data);
-  const attentionCount = scope.countItems(shellSummary.data?.attention ?? null);
-  // `null` (not knowable yet) and `0` (knowably nothing) both render no dot;
-  // only a positive count does. Written as an explicit comparison rather than
-  // a truthiness check so a future `null` cannot quietly read as false for the
-  // wrong reason.
-  const needsAttention = attentionCount !== null && attentionCount > 0;
+  // D6: the summary ARRIVES scoped now - `summary_today` takes the group and
+  // constrains its queries in SQL - so this reads the field rather than
+  // intersecting the list again. `data` is null while the read is in flight
+  // (and `clearDataOnDepsChange` makes a group change re-enter that state), so
+  // the dot is absent rather than stale during the switch.
+  const needsAttention = (shellSummary.data?.attentionCount ?? 0) > 0;
 
   /**
    * L4: the sidebar's add-repo button does not own the Add-repositories
