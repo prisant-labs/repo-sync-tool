@@ -85,7 +85,7 @@ const SETTINGS_NAV: { id: View; label: string; Icon: typeof LayoutDashboard } = 
  * cannot fix this; it needs a lever outside the greyscale ramp entirely.
  *
  * The fix moves SEVERAL levers on active, none of them tunable-into-collision
- * by a background alpha: a 2px LEFT ACCENT BAR in `--primary` (a hue no
+ * by a background alpha: a 2px LEFT ACCENT BAR in `--primary-ink` (a hue no
  * resting or hovered item ever carries, so it cannot converge with hover no
  * matter how the neutral ramp is tuned), the flat `bg-sidebar-accent` fill,
  * and `font-semibold`. The border is reserved (`border-l-2 border-transparent`
@@ -131,7 +131,7 @@ function NavButton({
       className={cn(
         "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-sm transition-colors",
         active
-          ? "border-l-primary bg-sidebar-accent font-semibold text-foreground"
+          ? "border-l-primary-ink bg-sidebar-accent font-semibold text-foreground"
           : "font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground",
       )}
     >
@@ -242,15 +242,30 @@ export function AppShell() {
   const reposRefetch = shellRepos.refetch;
   const summaryRefetch = shellSummary.refetch;
   const membershipsRefetch = shellMemberships.refetch;
-  // Without this the dot is a snapshot from mount: a check that turns a repo
-  // dirty in the background would leave the rail claiming All clear.
-  useBackendEvents(
-    useCallback(() => {
-      reposRefetch();
-      summaryRefetch();
-      membershipsRefetch();
-    }, [reposRefetch, summaryRefetch, membershipsRefetch]),
-  );
+  /**
+   * Re-read all three shell snapshots.
+   *
+   * Two callers, for two different reasons, and the second one is why this is
+   * named and not inline.
+   *
+   * BACKEND EVENTS. Without this the dot is a snapshot from mount: a check that
+   * turns a repo dirty in the background would leave the rail claiming All clear.
+   *
+   * LOCAL MUTATIONS, which emit no event at all (Codex review of PRs #93-#96,
+   * finding 2). `repo_add`, `repo_remove` and a group-membership toggle change
+   * what these three queries return and announce nothing, so each screen was
+   * refreshing its OWN copy and leaving the sidebar's. The worst case is not a
+   * brief lag: remove the last repository and there is nothing left to check, so
+   * no `scheduler:tick` will ever carry `checked > 0`, and the count beside Repos
+   * stays wrong until the app restarts. Every screen that mutates the library
+   * calls this.
+   */
+  const refreshShell = useCallback(() => {
+    reposRefetch();
+    summaryRefetch();
+    membershipsRefetch();
+  }, [reposRefetch, summaryRefetch, membershipsRefetch]);
+  useBackendEvents(refreshShell);
 
   const scope = useMemo(
     () => groupScope(activeGroupId, shellMemberships.data),
@@ -495,6 +510,7 @@ export function AppShell() {
               onOpenRepos={() => setView("repos")}
               activeGroupId={activeGroupId}
               groups={groups}
+              onLibraryChanged={refreshShell}
             />
           )}
           {view === "repos" && (
@@ -505,7 +521,7 @@ export function AppShell() {
               onGroupsChanged={groupsState.refetch}
               addOpen={addOpen}
               onAddOpenChange={setAddOpen}
-              onReposChanged={reposRefetch}
+              onLibraryChanged={refreshShell}
             />
           )}
           {view === "activity" && <ActivityScreen activeGroupId={activeGroupId} />}

@@ -204,7 +204,7 @@ pub async fn add(
     )
     .bind(repo_id)
     .bind(&inspect.active_branch)
-    .bind(inspect.head_state.as_db_str())
+    .bind(inspect.head_state.map(|h| h.as_db_str()))
     .bind(&inspect.head_sha)
     .bind(&inspect.upstream_branch)
     .bind(inspect.is_dirty as i64)
@@ -376,7 +376,7 @@ async fn check_now_inner(
          WHERE repo_id = ?",
     )
     .bind(&inspect.active_branch)
-    .bind(inspect.head_state.as_db_str())
+    .bind(inspect.head_state.map(|h| h.as_db_str()))
     .bind(ahead_behind.ahead)
     .bind(ahead_behind.behind)
     .bind(inspect.is_dirty as i64)
@@ -621,7 +621,7 @@ async fn run_update_inner(
          WHERE repo_id = ?",
     )
     .bind(&post.active_branch)
-    .bind(post.head_state.as_db_str())
+    .bind(post.head_state.map(|h| h.as_db_str()))
     .bind(post_ab.ahead)
     .bind(post_ab.behind)
     .bind(post.is_dirty as i64)
@@ -1208,7 +1208,7 @@ mod tests {
             is_detached: false,
             upstream_branch: Some("origin/main".into()),
             last_commit_at: Some(1_700_000_000),
-            head_state: HeadState::Branch,
+            head_state: Some(HeadState::Branch),
         };
         assert_eq!(
             classify_upstream(&with_up, true),

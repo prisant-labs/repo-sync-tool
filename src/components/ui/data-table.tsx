@@ -295,13 +295,13 @@ export function DataTable<T>({
                         }}
                       >
                         {empty ? (
-                          <span className="text-muted-foreground/55">-</span>
+                          <span className="text-muted-foreground">-</span>
                         ) : (
                           <>
                             {Icon && (
                               <Icon
                                 aria-hidden
-                                className="mr-1.5 size-[11px] shrink-0 text-muted-foreground/75"
+                                className="mr-1.5 size-[11px] shrink-0 text-muted-foreground"
                               />
                             )}
                             {content}

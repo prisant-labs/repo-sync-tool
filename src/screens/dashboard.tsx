@@ -30,6 +30,7 @@ export function DashboardScreen({
   onOpenRepos,
   activeGroupId,
   groups,
+  onLibraryChanged,
 }: {
   onOpenRepos: () => void;
   /**
@@ -40,6 +41,13 @@ export function DashboardScreen({
    */
   activeGroupId: number | null;
   groups: GroupSummary[];
+  /**
+   * Refreshes the SHELL's own snapshots. This screen can add a repository and
+   * its drawer can remove one or change its groups, and none of those emit a
+   * backend event, so without this the sidebar's count and attention dot keep
+   * describing the library as it was (Codex review of PRs #93-#96, finding 2).
+   */
+  onLibraryChanged: () => void;
 }) {
   const repos = useRepoList(ALL_FILTER);
   const summary = useSummaryToday(activeGroupId);
@@ -56,6 +64,15 @@ export function DashboardScreen({
     membershipsRefetch();
   }, [reposRefetch, summaryRefetch, membershipsRefetch]);
   useBackendEvents(refetch);
+
+  // A local mutation refreshes this screen AND the shell. Kept separate from
+  // `refetch` so the event path above does not fire the shell's refresh too:
+  // the shell already subscribes to the same events itself, and routing both
+  // through one callback would double every background refetch.
+  const refetchAll = useCallback(() => {
+    refetch();
+    onLibraryChanged();
+  }, [refetch, onLibraryChanged]);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
@@ -331,11 +348,11 @@ export function DashboardScreen({
         aria-labelledby={REPO_DETAIL_TITLE_ID}
       >
         {selectedId !== null && (
-          <RepoDetailPanel id={selectedId} onChanged={refetch} onClose={() => setSelectedId(null)} />
+          <RepoDetailPanel id={selectedId} onChanged={refetchAll} onClose={() => setSelectedId(null)} />
         )}
       </Drawer>
 
-      <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
+      <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetchAll} />
     </PageShell>
   );
 }

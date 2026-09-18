@@ -70,6 +70,33 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **A damaged repository could be reported as having no commits.** When RepoSync
+  could not read a repository's HEAD at all - a corrupt reference, an unreadable
+  file - it recorded that as "no commits yet", which is a confident and
+  reassuring answer to a question it had not actually answered. Its Branch column
+  now reads "unreadable", which is what it actually knows. A repository that
+  genuinely has no commits still reads "no commits", and one nothing has looked
+  at yet still reads "never run".
+- **A filter you had selected could vanish while it was still filtering.** Pick
+  Behind, then type a name that matches only an in-sync repository, and the
+  Behind button disappeared while the list stayed filtered to Behind. The result
+  was an empty table with nothing on screen explaining why. The selected filter
+  now stays visible, showing zero.
+- **The sidebar could keep counting repositories you had removed.** Adding or
+  removing a repository, or changing its groups, refreshed the screen you were
+  on but not the sidebar beside it. Removing your last repository was the worst
+  case: with nothing left to check, nothing would ever correct the count, so it
+  stayed wrong until you restarted the app.
+- **Three more places where text sat below the contrast level the project
+  requires, all measured rather than estimated.** The dash marking an empty
+  table cell and the small icons beside cell values were being faded, which put
+  the dash at 2.29:1 against 4.5:1; both are now drawn at full strength. The
+  success and failure badges on a repository's activity list were built from a
+  see-through tint that let the row's hover colour through, measuring 4.14:1
+  when hovered while passing at rest; they now use the same solid badge the rest
+  of the app uses. And the marker on the selected sidebar item fell to 2.91:1
+  against its own highlight when the blue was deepened, so it now uses the blue
+  the app reserves for text.
 - **The user guide described a keyboard shortcut that does not exist.** It said
   you could Tab to a row in the Repos list and press Enter or Space to open that
   repository's details. Rows stopped being focusable some time ago, on purpose,
