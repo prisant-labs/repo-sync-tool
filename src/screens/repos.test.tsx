@@ -132,7 +132,7 @@ const GROUPS: GroupSummary[] = [{ id: 1, name: "Work", color: "#4477ff", repoCou
 function renderScreen(
   repos: RepoSummary[],
   memberships: RepoGroupMembership[] = [],
-  options: { activeGroupId?: number | null; membershipsPending?: boolean } = {},
+  options: { activeGroupId?: number | null; membershipsPending?: boolean; addOpen?: boolean } = {},
 ) {
   mockCommand(commands, "repoList", async () => ok(repos));
   if (options.membershipsPending) {
@@ -146,6 +146,8 @@ function renderScreen(
   const toast = vi.fn();
   const onClearGroup = vi.fn();
   const onGroupsChanged = vi.fn();
+  const onReposChanged = vi.fn();
+  const onAddOpenChange = vi.fn();
   const view = render(
     <ToastContext.Provider value={toast}>
       <ReposScreen
@@ -153,10 +155,13 @@ function renderScreen(
         groups={GROUPS}
         onClearGroup={onClearGroup}
         onGroupsChanged={onGroupsChanged}
+        addOpen={options.addOpen ?? false}
+        onAddOpenChange={onAddOpenChange}
+        onReposChanged={onReposChanged}
       />
     </ToastContext.Provider>,
   );
-  return { toast, onClearGroup, onGroupsChanged, ...view };
+  return { toast, onClearGroup, onGroupsChanged, onReposChanged, onAddOpenChange, ...view };
 }
 
 beforeEach(() => {

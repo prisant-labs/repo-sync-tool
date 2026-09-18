@@ -44,11 +44,34 @@ export function ReposScreen({
   groups,
   onClearGroup,
   onGroupsChanged,
+  addOpen,
+  onAddOpenChange,
+  onReposChanged,
 }: {
   activeGroupId: number | null;
   groups: GroupSummary[];
   onClearGroup: () => void;
   onGroupsChanged: () => void;
+  /**
+   * L4: whether the Add-repositories dialog is open. The STATE lives in the
+   * shell; the dialog itself stays here.
+   *
+   * That split is not arbitrary. The dialog has to stay on this screen
+   * because `repo_add` emits no backend event, so `onAdded` wired to this
+   * screen's own refetch is the only thing that makes a new repo appear in
+   * the table. But the sidebar's add button lives above this screen and
+   * outlives it - this component unmounts on every navigation - so a flag
+   * owned here could not survive the very navigation the button performs.
+   *
+   * Controlled rather than a request counter plus an effect: an effect that
+   * calls `setState` synchronously is a cascading render, and the lint rule
+   * that says so is right.
+   */
+  addOpen: boolean;
+  onAddOpenChange: (open: boolean) => void;
+  /** Lets the shell's own repo count refresh when this screen adds one, for
+   * the same reason: no event announces it. */
+  onReposChanged: () => void;
 }) {
   const repos = useRepoList(ALL_FILTER);
   const refetch = repos.refetch;
@@ -58,7 +81,7 @@ export function ReposScreen({
   const [busyId, setBusyId] = useState<number | null>(null);
   const [checkAllBusy, setCheckAllBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [addOpen, setAddOpen] = useState(false);
+
   const [query, setQuery] = useState("");
   const [chip, setChip] = useState<Chip>("all");
 
@@ -517,7 +540,7 @@ export function ReposScreen({
       // PR #73, finding 1).
       fill
       actions={
-        <Button size="sm" onClick={() => setAddOpen(true)}>
+        <Button size="sm" onClick={() => onAddOpenChange(true)}>
           <Plus /> Add repos
         </Button>
       }
@@ -541,7 +564,7 @@ export function ReposScreen({
               title="No repositories yet"
               description="Scan a folder or add a single path to start tracking sync status."
               action={
-                <Button onClick={() => setAddOpen(true)}>
+                <Button onClick={() => onAddOpenChange(true)}>
                   <Plus /> Add repositories
                 </Button>
               }
@@ -629,7 +652,14 @@ export function ReposScreen({
         )}
       </Drawer>
 
-      <AddReposDialog open={addOpen} onClose={() => setAddOpen(false)} onAdded={refetch} />
+      <AddReposDialog
+        open={addOpen}
+        onClose={() => onAddOpenChange(false)}
+        onAdded={() => {
+          refetch();
+          onReposChanged();
+        }}
+      />
     </PageShell>
   );
 }

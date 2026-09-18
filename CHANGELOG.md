@@ -10,6 +10,18 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ## [Unreleased]
 
+### Added
+- **The sidebar tells you when something needs attention**, with a small
+  amber dot on Dashboard. It appears only when a repository is dirty or its
+  last check failed, and it respects the group you have selected: if the only
+  repository needing attention is outside that group, no dot, because the
+  Dashboard it points at would say All clear.
+- **The sidebar shows how many repositories you are tracking**, next to Repos.
+  Selected a group? It counts that group. Nothing to count yet, or not known
+  yet, shows nothing rather than a zero.
+- **An Add repositories button in the sidebar**, above Settings, reachable
+  from any screen instead of only from the Repos and Dashboard headers.
+
 ### Changed
 - **The sidebar now reads Dashboard, Repos, Activity**, and Groups sits as a
   plain line beneath the whole list rather than indented under Repos behind a
