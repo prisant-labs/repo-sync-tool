@@ -11,13 +11,11 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Added
-- **RepoSync can now verify that an update really came from its author.** The
-  app ships with the public half of a signing key, so a downloaded update is
-  checked against it before anything is replaced, and a file that does not match
-  is refused. Updates are still never installed without you confirming. Until
-  the matching private half reaches the release pipeline, published builds are
-  not yet signed, so this protects nothing in practice today. It is the half
-  that had to come first.
+- **Updates are now signed, and RepoSync checks the signature before it installs
+  one.** A downloaded update is verified against a key that only the author
+  holds, and a file that does not match is refused rather than installed. This
+  is what stops someone serving you a tampered update. Updates are still never
+  installed without you confirming first.
 - **The Activity list shows how long each check or update took**, in a Duration
   column. Entries recorded before durations were tracked show a dash rather
   than a zero.

@@ -60,7 +60,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0MkU1MDA0RTVCNDMyNDUKUldSRk1yVGxCRkF1MUtab3ZwbkZ1RXhxMjlyL003QjdDT2N2Z29wa2M5ODZSRythZG9POHRqQXkK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEM5QThBNDA0QUFFMDU1NzQKUldSMFZlQ3FCS1NveVFGWGlsVXkzRUhzWnpPTGRVd2hGWkZTVTFUazJLYTVXTDZvb3ZqTStrRVYK",
       "endpoints": [
         "https://github.com/prisant-labs/repo-sync-tool/releases/latest/download/latest.json"
       ],
