@@ -60,7 +60,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "SHIP_DARK__no_production_updater_key_yet__see_E-18_public_flip",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ0MkU1MDA0RTVCNDMyNDUKUldSRk1yVGxCRkF1MUtab3ZwbkZ1RXhxMjlyL003QjdDT2N2Z29wa2M5ODZSRythZG9POHRqQXkK",
       "endpoints": [
         "https://github.com/prisant-labs/repo-sync-tool/releases/latest/download/latest.json"
       ],
