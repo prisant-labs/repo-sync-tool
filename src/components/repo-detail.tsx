@@ -109,6 +109,40 @@ const POLICY_OPTIONS: { mode: UpdateMode; label: string; blurb: string; disabled
   { mode: "pull_rebase", label: "Rebase pull", blurb: "Not available in this release.", disabled: true },
 ];
 
+/**
+ * Whether a mode actually writes to the working tree, and therefore whether an
+ * "apply now" button means anything.
+ *
+ * Exhaustive by type, so a new `UpdateMode` fails the build here rather than
+ * silently defaulting to "offers a pull button" - the direction that would
+ * reintroduce composite pin 34.
+ */
+const MODE_APPLIES: Record<UpdateMode, boolean> = {
+  check_only: false,
+  fetch_only: false,
+  pull_ff_only: true,
+  pull_standard: true,
+  pull_rebase: true,
+};
+
+/**
+ * Narrow the wire type's plain `string` to a mode we recognise, or `null`.
+ *
+ * `RepoDetail.updateMode` is a `String` on the Rust side by deliberate choice
+ * (E-06), so a cast here would be this codebase's signature defect - asserting
+ * something the type cannot know. `null` for an unrecognised value is the safe
+ * direction: the caller then offers NO apply button, which is the failure mode
+ * that cannot pull against the user's wishes.
+ */
+function asUpdateMode(mode: string): UpdateMode | null {
+  return mode in MODE_APPLIES ? (mode as UpdateMode) : null;
+}
+
+/** The label this repository's own mode is presented under, from the one list that names them. */
+function modeLabel(mode: string): string {
+  return POLICY_OPTIONS.find((o) => o.mode === mode)?.label ?? mode;
+}
+
 type PanelTab = "overview" | "activity" | "settings";
 
 const PANEL_TABS: { value: PanelTab; label: string }[] = [
@@ -688,6 +722,19 @@ function Focal({
 }) {
   const style = STATUS_STYLE[status];
   const isBusy = busy !== null;
+  // Composite pin 34. This button used to call `repoUpdateNow(r.id, "pull_ff_only")` with the
+  // mode written in, so a repository the user had deliberately set to Check only or Fetch only
+  // still offered a button that pulled - the one thing those two modes exist to prevent. It now
+  // sends the repository's OWN mode, and where that mode does not write to the working tree it
+  // offers no apply button at all and says why instead.
+  //
+  // Deliberately NOT the full J.4 sync model, which is still unratified (bench decision R2,
+  // marked Unsure 2026-09-22). This is the correctness half only: do what the user configured,
+  // and never offer an action the configuration forbids.
+  const mode = asUpdateMode(r.updateMode);
+  // Non-null exactly when an apply action is both recognised and permitted, so the button below
+  // needs no assertion to call it: the type carries the proof.
+  const applyMode = mode !== null && MODE_APPLIES[mode] ? mode : null;
 
   if (status === "behind") {
     return (
@@ -700,21 +747,29 @@ function Focal({
           be clean.
         </p>
         <LagSignal className="mt-3" status={status} magnitude={lagMagnitude(r)} label={lagLabel(r)} />
-        <Button
-          className="mt-3"
-          size="sm"
-          disabled={isBusy}
-          onClick={() =>
-            run(
-              "ff",
-              () => unwrap(commands.repoUpdateNow(r.id, "pull_ff_only")),
-              `Fast-forwarded ${r.localName}`,
-              "Advanced to match origin.",
-            )
-          }
-        >
-          <ArrowDownToLine className={busy === "ff" ? "animate-spin" : undefined} /> Fast-forward now
-        </Button>
+        {applyMode !== null ? (
+          <Button
+            className="mt-3"
+            size="sm"
+            disabled={isBusy}
+            onClick={() =>
+              run(
+                "ff",
+                () => unwrap(commands.repoUpdateNow(r.id, applyMode)),
+                `Fast-forwarded ${r.localName}`,
+                "Advanced to match origin.",
+              )
+            }
+          >
+            <ArrowDownToLine className={busy === "ff" ? "animate-spin" : undefined} />{" "}
+            {modeLabel(r.updateMode)} now
+          </Button>
+        ) : (
+          <p className="mt-3 text-xs text-muted-foreground">
+            This repository is set to <b>{modeLabel(r.updateMode)}</b>, so RepoSync will not pull
+            these commits for you. Change it in the Settings tab, or pull in your own tools.
+          </p>
+        )}
       </>
     );
   }

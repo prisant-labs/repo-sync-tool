@@ -849,3 +849,86 @@ describe("RepoDetailPanel header action row (P3)", () => {
     expect(screen.queryByText("none")).toBeNull();
   });
 });
+
+/**
+ * Composite pin 34. The Focal panel's apply button used to call
+ * `repoUpdateNow(r.id, "pull_ff_only")` with the mode written into the call, so
+ * a repository the user had deliberately set to Check only or Fetch only still
+ * offered a button that pulled - the one thing those two modes exist to prevent.
+ *
+ * These tests pin the correctness half only. The full J.4 sync model (every
+ * row's button carrying its own mode) is still unratified - bench decision R2,
+ * marked Unsure on 2026-09-22 - and is deliberately NOT implemented here.
+ */
+describe("the apply action obeys the repository's own update mode (pin 34)", () => {
+  /** What `repoUpdateNow` resolves to; its contents do not matter to these tests. */
+  const UPDATE_OK = {
+    repoId: 7,
+    mode: "pull_ff_only",
+    outcome: "updated",
+    commitRange: null,
+    ahead: null,
+    behind: null,
+    updatedAt: 0,
+  };
+
+  /** A repo that is behind origin, so the Focal panel offers its apply branch. */
+  function behind(updateMode: string): RepoDetail {
+    return { ...DETAIL, behindCount: 3, aheadCount: 0, isDirty: false, updateMode };
+  }
+
+  it("sends the repository's OWN mode, never a hardcoded fast-forward", async () => {
+    mockCommand(commands, "repoGet", async () => ok(behind("pull_ff_only")));
+    const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
+    renderPanel();
+
+    const button = await screen.findByRole("button", { name: /Fast-forward now/ });
+    await userEvent.setup().click(button);
+
+    await waitFor(() => expect(updateNow).toHaveBeenCalled());
+    // The second argument is the mode. It must come from the repo, which is why
+    // the fixture and the assertion name the same value in two places on purpose:
+    // a hardcoded literal in the component would pass a test that only checked
+    // "pull_ff_only" against a pull_ff_only repo.
+    expect(updateNow.mock.calls[0][1]).toBe("pull_ff_only");
+  });
+
+  it.each(["check_only", "fetch_only"])(
+    "offers NO apply button for a %s repository, and says why",
+    async (mode) => {
+      mockCommand(commands, "repoGet", async () => ok(behind(mode)));
+      const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
+      renderPanel();
+
+      // The behind state still reports itself - the repo IS behind, and hiding
+      // that would be a different lie than the one being fixed.
+      await screen.findByText(/3 commits behind origin/);
+
+      // Precise on purpose: "Check now" is a different, always-present button,
+      // so a loose /now$/ matcher would catch it and prove nothing.
+      expect(
+        screen.queryByRole("button", { name: /^(Fast-forward|Fetch only|Check only) now$/ }),
+      ).toBeNull();
+      expect(
+        screen.getByText(/RepoSync will not pull these commits for you/),
+      ).toBeDefined();
+      expect(updateNow).not.toHaveBeenCalled();
+    },
+  );
+
+  it("offers no apply button for a mode it does not recognise, rather than guessing", async () => {
+    // `RepoDetail.updateMode` is a plain `String` on the wire (E-06), so an
+    // unrecognised value is reachable - a newer backend, or a hand-edited
+    // database. Failing closed is the only safe direction: the alternative is
+    // pulling against a configuration this build cannot interpret.
+    mockCommand(commands, "repoGet", async () => ok(behind("some_future_mode")));
+    renderPanel();
+
+    await screen.findByText(/3 commits behind origin/);
+    // Assert the EXPLANATION renders, not merely that a button is missing. With the
+    // pre-fix hardcode a button WAS present, labelled from the unknown mode, so a
+    // name-based absence check passed while the bug was live - found by probing
+    // this very test against the old code.
+    expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
+  });
+});
