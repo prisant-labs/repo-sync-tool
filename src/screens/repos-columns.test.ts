@@ -105,9 +105,9 @@ const SETTLED: SettledColumn[] = [
     id: "folder",
     width: "minmax(150px,240px)",
     icon: false,
-    why: "Lab COLS, reproduced as the generator wrote it. The cell draws its own inline folder glyph rather than the generic data-icon slot.",
+    why: "T1 RESOLVED by the maintainer 2026-09-22: the range stays. A file path is the second value whose width is not knowable, and clamping it truncates paths that would have fit. The cost he accepted is that Folder's edge moves with content, so it will not line up with a Folder column in another table. The cell draws its own inline folder glyph rather than the generic data-icon slot.",
     contested:
-      "T1/T2, register section L.2a, awaiting the maintainer. The lab README's prose says fixed widths for every column except Repository, and a data icon on every column; the lab ARTIFACT this row follows says neither. Reading A: clamp to one fixed value, because consistent column positions across tables is what fixed widths bought. Reading B: keep the range, because a file path is the second value whose width is not knowable and clamping truncates paths that would have fit. Both defensible; the disagreement has stood since 2026-08-28.",
+      "T2 only - the ICON slot, not the width. Register section L.2a. T1 (the width) was resolved 2026-09-22: the range stays. T2 is open because the maintainer asked to SEE both readings before choosing: Reading A, every column opens with the same generic muted icon for a uniform header rhythm; Reading B (what this row enforces), these four already draw a richer mark in the cell - link glyphs, the status chip, group dots, a folder mark - so a second generic icon beside them is noise. Applies equally to `repo`, `status` and `groups`, which is why resolving it changes four rows, not one.",
   },
   {
     id: "checked",
