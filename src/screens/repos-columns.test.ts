@@ -49,12 +49,12 @@ type SettledColumn = {
   /** Where this value was settled, and why it is what it is. */
   why: string;
   /**
-   * Set when the settled RECORD disagrees with itself, so this row is a
-   * placeholder for a decision rather than a decision. The test still enforces
-   * the current value - a contested row is not an unguarded one - but the
-   * disagreement is named here so it cannot be lost.
+   * Set when the settled RECORD disagreed with itself and a maintainer decision
+   * resolved it. Kept after the fact, not deleted: the next reader who wonders
+   * why Folder alone is a range, or why four columns have no icon, should find
+   * the answer here rather than re-opening a question that was already paid for.
    */
-  contested?: string;
+  t2?: string;
 };
 
 /**
@@ -106,8 +106,7 @@ const SETTLED: SettledColumn[] = [
     width: "minmax(150px,240px)",
     icon: false,
     why: "T1 RESOLVED by the maintainer 2026-09-22: the range stays. A file path is the second value whose width is not knowable, and clamping it truncates paths that would have fit. The cost he accepted is that Folder's edge moves with content, so it will not line up with a Folder column in another table. The cell draws its own inline folder glyph rather than the generic data-icon slot.",
-    contested:
-      "T2 only - the ICON slot, not the width. Register section L.2a. T1 (the width) was resolved 2026-09-22: the range stays. T2 is open because the maintainer asked to SEE both readings before choosing: Reading A, every column opens with the same generic muted icon for a uniform header rhythm; Reading B (what this row enforces), these four already draw a richer mark in the cell - link glyphs, the status chip, group dots, a folder mark - so a second generic icon beside them is noise. Applies equally to `repo`, `status` and `groups`, which is why resolving it changes four rows, not one.",
+    t2: "T2 RESOLVED by the maintainer 2026-09-22, on a side-by-side render of both readings: Reading B stands. These four columns keep NO generic data icon, because each already draws a richer mark in its own cell - link glyphs on Repository, the chip on Status, coloured dots on Groups, a folder mark on Folder. The render decided it: with a generic icon added, the Folder cell showed TWO folder icons side by side, Status showed a hollow circle in front of a chip that already carries a tick, and Repository lost enough width that a long name truncated earlier. Shots: `_local/design/_gate/2026-09-22_t2-icon-comparison/`.",
   },
   {
     id: "checked",
@@ -231,21 +230,17 @@ describe("the Repos table matches its settled column values", () => {
     ).toBe(icon);
   });
 
-  it("names every contested value, so a disagreement in the record cannot be lost", () => {
-    // A contested row is NOT an unguarded one: the assertions above still hold it
-    // to its current value. This only proves the disagreement stays visible until
-    // someone resolves it, rather than decaying into "the way it has always been".
-    const contested = SETTLED.filter((c) => c.contested);
-    for (const c of contested) {
-      expect(c.contested, `${c.id} is marked contested with no explanation`).toMatch(/Reading A/);
-    }
-    // If this number goes DOWN, a decision was made and should have been recorded
-    // in the register too. If it goes UP, a new disagreement was found. Either way
-    // the change should be deliberate.
-    expect(
-      contested.map((c) => c.id),
-      "the set of contested column values changed. Update register section L.2a in the same change.",
-    ).toEqual(["folder"]);
+  it("keeps the resolved disagreements explained, rather than letting them decay", () => {
+    // T1 and T2 were real contradictions in the settled record, and both cost a
+    // round trip to the maintainer to resolve. The explanations stay attached to
+    // the row so the next reader who wonders why Folder alone is a range, or why
+    // four columns carry no generic icon, finds the answer instead of re-opening
+    // a question that has already been paid for.
+    const folder = SETTLED.find((c) => c.id === "folder");
+    expect(folder?.why, "Folder's width decision (T1) lost its explanation").toMatch(
+      /T1 RESOLVED/,
+    );
+    expect(folder?.t2, "the icon decision (T2) lost its explanation").toMatch(/T2 RESOLVED/);
   });
 
   it("carries no stale entries in the not-rendered list", () => {
