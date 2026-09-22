@@ -11,6 +11,11 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Added
+- **Updates are now signed, and RepoSync checks the signature before it installs
+  one.** A downloaded update is verified against a key that only the author
+  holds, and a file that does not match is refused rather than installed. This
+  is what stops someone serving you a tampered update. Updates are still never
+  installed without you confirming first.
 - **The Activity list shows how long each check or update took**, in a Duration
   column. Entries recorded before durations were tracked show a dash rather
   than a zero.
