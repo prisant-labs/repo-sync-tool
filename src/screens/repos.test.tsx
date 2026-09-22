@@ -370,6 +370,29 @@ describe("ReposScreen table", () => {
     expect(screen.queryByText("repo-sync")).toBeNull();
   });
 
+  it("a repository with no upstream can be isolated by a chip, like every other state (AC-18)", async () => {
+    // E-20 AC-18. The chip row iterated a hand-written list of six statuses
+    // while the taxonomy defines seven: a no-upstream repo was counted in the
+    // All total and rendered its status in the table, and no chip could select
+    // it. The user could see the state existed and had no way to ask for it.
+    // `STATUS_ORDER` now lives beside `RepoStatus` and is exhaustive by
+    // compile-time proof, so the list cannot fall behind the taxonomy again.
+    renderScreen([
+      repo({ id: 1, localName: "repo-orphaned", upstreamState: "none" }),
+      repo({ id: 2, localName: "repo-sync" }),
+    ]);
+    await screen.findByText("repo-orphaned");
+    const user = userEvent.setup();
+
+    const chip = screen.getByRole("button", { name: /^No upstream/ });
+    expect(chip.textContent).toContain("1");
+
+    await user.click(chip);
+
+    expect(screen.getByText("repo-orphaned")).toBeDefined();
+    expect(screen.queryByText("repo-sync")).toBeNull();
+  });
+
   it("Check all: a fully clean summary gets the 'ok' toast, reported as completed (not in-progress)", async () => {
     const checkAll = mockCommand(commands, "repoCheckAll", async () => ok(cleanSummary(2)));
     const { toast } = renderScreen([repo({ id: 1, localName: "repo-a" }), repo({ id: 2, localName: "repo-b" })]);
@@ -476,7 +499,7 @@ describe("ReposScreen table", () => {
     // "Behind"), so these must be prefix regexes - an exact-string query
     // would return null whether or not the chip renders, since neither
     // string ever matches a real chip's name.
-    for (const label of [/^Behind/, /^Dirty/, /^Failed/, /^Paused/, /^Ahead/]) {
+    for (const label of [/^Behind/, /^Dirty/, /^Failed/, /^Paused/, /^Ahead/, /^No upstream/]) {
       expect(screen.queryByRole("button", { name: label })).toBeNull();
     }
   });
@@ -669,6 +692,49 @@ describe("ReposScreen toolbar group control (N5)", () => {
 
     await user.click(clearButton);
     expect(onClearGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("the group count and the chip counts read the same membership rule, and differ only where they are meant to (AC-19)", async () => {
+    // E-20 AC-19. The rule for "is this repo inside the engaged group" was
+    // implemented three times on this screen, inline, alongside the shared
+    // `group-scope.ts` whose own header says it exists to stop precisely that.
+    // The two populations below are DELIBERATELY different - the group pill
+    // counts the group, the chips count what the search will actually show -
+    // but the membership test underneath both is now derived once, so they can
+    // only diverge along the search dimension and never along membership.
+    renderScreen(
+      [
+        repo({ id: 1, localName: "alpha-in-group" }),
+        repo({ id: 2, localName: "beta-in-group" }),
+        repo({ id: 3, localName: "gamma-outside" }),
+      ],
+      [
+        { repoId: 1, groupIds: [1] },
+        { repoId: 2, groupIds: [1] },
+      ],
+      { activeGroupId: 1 },
+    );
+    await screen.findByText("alpha-in-group");
+    const user = userEvent.setup();
+
+    // Membership alone: the out-of-group repo is never a row, chip or count.
+    expect(screen.queryByText("gamma-outside")).toBeNull();
+    expect(screen.getByRole("button", { name: /^All/ }).textContent).toContain("2");
+
+    await user.type(screen.getByPlaceholderText("Filter by name"), "alpha");
+
+    // The search narrows the rows and the chip counts...
+    await waitFor(() => expect(screen.queryByText("beta-in-group")).toBeNull());
+    expect(screen.getByText("alpha-in-group")).toBeDefined();
+    expect(screen.getByRole("button", { name: /^All/ }).textContent).toContain("1");
+
+    // ...and does NOT narrow the group pill, which reports the group itself.
+    // A search box that appeared to shrink the group would be a lie about what
+    // Clear would restore.
+    const control = screen.getByRole("button", { name: "Clear Work filter" }).closest(
+      "div",
+    ) as HTMLElement;
+    expect(within(control).getByText("2 repos")).toBeDefined();
   });
 
   it("shows a loading ellipsis for the group count while membership is still resolving, never a fabricated zero", async () => {

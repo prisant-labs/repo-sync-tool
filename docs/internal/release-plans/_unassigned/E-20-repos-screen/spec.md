@@ -6,7 +6,7 @@ status: draft
 tier: MUST
 scope: Retroactive contract for a surface that already ships, plus the decisions the register has settled but nobody has built. The open column-set and sync-model questions are deliberately carved out.
 created: 2026-09-18
-updated: 2026-09-18
+updated: 2026-09-21
 linked-effort: E-20
 linked-plan: null
 linked-strategy-brief: null
@@ -30,8 +30,14 @@ source: No tracked spec has ever owned this screen. Written from the user guide 
 - **Effort id:** E-20 is provisional, assigned as the next free id after E-19 (tray popover) and
   parked in `_unassigned/` pending release slotting.
 - **Next:** the maintainer answers the four open questions below, principally the default column set
-  (composite pin 39, the 1143px question). Until then the column set in AC-7 is descriptive of what
-  ships, not prescriptive of what should.
+  (composite pin 39, now decision R4 on the decisions bench). Until then the column set in AC-7 is
+  descriptive of what ships, not prescriptive of what should.
+- **Built 2026-09-21:** AC-18 (every status reachable as a filter) and AC-19 (one authority for group
+  membership), the two criteria this spec was written with as unmet. 17 of 19 criteria were already
+  met by the shipped screen; these were the two that were not. AC-18 carries a test PROVEN to fail
+  against the pre-fix code. AC-19's test would have passed on the old code by design: that defect was
+  three implementations of one rule, not a wrong answer, so its test pins the contract rather than
+  catching a bug.
 - **Blockers:** none for the criteria written here. Four decisions listed under Open questions block
   the criteria deliberately NOT written here.
 
@@ -216,17 +222,28 @@ effort covering one coherent thing, and this is one coherent thing.
   on screen explaining why no rows are shown. Source: the Codex adversarial review of PRs #93 to #96,
   finding 3, 2026-09-18. [S11]
 
-- [ ] **AC-18: Every status a repository can be in is reachable as a filter.** One is not. The chip
+- [x] **AC-18: Every status a repository can be in is reachable as a filter.** One was not. The chip
   row iterates a fixed list of six statuses that omits "no upstream", so a repository in that state is
   counted in the All total, renders its status in the table, and cannot be isolated by any chip. The
   user can see the state exists and has no way to ask for it. Source: `src/screens/repos.tsx` line 38
   (the status order) against `src/lib/status.ts`, which defines seven. [S9]
-- [ ] **AC-19: One fact has one authority.** The rule for whether a repository falls inside the
+  **MET 2026-09-21.** `STATUS_ORDER` now lives in `src/lib/status.ts` beside the `RepoStatus` type it
+  must cover, carries `noUpstream`, and is proved exhaustive at compile time - dropping a state from
+  it fails `pnpm typecheck` with an error naming the missing state. A runtime test in
+  `status.test.ts` checks the same property against `STATUS_STYLE`'s keys, and
+  `repos.test.tsx` proves a no-upstream repository can actually be isolated by its chip.
+- [x] **AC-19: One fact has one authority.** The rule for whether a repository falls inside the
   engaged group is implemented twice: once in a shared module the sidebar and the Dashboard use, and
   again inline on this screen, twice over. The observable consequence is that the sidebar's repository
   count and this screen's All chip can disagree, because the shared module never sees this screen's
   name filter. That module's own documentation says it exists precisely to stop this. Source:
   `src/lib/group-scope.ts` against `src/screens/repos.tsx` lines 216 to 248. [S9]
+  **MET 2026-09-21.** All three inline copies on this screen (the chip-count population, the group
+  pill's count, and the still-loading guard on the table body) now derive from a single
+  `groupScope(activeGroupId, membershipMap)` call, the same one the sidebar and the Dashboard use.
+  The two populations stay deliberately different - the chip counts apply the name filter and the
+  group pill's count does not - and a test pins that difference so it cannot be "fixed" into a
+  third implementation.
 
 ## Dependencies
 

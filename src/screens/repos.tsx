@@ -31,11 +31,17 @@ import { AddReposDialog } from "@/components/add-repos-dialog";
 import { PageShell } from "@/components/page-shell";
 import { useToast } from "@/hooks/use-toast";
 import { useBackendEvents, useRepoGroupMemberships, useRepoList } from "@/hooks/queries";
-import { deriveStatus, relativeTime, STATUS_STYLE, type RepoStatus } from "@/lib/status";
+import { groupScope } from "@/lib/group-scope";
+import {
+  deriveStatus,
+  relativeTime,
+  STATUS_ORDER,
+  STATUS_STYLE,
+  type RepoStatus,
+} from "@/lib/status";
 import { cn } from "@/lib/utils";
 
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
-const STATUS_ORDER: RepoStatus[] = ["behind", "dirty", "failed", "paused", "ahead", "sync"];
 
 type Chip = RepoStatus | "all";
 
@@ -101,6 +107,19 @@ export function ReposScreen({
   const memberships = useRepoGroupMemberships();
   const membershipMap = memberships.data;
   const refetchMemberships = memberships.refetch;
+
+  /**
+   * The one authority for "is this repo inside the engaged group", shared with
+   * the sidebar and the Dashboard.
+   *
+   * This screen used to answer that question inline, three separate times, and
+   * `group-scope.ts`'s own header says it exists to stop exactly that (E-20
+   * AC-19). The populations below are still deliberately different - the chip
+   * counts apply the name filter and the group pill's count does not - but the
+   * MEMBERSHIP RULE underneath them is now derived once, so the two can only
+   * disagree where they are meant to.
+   */
+  const scope = useMemo(() => groupScope(activeGroupId, membershipMap), [activeGroupId, membershipMap]);
 
   const groupById = useMemo(() => {
     const m = new Map<number, GroupSummary>();
@@ -227,14 +246,14 @@ export function ReposScreen({
    * actually show, or it is not a count of anything the user can see.
    */
   const countBase = useMemo(() => {
-    if (activeGroupId !== null && membershipMap === null) return null;
+    if (scope.pending) return null;
     const q = query.trim().toLowerCase();
     return list.filter((r) => {
-      if (activeGroupId !== null && !membershipMap?.get(r.id)?.includes(activeGroupId)) return false;
+      if (!scope.includes(r.id)) return false;
       if (q && !r.localName.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [list, query, activeGroupId, membershipMap]);
+  }, [list, query, scope]);
 
   const counts = useMemo(() => {
     const c: Record<RepoStatus, number> = {
@@ -254,11 +273,7 @@ export function ReposScreen({
   // further). `null` means "not yet known" (the membership read is still loading
   // or failed), distinct from a genuine zero (finding 7 / BL-NI-27's sibling
   // defect in the E-16 spec: a null map must never read as "no members").
-  const inGroupCount = useMemo(() => {
-    if (activeGroupId === null) return list.length;
-    if (membershipMap === null) return null;
-    return list.filter((r) => membershipMap.get(r.id)?.includes(activeGroupId)).length;
-  }, [list, membershipMap, activeGroupId]);
+  const inGroupCount = useMemo(() => scope.countRepos(list), [list, scope]);
 
   // The rows are the same population as the chip counts, with the status
   // dimension applied. Sharing `countBase` is what keeps the two from
@@ -664,12 +679,12 @@ export function ReposScreen({
           }
         >
           {() => {
-            // With an active group filter, `filtered` depends on `membershipMap`
-            // (from the bulk membership read). A `null` map means that read is still
-            // loading or has failed, not that zero repos match (finding 7): show the
-            // shared loading/error presentation instead of the "no matches" empty
-            // state until membership is actually known.
-            if (activeGroupId !== null && membershipMap === null) {
+            // With an active group filter, `filtered` depends on the bulk
+            // membership read. `scope.pending` means that read is still loading or
+            // has failed, not that zero repos match (finding 7): show the shared
+            // loading/error presentation instead of the "no matches" empty state
+            // until membership is actually known.
+            if (scope.pending) {
               return (
                 <AsyncPanel state={memberships}>
                   {/* Unreachable: this branch only renders while membershipMap is

@@ -12,6 +12,50 @@ export type RepoStatus =
   | "paused"
   | "noUpstream";
 
+/**
+ * The order the status filter chips are drawn in, and - because it is
+ * exhaustive - the guarantee that every state a repository can be in can
+ * actually be asked for.
+ *
+ * This lived in `repos.tsx` as a hand-maintained list of six, one short of the
+ * taxonomy. `noUpstream` shipped without being added, so a repository in that
+ * state was counted in the All total and rendered its status in the table while
+ * no chip could isolate it: the user could see the state existed and had no way
+ * to select it (E-20 AC-18). Moving the list next to the type it must cover,
+ * and proving the cover at compile time, is what stops that recurring - the
+ * same reason `ui-reachability.test.ts` exists one level up, for commands.
+ *
+ * Order is attention first, then the quiet states. `noUpstream` sits after
+ * `paused` and before `ahead`, matching where `deriveStatus` ranks it: above
+ * behind and ahead, below dirty and failed. **The position is a presentation
+ * choice, not a derived fact - flagged for veto.**
+ */
+export const STATUS_ORDER = [
+  "behind",
+  "dirty",
+  "failed",
+  "paused",
+  "noUpstream",
+  "ahead",
+  "sync",
+] as const satisfies readonly RepoStatus[];
+
+/**
+ * Compile-time proof that `STATUS_ORDER` names EVERY `RepoStatus`.
+ *
+ * `satisfies` above only proves each entry is a valid status; it says nothing
+ * about the ones left out, which is exactly the half that failed. Adding a
+ * state to `RepoStatus` without giving it a position above now stops this
+ * assignment typechecking, and the error names the missing state.
+ */
+const _statusOrderCoversEveryStatus: Exclude<
+  RepoStatus,
+  (typeof STATUS_ORDER)[number]
+> extends never
+  ? true
+  : ["STATUS_ORDER is missing", Exclude<RepoStatus, (typeof STATUS_ORDER)[number]>] = true;
+void _statusOrderCoversEveryStatus;
+
 type StatusFacts = Pick<
   RepoSummary,
   | "isDirty"

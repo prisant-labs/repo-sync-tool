@@ -70,6 +70,12 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   value on hover.
 
 ### Fixed
+- **Repositories with no upstream could not be filtered for.** The Repos screen
+  showed the state in the table and counted it in All, but offered no button to
+  narrow the list to just those repositories - so you could see they existed and
+  had no way to ask for them. There is now a No upstream filter alongside the
+  others. It appears, like every status filter, only when something is actually
+  in that state.
 - **A damaged repository could be reported as having no commits.** When RepoSync
   could not read a repository's HEAD at all - a corrupt reference, an unreadable
   file - it recorded that as "no commits yet", which is a confident and
