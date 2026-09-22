@@ -5,6 +5,8 @@ import {
   lagLabel,
   lagMagnitude,
   relativeTime,
+  STATUS_ORDER,
+  STATUS_STYLE,
 } from "@/lib/status";
 
 /**
@@ -270,5 +272,32 @@ describe("checkFailureMessage", () => {
     for (const reason of ["git.auth_failed", "net.offline", "git.fetch_failed", null]) {
       expect(checkFailureMessage(reason)).toContain("Activity");
     }
+  });
+});
+
+describe("STATUS_ORDER", () => {
+  /**
+   * The runtime half of the guarantee. `status.ts` proves at COMPILE time that
+   * `STATUS_ORDER` names every `RepoStatus`; this proves the same thing against
+   * a value, so the failure message names the missing state in plain words
+   * rather than as a type error.
+   *
+   * `STATUS_STYLE` is the source of truth here because it is a
+   * `Record<RepoStatus, ...>`: TypeScript already forces it to carry every key,
+   * so its keys ARE the taxonomy at runtime.
+   *
+   * Be exact about what this does and does not prove. Because `STATUS_STYLE` is
+   * itself type-exhaustive, a new state added to `RepoStatus` fails to compile
+   * there too, so this test never sees that drift on its own - it is a second
+   * lock on the same door, not an independent one. What it DOES catch, and the
+   * compile-time guard cannot, is someone editing `STATUS_ORDER` after deleting
+   * the assertion in `status.ts` for being too clever.
+   */
+  it("names every state a repository can be in, so each one is reachable as a filter", () => {
+    expect([...STATUS_ORDER].sort()).toEqual(Object.keys(STATUS_STYLE).sort());
+  });
+
+  it("lists each state exactly once, so no chip can render twice", () => {
+    expect(new Set(STATUS_ORDER).size).toBe(STATUS_ORDER.length);
   });
 });
