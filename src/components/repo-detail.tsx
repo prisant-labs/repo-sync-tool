@@ -110,19 +110,34 @@ const POLICY_OPTIONS: { mode: UpdateMode; label: string; blurb: string; disabled
 ];
 
 /**
- * Whether a mode actually writes to the working tree, and therefore whether an
- * "apply now" button means anything.
+ * Whether a mode actually changes anything IN THIS RELEASE, and therefore
+ * whether an "apply now" button means anything.
+ *
+ * The authority is `V1Mode::from_update_mode` in `crates/reposync-core/src/
+ * policy.rs`, which returns `None` for `pull_standard` and `pull_rebase` -
+ * "non-V1 modes: never executed as a V1 mode". This table must agree with it.
+ *
+ * Those two were `true` here until the Codex review of PR #100. The consequence
+ * was worse than a missing button: the backend resolves a non-V1 mode as
+ * `PolicyDecision::Skip`, which `repo.rs` reports with status `"success"`, and
+ * `run` below fires its success toast unconditionally - so pressing the button
+ * told the user the update had worked when nothing had happened. A false
+ * success is the BL-NI-77 shape, and it is the one this file is least allowed
+ * to reproduce.
  *
  * Exhaustive by type, so a new `UpdateMode` fails the build here rather than
  * silently defaulting to "offers a pull button" - the direction that would
- * reintroduce composite pin 34.
+ * reintroduce composite pin 34. When a mode goes live in `policy.rs`, this is
+ * the second of exactly two places that must change.
  */
 const MODE_APPLIES: Record<UpdateMode, boolean> = {
   check_only: false,
   fetch_only: false,
   pull_ff_only: true,
-  pull_standard: true,
-  pull_rebase: true,
+  // Not a claim that these never write - a claim that THIS release never runs
+  // them. Mirrors policy.rs's own `None` arm.
+  pull_standard: false,
+  pull_rebase: false,
 };
 
 /**
@@ -135,7 +150,14 @@ const MODE_APPLIES: Record<UpdateMode, boolean> = {
  * that cannot pull against the user's wishes.
  */
 function asUpdateMode(mode: string): UpdateMode | null {
-  return mode in MODE_APPLIES ? (mode as UpdateMode) : null;
+  // `hasOwnProperty`, never `in`. The Codex review of PR #100 found that `in`
+  // walks the prototype chain, so "constructor", "toString", "valueOf" and
+  // "__proto__" all passed the check and came back as live modes - reproduced
+  // in node against these exact functions. The comment here previously claimed
+  // every unrecognised value became null, and for those four it did not.
+  return Object.prototype.hasOwnProperty.call(MODE_APPLIES, mode)
+    ? (mode as UpdateMode)
+    : null;
 }
 
 /** The label this repository's own mode is presented under, from the one list that names them. */
