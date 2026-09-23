@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commands, events } from "@/lib/bindings";
 import type { ActivityRecord, GroupSummary, RepoDetail, Settings } from "@/lib/bindings";
@@ -848,4 +848,147 @@ describe("RepoDetailPanel header action row (P3)", () => {
     // line has no label to hang that off, so the line is simply absent.
     expect(screen.queryByText("none")).toBeNull();
   });
+});
+
+/**
+ * Composite pin 34, and the Codex adversarial review of PR #100 that found the
+ * first version of these tests wanting.
+ *
+ * The bug: the Focal panel's apply button called
+ * `repoUpdateNow(r.id, "pull_ff_only")` with the mode written into the call, so
+ * a repository set to Check only or Fetch only still offered a button that
+ * pulled.
+ *
+ * These tests pin the correctness half only. The full J.4 sync model (every
+ * row's button carrying its own mode) is unratified - bench decision R2, marked
+ * Unsure 2026-09-22 - and is deliberately NOT implemented.
+ */
+describe("the apply action obeys the repository's own update mode (pin 34)", () => {
+  /** What `repoUpdateNow` resolves to; its contents do not matter to these tests. */
+  const UPDATE_OK = {
+    repoId: 7,
+    mode: "pull_ff_only",
+    outcome: "updated",
+    commitRange: null,
+    ahead: null,
+    behind: null,
+    updatedAt: 0,
+  };
+
+  /** A repo that is behind origin, so the Focal panel offers its apply branch. */
+  function behind(updateMode: string): RepoDetail {
+    return { ...DETAIL, behindCount: 3, aheadCount: 0, isDirty: false, updateMode };
+  }
+
+  /**
+   * Every interactive element inside the Focal region.
+   *
+   * STRUCTURAL, not name-based. The first version of this helper enumerated
+   * buttons whose accessible name ended in "now" and claimed a rename could not
+   * dodge it. The Codex verification pass of PR #100 showed that was false:
+   * renaming an apply action to "Apply", giving it an `aria-label` that does not
+   * end in "now", or rendering it as a link would all escape.
+   *
+   * Scoping to `data-testid="focal"` and counting BOTH buttons and links removes
+   * the naming question entirely - for a mode that must not apply, this region is
+   * required to contain no interactive element of any kind. "Check now" lives in
+   * the header action row, outside this region, so it needs no exclusion.
+   */
+  function focalActions(): string[] {
+    const focal = screen.getByTestId("focal");
+    return [
+      ...within(focal).queryAllByRole("button"),
+      ...within(focal).queryAllByRole("link"),
+    ].map((el) => (el.getAttribute("aria-label") ?? el.textContent ?? "").trim());
+  }
+
+  it("sends the repository's own mode rather than a value of its own", async () => {
+    mockCommand(commands, "repoGet", async () => ok(behind("pull_ff_only")));
+    const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
+    renderPanel();
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: /Fast-forward now/ }));
+    await waitFor(() => expect(updateNow).toHaveBeenCalled());
+    expect(updateNow.mock.calls[0][1]).toBe("pull_ff_only");
+
+    // HONEST LIMITATION, recorded rather than papered over. `pull_ff_only` is
+    // currently the ONLY mode that applies - `policy.rs` treats pull_standard and
+    // pull_rebase as non-V1 - so this assertion cannot distinguish "forwards the
+    // repo's mode" from "hardcodes pull_ff_only". The Codex review of PR #100
+    // caught exactly that, after this test had been reported as proven.
+    //
+    // The discriminating test is the one below: with a hardcode, a non-applying
+    // mode still renders a button. That is what actually holds the fix in place,
+    // and it is why this test is no longer described as proving forwarding.
+  });
+
+  it.each(["check_only", "fetch_only"])(
+    "offers NO apply button at all for a %s repository, and says why",
+    async (mode) => {
+      mockCommand(commands, "repoGet", async () => ok(behind(mode)));
+      const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
+      renderPanel();
+
+      // The repo IS behind and still says so - hiding that would be a different
+      // lie from the one being fixed.
+      await screen.findByText(/3 commits behind origin/);
+
+      expect(focalActions()).toEqual([]);
+      expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
+      expect(updateNow).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["pull_standard", "pull_rebase"])(
+    "offers no apply button for %s, which this release never executes",
+    async (mode) => {
+      // Codex review of PR #100, second finding. `MODE_APPLIES` marked these two
+      // as applying while `V1Mode::from_update_mode` (policy.rs) returns None for
+      // both. The button was therefore enabled, the backend resolved it as
+      // `PolicyDecision::Skip` with status "success", and `run` fired its success
+      // toast - telling the user the update worked when nothing had happened.
+      //
+      // TRIPWIRE for the limitation noted above, with its reach stated exactly.
+      // This test reads no Rust. Editing `V1Mode::from_update_mode` alone leaves
+      // it green and the UI action absent - the verification pass of PR #100
+      // corrected an earlier comment here that claimed otherwise. What it DOES
+      // catch is the frontend half: flipping either mode to `true` in
+      // `MODE_APPLIES` renders an action and fails this case, which is the edit
+      // that would silently re-enable the false success toast.
+      mockCommand(commands, "repoGet", async () => ok(behind(mode)));
+      const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
+      renderPanel();
+
+      await screen.findByText(/3 commits behind origin/);
+      expect(focalActions()).toEqual([]);
+      // Second guard, added after the verification pass: absence alone is weak
+      // evidence. The explanation must actually render, so a branch that drew
+      // neither a button nor a reason could not pass.
+      expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
+      expect(updateNow).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["some_future_mode", "constructor", "toString", "valueOf", "__proto__"])(
+    "offers no apply button for the unrecognised mode %s, rather than guessing",
+    async (mode) => {
+      // `RepoDetail.updateMode` is a plain `String` on the wire (E-06), so an
+      // unrecognised value is reachable - a newer backend, or a hand-edited
+      // database. Failing closed is the only safe direction.
+      //
+      // The four prototype names are here because the first version of this guard
+      // used `mode in MODE_APPLIES`, and `in` walks the prototype chain: all four
+      // passed and came back as live modes. The earlier test used only
+      // "some_future_mode", which is absent from the prototype too, so it stayed
+      // green while the implementation was broken for every name below it.
+      mockCommand(commands, "repoGet", async () => ok(behind(mode)));
+      const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
+      renderPanel();
+
+      await screen.findByText(/3 commits behind origin/);
+      expect(focalActions()).toEqual([]);
+      expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
+      expect(updateNow).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -109,6 +109,71 @@ const POLICY_OPTIONS: { mode: UpdateMode; label: string; blurb: string; disabled
   { mode: "pull_rebase", label: "Rebase pull", blurb: "Not available in this release.", disabled: true },
 ];
 
+/**
+ * Whether a mode actually changes anything IN THIS RELEASE, and therefore
+ * whether an "apply now" button means anything.
+ *
+ * The authority is `V1Mode::from_update_mode` in `crates/reposync-core/src/
+ * policy.rs`, which returns `None` for `pull_standard` and `pull_rebase` -
+ * "non-V1 modes: never executed as a V1 mode". This table must agree with it.
+ *
+ * Those two were `true` here until the Codex review of PR #100. The consequence
+ * was worse than a missing button: the backend resolves a non-V1 mode as
+ * `PolicyDecision::Skip`, which `repo.rs` reports with status `"success"`, and
+ * `run` below fires its success toast unconditionally - so pressing the button
+ * told the user the update had worked when nothing had happened. A false
+ * success is the BL-NI-77 shape, and it is the one this file is least allowed
+ * to reproduce.
+ *
+ * Exhaustive by type, so a new `UpdateMode` fails the build here rather than
+ * silently defaulting to "offers a pull button" - the direction that would
+ * reintroduce composite pin 34.
+ *
+ * **Bringing a mode live is a FOUR-place change, not two.** An earlier version
+ * of this comment said two, and the Codex review of PR #100 found that false:
+ *   1. `V1Mode::from_update_mode` in `policy.rs` - the authority;
+ *   2. this table;
+ *   3. `POLICY_OPTIONS` above, which still marks it `disabled: true`;
+ *   4. the `pull_standard`/`pull_rebase` cases in `repo-detail.test.tsx`, which
+ *      assert that mode offers no action and will fail once it does.
+ * Nothing enforces that list across the Rust/TypeScript boundary. (4) is the
+ * tripwire that makes a partial change loud rather than silent.
+ */
+const MODE_APPLIES: Record<UpdateMode, boolean> = {
+  check_only: false,
+  fetch_only: false,
+  pull_ff_only: true,
+  // Not a claim that these never write - a claim that THIS release never runs
+  // them. Mirrors policy.rs's own `None` arm.
+  pull_standard: false,
+  pull_rebase: false,
+};
+
+/**
+ * Narrow the wire type's plain `string` to a mode we recognise, or `null`.
+ *
+ * `RepoDetail.updateMode` is a `String` on the Rust side by deliberate choice
+ * (E-06), so a cast here would be this codebase's signature defect - asserting
+ * something the type cannot know. `null` for an unrecognised value is the safe
+ * direction: the caller then offers NO apply button, which is the failure mode
+ * that cannot pull against the user's wishes.
+ */
+function asUpdateMode(mode: string): UpdateMode | null {
+  // `hasOwnProperty`, never `in`. The Codex review of PR #100 found that `in`
+  // walks the prototype chain, so "constructor", "toString", "valueOf" and
+  // "__proto__" all passed the check and came back as live modes - reproduced
+  // in node against these exact functions. The comment here previously claimed
+  // every unrecognised value became null, and for those four it did not.
+  return Object.prototype.hasOwnProperty.call(MODE_APPLIES, mode)
+    ? (mode as UpdateMode)
+    : null;
+}
+
+/** The label this repository's own mode is presented under, from the one list that names them. */
+function modeLabel(mode: string): string {
+  return POLICY_OPTIONS.find((o) => o.mode === mode)?.label ?? mode;
+}
+
 type PanelTab = "overview" | "activity" | "settings";
 
 const PANEL_TABS: { value: PanelTab; label: string }[] = [
@@ -579,7 +644,14 @@ function DetailBody({
           throughout; only the reason changed.
         */}
           <TabPanel value="overview" className="min-h-0 flex-1 overflow-auto flex flex-col gap-5 p-5">
-            <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
+            {/* `data-testid` so a test can assert that this region contains NO
+                interactive element for a mode that must not apply. Name-based
+                checks were the Codex review of PR #100's finding: a button
+                renamed, given an aria-label, or rendered as a link escapes them. */}
+            <div
+              data-testid="focal"
+              className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}
+            >
               <Focal r={r} status={status} busy={busy} run={run} onCheckNow={onCheckNow} />
             </div>
 
@@ -688,6 +760,19 @@ function Focal({
 }) {
   const style = STATUS_STYLE[status];
   const isBusy = busy !== null;
+  // Composite pin 34. This button used to call `repoUpdateNow(r.id, "pull_ff_only")` with the
+  // mode written in, so a repository the user had deliberately set to Check only or Fetch only
+  // still offered a button that pulled - the one thing those two modes exist to prevent. It now
+  // sends the repository's OWN mode, and where that mode does not write to the working tree it
+  // offers no apply button at all and says why instead.
+  //
+  // Deliberately NOT the full J.4 sync model, which is still unratified (bench decision R2,
+  // marked Unsure 2026-09-22). This is the correctness half only: do what the user configured,
+  // and never offer an action the configuration forbids.
+  const mode = asUpdateMode(r.updateMode);
+  // Non-null exactly when an apply action is both recognised and permitted, so the button below
+  // needs no assertion to call it: the type carries the proof.
+  const applyMode = mode !== null && MODE_APPLIES[mode] ? mode : null;
 
   if (status === "behind") {
     return (
@@ -700,21 +785,29 @@ function Focal({
           be clean.
         </p>
         <LagSignal className="mt-3" status={status} magnitude={lagMagnitude(r)} label={lagLabel(r)} />
-        <Button
-          className="mt-3"
-          size="sm"
-          disabled={isBusy}
-          onClick={() =>
-            run(
-              "ff",
-              () => unwrap(commands.repoUpdateNow(r.id, "pull_ff_only")),
-              `Fast-forwarded ${r.localName}`,
-              "Advanced to match origin.",
-            )
-          }
-        >
-          <ArrowDownToLine className={busy === "ff" ? "animate-spin" : undefined} /> Fast-forward now
-        </Button>
+        {applyMode !== null ? (
+          <Button
+            className="mt-3"
+            size="sm"
+            disabled={isBusy}
+            onClick={() =>
+              run(
+                "ff",
+                () => unwrap(commands.repoUpdateNow(r.id, applyMode)),
+                `Fast-forwarded ${r.localName}`,
+                "Advanced to match origin.",
+              )
+            }
+          >
+            <ArrowDownToLine className={busy === "ff" ? "animate-spin" : undefined} />{" "}
+            {modeLabel(r.updateMode)} now
+          </Button>
+        ) : (
+          <p className="mt-3 text-xs text-muted-foreground">
+            This repository is set to <b>{modeLabel(r.updateMode)}</b>, so RepoSync will not pull
+            these commits for you. Change it in the Settings tab, or pull in your own tools.
+          </p>
+        )}
       </>
     );
   }
