@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commands, events } from "@/lib/bindings";
 import type { ActivityRecord, GroupSummary, RepoDetail, Settings } from "@/lib/bindings";
@@ -881,19 +881,25 @@ describe("the apply action obeys the repository's own update mode (pin 34)", () 
   }
 
   /**
-   * Every button in the panel whose name ends in "now".
+   * Every interactive element inside the Focal region.
    *
-   * Name-based absence checks were the review's finding: the first version
-   * rejected only "Fast-forward now", "Fetch only now" and "Check only now", so
-   * an apply button RENAMED to "Pull now" would have escaped it. Enumerating and
-   * comparing the whole set cannot be dodged by a rename.
+   * STRUCTURAL, not name-based. The first version of this helper enumerated
+   * buttons whose accessible name ended in "now" and claimed a rename could not
+   * dodge it. The Codex verification pass of PR #100 showed that was false:
+   * renaming an apply action to "Apply", giving it an `aria-label` that does not
+   * end in "now", or rendering it as a link would all escape.
+   *
+   * Scoping to `data-testid="focal"` and counting BOTH buttons and links removes
+   * the naming question entirely - for a mode that must not apply, this region is
+   * required to contain no interactive element of any kind. "Check now" lives in
+   * the header action row, outside this region, so it needs no exclusion.
    */
-  function applyButtons(): string[] {
-    return screen
-      .getAllByRole("button")
-      .map((b) => (b.getAttribute("aria-label") ?? b.textContent ?? "").trim())
-      .filter((n) => /\bnow$/i.test(n))
-      .filter((n) => n !== "Check now"); // always present, never an apply action
+  function focalActions(): string[] {
+    const focal = screen.getByTestId("focal");
+    return [
+      ...within(focal).queryAllByRole("button"),
+      ...within(focal).queryAllByRole("link"),
+    ].map((el) => (el.getAttribute("aria-label") ?? el.textContent ?? "").trim());
   }
 
   it("sends the repository's own mode rather than a value of its own", async () => {
@@ -927,7 +933,7 @@ describe("the apply action obeys the repository's own update mode (pin 34)", () 
       // lie from the one being fixed.
       await screen.findByText(/3 commits behind origin/);
 
-      expect(applyButtons()).toEqual([]);
+      expect(focalActions()).toEqual([]);
       expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
       expect(updateNow).not.toHaveBeenCalled();
     },
@@ -942,15 +948,23 @@ describe("the apply action obeys the repository's own update mode (pin 34)", () 
       // `PolicyDecision::Skip` with status "success", and `run` fired its success
       // toast - telling the user the update worked when nothing had happened.
       //
-      // This is also the TRIPWIRE for the limitation noted above: if either mode
-      // goes live in policy.rs, this test fails and forces the forwarding test to
-      // be rewritten against a second applying mode.
+      // TRIPWIRE for the limitation noted above, with its reach stated exactly.
+      // This test reads no Rust. Editing `V1Mode::from_update_mode` alone leaves
+      // it green and the UI action absent - the verification pass of PR #100
+      // corrected an earlier comment here that claimed otherwise. What it DOES
+      // catch is the frontend half: flipping either mode to `true` in
+      // `MODE_APPLIES` renders an action and fails this case, which is the edit
+      // that would silently re-enable the false success toast.
       mockCommand(commands, "repoGet", async () => ok(behind(mode)));
       const updateNow = mockCommand(commands, "repoUpdateNow", async () => ok(UPDATE_OK));
       renderPanel();
 
       await screen.findByText(/3 commits behind origin/);
-      expect(applyButtons()).toEqual([]);
+      expect(focalActions()).toEqual([]);
+      // Second guard, added after the verification pass: absence alone is weak
+      // evidence. The explanation must actually render, so a branch that drew
+      // neither a button nor a reason could not pass.
+      expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
       expect(updateNow).not.toHaveBeenCalled();
     },
   );
@@ -972,7 +986,7 @@ describe("the apply action obeys the repository's own update mode (pin 34)", () 
       renderPanel();
 
       await screen.findByText(/3 commits behind origin/);
-      expect(applyButtons()).toEqual([]);
+      expect(focalActions()).toEqual([]);
       expect(screen.getByText(/RepoSync will not pull these commits for you/)).toBeDefined();
       expect(updateNow).not.toHaveBeenCalled();
     },

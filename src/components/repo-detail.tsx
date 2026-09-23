@@ -127,8 +127,17 @@ const POLICY_OPTIONS: { mode: UpdateMode; label: string; blurb: string; disabled
  *
  * Exhaustive by type, so a new `UpdateMode` fails the build here rather than
  * silently defaulting to "offers a pull button" - the direction that would
- * reintroduce composite pin 34. When a mode goes live in `policy.rs`, this is
- * the second of exactly two places that must change.
+ * reintroduce composite pin 34.
+ *
+ * **Bringing a mode live is a FOUR-place change, not two.** An earlier version
+ * of this comment said two, and the Codex review of PR #100 found that false:
+ *   1. `V1Mode::from_update_mode` in `policy.rs` - the authority;
+ *   2. this table;
+ *   3. `POLICY_OPTIONS` above, which still marks it `disabled: true`;
+ *   4. the `pull_standard`/`pull_rebase` cases in `repo-detail.test.tsx`, which
+ *      assert that mode offers no action and will fail once it does.
+ * Nothing enforces that list across the Rust/TypeScript boundary. (4) is the
+ * tripwire that makes a partial change loud rather than silent.
  */
 const MODE_APPLIES: Record<UpdateMode, boolean> = {
   check_only: false,
@@ -635,7 +644,14 @@ function DetailBody({
           throughout; only the reason changed.
         */}
           <TabPanel value="overview" className="min-h-0 flex-1 overflow-auto flex flex-col gap-5 p-5">
-            <div className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}>
+            {/* `data-testid` so a test can assert that this region contains NO
+                interactive element for a mode that must not apply. Name-based
+                checks were the Codex review of PR #100's finding: a button
+                renamed, given an aria-label, or rendered as a link escapes them. */}
+            <div
+              data-testid="focal"
+              className={cn("rounded-lg border p-4", style.tint, FOCAL_BORDER[status])}
+            >
               <Focal r={r} status={status} busy={busy} run={run} onCheckNow={onCheckNow} />
             </div>
 
