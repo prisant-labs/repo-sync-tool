@@ -1,10 +1,10 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { getVersion } from "@tauri-apps/api/app";
 import { Loader2, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { commands } from "@/lib/bindings";
 import type { Settings, UpdateAvailability } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,14 +14,191 @@ import { AsyncPanel } from "@/components/async-panel";
 import { DiagnosticsCard } from "@/components/diagnostics-card";
 import { PageShell } from "@/components/page-shell";
 import { useSettings } from "@/hooks/queries";
+import { useAppVersion } from "@/hooks/use-app-version";
 import { hhMmToMinutes, minutesToHhMm } from "@/lib/time";
 import { useToast } from "@/hooks/use-toast";
 
+/**
+ * AC-3 (E-21, composite pin 28, register F.3 / STG1): the screen's own
+ * section list, in document order. A single source of truth for three
+ * things that must otherwise drift apart - the nav rail's links, the ids the
+ * scroll-spy observer watches, and each `<section>` wrapper below - so
+ * adding or reordering a section only ever means editing this array.
+ *
+ * F.3 (`_local/design/3-decisions/2026-09-22_ui-delivery-plan.md`) is a
+ * prose recommendation answering jp's own "what is standard" question:
+ * "a docked section nav with scroll-spy ... one page, anchor links, the
+ * highlight follows the scroll position, clicking one jumps to that
+ * section." Register line 417 separately lists STG1's bench mark as "not
+ * marked" and F.4 says Settings' whole redesign "waits on STG1 and the
+ * STG2 hedge" - the register's own verdict was NOT ready. The E-21 spec
+ * treats composite pin 28 as settled build work regardless and rules
+ * re-deciding it out of scope; this file follows the spec, not the register,
+ * and that tension is worth naming rather than quietly resolving.
+ */
+const SETTINGS_SECTIONS: { id: string; label: string }[] = [
+  { id: "appearance", label: "Appearance" },
+  { id: "schedule", label: "Schedule" },
+  { id: "notifications", label: "Notifications" },
+  { id: "system", label: "System" },
+  { id: "updates", label: "Updates" },
+  { id: "integrations", label: "Integrations" },
+  { id: "diagnostics", label: "Diagnostics" },
+  { id: "about", label: "About" },
+];
+const SECTION_IDS = SETTINGS_SECTIONS.map((s) => s.id);
+
+/**
+ * Tracks which Settings section is currently in view, via
+ * `IntersectionObserver` rather than only responding to a nav click (AC-3's
+ * own wording: "the marker follows scroll position rather than only
+ * responding to clicks").
+ *
+ * Everything the observer callback touches is `useState`, never a `useRef`:
+ * this codebase's lint config (`react-hooks/refs`, the React Compiler rule)
+ * flags a closure created during render that COULD read a ref's `.current`
+ * when invoked, even one only ever invoked later, asynchronously, by the
+ * browser - which is exactly the shape a ref-based "which sections are
+ * currently intersecting" accumulator would have. `intersecting` therefore
+ * updates functionally (`setIntersecting((prev) => ...)`) instead of
+ * mutating a ref in place, and which section is "current" is derived in a
+ * plain `useEffect` that runs whenever that set changes.
+ *
+ * The observer instance itself is created via `useState`'s LAZY initializer
+ * form (`useState(() => ...)`), which runs exactly once at mount - early
+ * enough that every section's `ref=` callback (fired during that same
+ * mount's commit) already has a real observer to call `.observe()` on.
+ * `typeof IntersectionObserver === "undefined"` guards jsdom test
+ * environments that do not stub it (a plain `typeof` check on an undeclared
+ * global never throws), so a test that never mounts this hook's caller keeps
+ * working with no scroll-spy at all rather than crashing.
+ *
+ * `sectionRef(id)` is NOT identity-memoized across renders (a memoization
+ * cache is itself the same ref-during-render shape this file avoids
+ * elsewhere). A fresh render therefore hands each section a new ref
+ * callback, which makes React detach-then-reattach it - but `observe()`ing
+ * an element IntersectionObserver already watches is a no-op per spec, not
+ * an error, so the only cost is a redundant call on every re-render of the
+ * form above, not a correctness bug or a missed observation.
+ *
+ * Threshold geometry: a section counts as "current" once it has crossed a
+ * band roughly 15%-25% down the viewport, the standard IntersectionObserver
+ * scrollspy recipe. This is a best-effort default, NOT measured against the
+ * packaged app's real rendered header height - the exact percentages were
+ * not verified in a live browser.
+ */
+function useSectionScrollSpy(sectionIds: readonly string[]) {
+  const [intersecting, setIntersecting] = useState<ReadonlySet<string>>(() => new Set());
+
+  const [observer] = useState<IntersectionObserver | null>(() => {
+    if (typeof IntersectionObserver === "undefined") return null;
+    return new IntersectionObserver(
+      (entries) => {
+        setIntersecting((prev) => {
+          const next = new Set(prev);
+          for (const entry of entries) {
+            const id = (entry.target as HTMLElement).dataset.sectionId;
+            if (!id) continue;
+            if (entry.isIntersecting) next.add(id);
+            else next.delete(id);
+          }
+          return next;
+        });
+      },
+      { rootMargin: "-15% 0px -75% 0px", threshold: 0 },
+    );
+  });
+
+  // Derived during render, not stored in its own state: "current" is a pure
+  // function of `intersecting`, so a separate `activeId` state kept in sync
+  // via an effect would just be a second copy that could fall a render
+  // behind (and this lint config specifically flags `setState` calls inside
+  // an effect body for that reason). Document order, first match - with
+  // several sections tall enough to intersect the band at once, the
+  // earliest one in `sectionIds` wins, so the marker never has to pick
+  // between two simultaneous reports. Falls back to the first section
+  // before anything has been observed yet (mount, or no
+  // `IntersectionObserver` at all).
+  const activeId = sectionIds.find((id) => intersecting.has(id)) ?? sectionIds[0];
+
+  // Only the FULL screen unmounting (navigating away from Settings) tears
+  // down the observer today; no section here unmounts on its own while the
+  // screen stays up, so there is no per-section unobserve path to write yet.
+  useEffect(() => {
+    return () => observer?.disconnect();
+  }, [observer]);
+
+  function sectionRef(id: string) {
+    return (el: HTMLElement | null) => {
+      if (el && observer) {
+        el.dataset.sectionId = id;
+        observer.observe(el);
+      }
+    };
+  }
+
+  return { activeId, sectionRef };
+}
+
+type SectionRef = (id: string) => (el: HTMLElement | null) => void;
+
+/**
+ * The docked nav itself. Rendered into `PageShell`'s sticky `toolbar` slot
+ * (see `SettingsScreen` below) rather than as a separate vertical rail
+ * beside the content: `PageShell`'s header is already `sticky top-0`, so
+ * putting the nav there docks it for free, with no sticky-offset math
+ * against a header height that would otherwise have to be measured and
+ * hand-tuned. "Rail" in the acceptance criterion is read here as "a list of
+ * section links that stays visible while scrolling," not as a specific
+ * vertical-sidebar layout - a horizontal docked band is a valid instance
+ * of that.
+ *
+ * Every link is a real `<a href="#id">`. That alone is what makes every
+ * section reachable by keyboard (Tab moves to it, Enter/Space activates the
+ * browser's native fragment jump) - no custom key handling was written or
+ * is needed for that half of AC-3.
+ *
+ * This is the NAV STRUCTURE only. The card-per-section visual treatment the
+ * maintainer pointed at on the composite
+ * (`_local/design/_reference/ui-screenshots/settings/2026-09-22_14-53-52.png`
+ * - a filled header band per card, with an icon and the section name) is
+ * unratified and deliberately NOT built here; this file builds only the
+ * section structure that treatment would apply to.
+ */
+function SettingsSectionNav({ activeId }: { activeId: string }) {
+  return (
+    <nav aria-label="Settings sections">
+      <ul className="flex flex-wrap gap-x-4 gap-y-1">
+        {SETTINGS_SECTIONS.map((section) => {
+          const current = activeId === section.id;
+          return (
+            <li key={section.id}>
+              <a
+                href={`#${section.id}`}
+                aria-current={current ? "location" : undefined}
+                className={cn(
+                  "text-sm transition-colors",
+                  current
+                    ? "font-semibold text-foreground"
+                    : "font-medium text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {section.label}
+              </a>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}
+
 export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: () => void }) {
   const settings = useSettings();
+  const { activeId, sectionRef } = useSectionScrollSpy(SECTION_IDS);
 
   return (
-    <PageShell title="Settings" width="narrow">
+    <PageShell title="Settings" width="narrow" toolbar={<SettingsSectionNav activeId={activeId} />}>
 
       {/*
         Appearance sits OUTSIDE the AsyncPanel on purpose. Theme is not a
@@ -32,28 +209,43 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
         at an error they are struggling to read - would leave no way to switch
         themes at all. It has no data dependency, so it does not sit behind one.
       */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Appearance</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Field
-            label="Dark theme"
-            hint="Applies immediately. Not saved yet - RepoSync starts in light theme each launch."
-          >
-            <Switch checked={dark} onCheckedChange={() => onToggleTheme()} />
-          </Field>
-        </CardContent>
-      </Card>
+      <section
+        id="appearance"
+        ref={sectionRef("appearance")}
+        data-testid="settings-section-appearance"
+        className="scroll-mt-32"
+      >
+        <Card>
+          <CardHeader>
+            <CardTitle>Appearance</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0">
+            <Field
+              label="Dark theme"
+              hint="Applies immediately. Not saved yet - RepoSync starts in light theme each launch."
+            >
+              <Switch checked={dark} onCheckedChange={() => onToggleTheme()} />
+            </Field>
+          </CardContent>
+        </Card>
+      </section>
 
       <AsyncPanel state={settings}>
-        {(s) => <SettingsForm initial={s} onSaved={settings.refetch} />}
+        {(s) => <SettingsForm initial={s} onSaved={settings.refetch} sectionRef={sectionRef} />}
       </AsyncPanel>
     </PageShell>
   );
 }
 
-function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => void }) {
+function SettingsForm({
+  initial,
+  onSaved,
+  sectionRef,
+}: {
+  initial: Settings;
+  onSaved: () => void;
+  sectionRef: SectionRef;
+}) {
   const toast = useToast();
   const [draft, setDraft] = useState<Settings>(initial);
   const [saving, setSaving] = useState(false);
@@ -80,6 +272,7 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
 
   return (
     <div className="flex flex-col gap-5">
+      <section id="schedule" ref={sectionRef("schedule")} data-testid="settings-section-schedule" className="scroll-mt-32">
       <Card>
         <CardHeader>
           <CardTitle>Schedule</CardTitle>
@@ -144,7 +337,9 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           )}
         </CardContent>
       </Card>
+      </section>
 
+      <section id="notifications" ref={sectionRef("notifications")} data-testid="settings-section-notifications" className="scroll-mt-32">
       <Card>
         <CardHeader>
           <CardTitle>Notifications</CardTitle>
@@ -164,7 +359,9 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           </Field>
         </CardContent>
       </Card>
+      </section>
 
+      <section id="system" ref={sectionRef("system")} data-testid="settings-section-system" className="scroll-mt-32">
       <Card>
         <CardHeader>
           <CardTitle>System</CardTitle>
@@ -204,12 +401,16 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           </Field>
         </CardContent>
       </Card>
+      </section>
 
+      <section id="updates" ref={sectionRef("updates")} data-testid="settings-section-updates" className="scroll-mt-32">
       <UpdatesCard
         autoUpdateCheck={draft.autoUpdateCheck}
         onToggle={(v) => set("autoUpdateCheck", v)}
       />
+      </section>
 
+      <section id="integrations" ref={sectionRef("integrations")} data-testid="settings-section-integrations" className="scroll-mt-32">
       <Card>
         <CardHeader>
           <CardTitle>Integrations</CardTitle>
@@ -253,13 +454,26 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
           </Field>
         </CardContent>
       </Card>
+      </section>
 
       {/*
         Diagnostics sits below the editable sections and outside the save
         affordance on purpose: nothing on it is a setting, so putting it above
         would suggest the Save button applies to it.
       */}
+      <section id="diagnostics" ref={sectionRef("diagnostics")} data-testid="settings-section-diagnostics" className="scroll-mt-32">
       <DiagnosticsCard />
+      </section>
+
+      {/*
+        About (AC-4, E-21 composite pin 29, register STG4): the running
+        version, plus a link-out to the releases page rather than an inline
+        history. Last section, matching where "about this app" info usually
+        sits.
+      */}
+      <section id="about" ref={sectionRef("about")} data-testid="settings-section-about" className="scroll-mt-32">
+      <AboutCard />
+      </section>
 
       <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-background/80 py-3 backdrop-blur">
         <span className="text-xs text-muted-foreground">
@@ -289,6 +503,14 @@ function SettingsForm({ initial, onSaved }: { initial: Settings; onSaved: () => 
  * manual button below always works and nothing ever installs without confirming),
  * and a "Check for updates" button with an inline outcome. No telemetry / account
  * surface - checks-and-install only, matching the no-telemetry OSS posture.
+ *
+ * The version reads from the shared `useAppVersion` hook (AC-4, E-21
+ * composite pin 29) rather than its own `getVersion()` call. This card used
+ * to also overwrite its local copy with `UpdateAvailability.currentVersion`
+ * after a manual check; that write is gone too - both values name the same
+ * running binary from the same Tauri config, so there was never a case
+ * where they could legitimately disagree, only a second place a bug could
+ * make them.
  */
 function UpdatesCard({
   autoUpdateCheck,
@@ -298,20 +520,10 @@ function UpdatesCard({
   onToggle: (value: boolean) => void;
 }) {
   const toast = useToast();
-  const [version, setVersion] = useState<string | null>(null);
+  const version = useAppVersion();
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateAvailability | null>(null);
   const [installing, setInstalling] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    void getVersion()
-      .then((v) => active && setVersion(v))
-      .catch(() => active && setVersion(null));
-    return () => {
-      active = false;
-    };
-  }, []);
 
   async function check() {
     setChecking(true);
@@ -321,7 +533,6 @@ function UpdatesCard({
       // not a thrown error), so it resolves to the value directly, not a Result.
       const availability = await commands.appCheckForUpdate();
       setResult(availability);
-      if (availability.currentVersion) setVersion(availability.currentVersion);
     } catch (e) {
       toast("error", "Could not check for updates", String(e));
     } finally {
@@ -424,6 +635,53 @@ function UpdateOutcome({
     <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm font-medium text-status-sync">
       You are on the latest version.
     </div>
+  );
+}
+
+
+/**
+ * The "About" section (AC-4, E-21 composite pin 29, register STG4). Names
+ * the running version via the shared `useAppVersion` hook (the same one
+ * `app-shell.tsx`'s sidebar and `UpdatesCard` above use - one `getVersion()`
+ * call site, not three) and links out to the releases page.
+ *
+ * Deliberately excludes a past-releases list. No data source for RepoSync's
+ * own release history exists anywhere in this codebase - every `commands.*`
+ * call that reads release information (`bindings.ts`) takes a REPO id and
+ * reads THAT repo's upstream releases; nothing returns RepoSync's own
+ * history. Inventing one would be a capability, not a build (AC-4's own
+ * text), and AC-12 records the gap rather than leaving it implied.
+ *
+ * THERE IS ALSO NO LINK OUT, and that is a correction to an earlier version of
+ * this comment, which said no `on_navigation` override was "seen" in
+ * `src-tauri/src/lib.rs`. One is registered, at `lib.rs:440`, and
+ * `allow_navigation` (`lib.rs:272`) returns true only for the `tauri` scheme,
+ * the `tauri.localhost` host, and `localhost` under `tauri dev`. An
+ * `https://github.com/...` anchor is therefore REFUSED by the webview, so the
+ * "View releases" link this section briefly carried rendered, took keyboard
+ * focus, and did nothing.
+ *
+ * A control that cannot perform its action is worse than no control - it is the
+ * exact shape `src/lib/ui-reachability.test.ts` exists to catch one level up.
+ * Every external open in this app goes through a bespoke backend command
+ * instead (`repo_open_remote`, `repo_open_homepage`, `repo_open_folder`,
+ * `diagnostics_open_log_dir`), and all of them are repo- or path-scoped: there
+ * is no generic "open this URL" command to route a static link through.
+ * Adding one is `src-tauri` work and therefore a capability, recorded on AC-12.
+ */
+function AboutCard() {
+  const version = useAppVersion();
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>About</CardTitle>
+      </CardHeader>
+      <CardContent className="p-0">
+        <Field label="RepoSync version" hint="The version you are running now.">
+          <span className="font-mono text-xs font-semibold text-foreground">{version ?? "unknown"}</span>
+        </Field>
+      </CardContent>
+    </Card>
   );
 }
 

@@ -448,7 +448,12 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     renderPanel();
     const user = userEvent.setup();
 
-    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    // A repository with activity carries a count on the tab now (composite
+    // pin 33), which becomes part of the tab's accessible name (see
+    // `ui/tabs.tsx`'s comment on `TabList`'s badge) - hence the prefix match
+    // rather than an exact "Activity" here and at every other non-empty-
+    // activity tab lookup below.
+    await user.click(await screen.findByRole("tab", { name: /^Activity/ }));
 
     await waitFor(() =>
       expect(list).toHaveBeenCalledWith(
@@ -465,7 +470,7 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     mockCommand(commands, "activityList", async () => ok(sixty));
     renderPanel();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    await user.click(await screen.findByRole("tab", { name: /^Activity/ }));
 
     await screen.findByText("entry 1");
     expect(screen.queryByText(/most recent entries/i)).toBeNull();
@@ -476,7 +481,7 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     mockCommand(commands, "activityList", async () => ok(sixtyOne));
     renderPanel();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    await user.click(await screen.findByRole("tab", { name: /^Activity/ }));
 
     expect(await screen.findByText(/showing the 60 most recent entries/i)).toBeDefined();
     // The sentinel itself (the 61st row) is never rendered.
@@ -487,7 +492,7 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     mockCommand(commands, "activityList", async () => ok([activityRow(1, { summary: "fetched 3 commits" })]));
     renderPanel();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    await user.click(await screen.findByRole("tab", { name: /^Activity/ }));
 
     await user.click(await screen.findByText("fetched 3 commits"));
 
@@ -509,7 +514,7 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     mockCommand(commands, "activityList", async () => ok([activityRow(1, { summary: "fetched 3 commits" })]));
     renderPanelInDrawer();
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    await user.click(await screen.findByRole("tab", { name: /^Activity/ }));
 
     const rowText = await screen.findByText("fetched 3 commits");
     const rowButton = rowText.closest("button");
@@ -538,6 +543,89 @@ describe("RepoDetailPanel activity tab (N4)", () => {
     // `document.activeElement` was at open time, and clicking a `<button>`
     // natively focuses it first.
     expect(document.activeElement).toBe(rowButton);
+  });
+});
+
+describe("the Activity tab carries an entry-count badge (composite pin 33)", () => {
+  function activityRow(id: number): ActivityRecord {
+    return {
+      id,
+      repoId: 7,
+      timestamp: 1_700_000_000 - id,
+      actionType: "check",
+      status: "success",
+      reasonCode: null,
+      summary: `entry ${id}`,
+      commitRange: null,
+      rawCommand: null,
+      rawStdout: null,
+      rawStderr: null,
+      exitCode: null,
+      durationMs: null,
+    };
+  }
+
+  it("shows the count beside the label, from the fetch already made on mount - without switching to the tab", async () => {
+    mockCommand(commands, "activityList", async () => ok([activityRow(1), activityRow(2), activityRow(3)]));
+    renderPanel();
+
+    // Deliberately never clicks the Activity tab: `RepoDetailPanel` fetches
+    // this repo's activity on mount regardless of which tab is showing (see
+    // its own `useActivity` call), so the count must already be there. If
+    // this test had to open the tab first it could not tell "read on mount"
+    // from "read on open", which is the property AC-1 requires (no new read).
+    //
+    // `/^Activity/` rather than an exact "Activity": once a badge is showing,
+    // its `sr-only` text becomes part of THIS button's accessible name
+    // (see `ui/tabs.tsx`'s comment on the badge), matching how `NavButton`'s
+    // sidebar badge already behaves in `app-shell.tsx`.
+    // `findByRole` can resolve as soon as the tab itself exists, which is
+    // BEFORE `activityList` has necessarily settled (its name is plain
+    // "Activity" - matching `/^Activity/` - until the badge lands too). The
+    // two lookups below are `find*`, not `get*`, so they wait for the badge
+    // rather than racing it.
+    const tab = await screen.findByRole("tab", { name: /^Activity/ });
+    // Structural: one child of the tab carries the row count as its own text
+    // node, scoped to this tab so a rename of the "Activity" label elsewhere
+    // cannot make this pass by accident.
+    expect(await within(tab).findByText("3")).toBeDefined();
+    // The same count reaches a screen reader too, as readable text rather
+    // than a bare digit - not merely decorative.
+    expect(await within(tab).findByText(", 3 entries")).toBeDefined();
+  });
+
+  it("shows no count - not a zero - when the repository has no activity", async () => {
+    // Default beforeEach already stubs activityList to `ok([])`.
+    renderPanel();
+
+    const tab = await screen.findByRole("tab", { name: "Activity" });
+    // Honest limitation: with NO badge implementation at all this assertion
+    // already holds, so on its own it cannot prove the zero-guard exists -
+    // only the test above (a real count renders) can fail first. This test's
+    // job is to catch a REGRESSION where the guard is dropped and a literal
+    // "0" is rendered beside the label - it would fail against that specific
+    // wrong implementation even though it does not fail against today's
+    // no-badge-at-all code.
+    expect(tab.textContent).toBe("Activity");
+  });
+
+  it("badges a repo with more entries than the tab's own fetch limit as '60+', never as the raw 61", async () => {
+    // The panel asks for one more row than it shows (`ACTIVITY_FETCH_LIMIT`,
+    // a sentinel - see `lib/activity.ts`), exactly as the truncation-notice
+    // tests above exercise. A badge built from `activity.data.length` directly
+    // would read "61" here: one more than the panel underneath ever shows,
+    // and no closer to the repository's true total than "60" is.
+    const sixtyOne = Array.from({ length: 61 }, (_, i) => activityRow(i + 1));
+    mockCommand(commands, "activityList", async () => ok(sixtyOne));
+    renderPanel();
+
+    const tab = await screen.findByRole("tab", { name: /^Activity/ });
+    // `find*`, not `get*`: see the comment on the same race in the test above.
+    expect(await within(tab).findByText("60+")).toBeDefined();
+    // Checked only once the badge above has settled, so these assert against
+    // the final DOM rather than a still-loading one.
+    expect(within(tab).queryByText("61")).toBeNull();
+    expect(within(tab).queryByText("60")).toBeNull();
   });
 });
 

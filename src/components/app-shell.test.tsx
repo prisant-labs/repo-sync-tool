@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { commands, events } from "@/lib/bindings";
-import type { DailySummary, GroupSummary, RepoSummary } from "@/lib/bindings";
+import type { DailySummary, GroupSummary, RepoSummary, UpdateAvailability } from "@/lib/bindings";
 import { err, mockCommand, ok } from "@/test/mock-ipc";
 import { AppShell } from "@/components/app-shell";
 
@@ -77,12 +77,44 @@ const REPO: RepoSummary = {
   homepage: null,
 };
 
+// `appCheckForUpdate` is infallible by design (bindings.ts doc comment on
+// `UpdateAvailability`): it resolves to the value directly, never a
+// `commands.*` Result, so mocks here return the bare object rather than
+// `ok(...)`. This default is the "up to date" state (`available: false,
+// error: null`) - the common case that must NOT show the sidebar's notice -
+// so every test that does not care about AC-2 keeps its existing
+// expectations, and the dedicated AC-2 tests below override it per state.
+function upToDate(): UpdateAvailability {
+  return { currentVersion: "9.9.9", available: false, newVersion: null, notes: null, error: null };
+}
+
+const SETTINGS = {
+  globalCheckMinutes: 360,
+  quietHoursStart: null,
+  quietHoursEnd: null,
+  notifyOnRelease: true,
+  notifyOnFailure: true,
+  gitExecutablePath: null,
+  editorCommand: "code",
+  terminalCommand: "wt",
+  autostart: false,
+  activityRetentionD: 90,
+  githubTokenPresent: false,
+  autoUpdateCheck: true,
+  closeMinimizesToTray: true,
+};
+
 function mockShellCommands(
   groups: GroupSummary[] = GROUPS,
   repos: RepoSummary[] = [REPO],
   summary: DailySummary = EMPTY_SUMMARY,
 ) {
   mockCommand(commands, "dbRecoveryNotice", async () => ok({ recovered: false, backupPath: null }));
+  // The sidebar's update check is GATED on `autoUpdateCheck`, so every shell test
+  // needs a settings payload or the check never runs. Default true - the same
+  // default the backend ships - so the gate does not silently disable the very
+  // feature the AC-2 tests below are trying to prove.
+  mockCommand(commands, "settingsGet", async () => ok(SETTINGS));
   mockCommand(commands, "groupList", async () => ok(groups));
   mockCommand(commands, "repoList", async () => ok(repos));
   // D6: the backend scopes the summary, so the mock does. A mock that ignored
@@ -91,6 +123,7 @@ function mockShellCommands(
     ok(groupId === null ? summary : { ...summary, attentionCount: 0, attention: [] }),
   );
   mockCommand(commands, "repoGroupMemberships", async () => ok([{ repoId: 1, groupIds: [1] }]));
+  mockCommand(commands, "appCheckForUpdate", async () => upToDate());
 }
 
 beforeEach(() => {
@@ -420,5 +453,110 @@ describe("AppShell database recovery banner (N7)", () => {
     await screen.findByRole("heading", { name: "Dashboard" });
 
     expect(screen.queryByText("Database was reset after a failed migration")).toBeNull();
+  });
+});
+
+/**
+ * AC-2 (E-21, docs/internal/release-plans/_unassigned/E-21-composite-build-list/spec.md)
+ * / composite pin 1, round-three note J.3: the sidebar's own line for "an app
+ * update exists", drawn top, under the app name.
+ *
+ * `UpdateAvailability` (bindings.ts) separates THREE states, and the point of
+ * this criterion is that they stay separate: `available === true` is the only
+ * one that draws anything here. The other two - up to date
+ * (`available === false, error === null`) and unreachable
+ * (`available === false, error !== null`, which also covers a private-repo
+ * 404 and the ship-dark state) - both render nothing in the sidebar. Each gets
+ * its own test below with a DIFFERENT `error` value so an implementation that
+ * keys the notice off `!error` instead of `available` (which would wrongly
+ * show it on the up-to-date case) or off `error !== null` (which would wrongly
+ * show it on the unreachable case) fails one of them.
+ *
+ * These tests can prove the notice is present/absent and names the right
+ * version, and (via DOM sibling order) that it sits structurally between the
+ * brand row and the primary nav. They cannot prove visual position (jsdom
+ * computes no layout) - that is a real-browser / Playwright concern, same
+ * caveat the recovery-banner tests above already carry.
+ */
+describe("AppShell app-update notice (AC-2, composite pin 1)", () => {
+  it("makes NO update call at all when the user has turned the on-launch check off", async () => {
+    // Found by the audit of this change, and it is a consent defect rather than a
+    // detail. `auto_update_check`'s own doc comment in
+    // `crates/reposync-core/src/ipc.rs` says it "gates ONLY the on-launch check".
+    // The sidebar notice IS an on-launch check - it fires when the shell mounts -
+    // so the first version of this feature put a network call on every launch for
+    // a user who had explicitly switched that off, in a tool whose own framing is
+    // no-telemetry and OSS.
+    //
+    // Asserts the CALL was never made, not merely that no notice rendered: a
+    // version that checked and then hid the result would pass the weaker test
+    // while still reaching the network.
+    mockShellCommands();
+    mockCommand(commands, "settingsGet", async () => ok({ ...SETTINGS, autoUpdateCheck: false }));
+    mockCommand(commands, "appCheckForUpdate", async () => ({
+      currentVersion: "9.9.9",
+      available: true,
+      newVersion: "9.10.0",
+      notes: null,
+      error: null,
+    }));
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    expect(commands.appCheckForUpdate).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("sidebar-update-notice")).toBeNull();
+  });
+
+  it("shows a line under the app name naming the new version when an update is available", async () => {
+    mockShellCommands();
+    mockCommand(commands, "appCheckForUpdate", async () => ({
+      currentVersion: "9.9.9",
+      available: true,
+      newVersion: "9.10.0",
+      notes: null,
+      error: null,
+    }));
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    const notice = await screen.findByTestId("sidebar-update-notice");
+    expect(within(notice).getByText(/9\.10\.0/)).toBeDefined();
+
+    // Structural placement (enumerating siblings survives a copy-edit or a
+    // rename; matching an accessible name would not): the notice is the
+    // element immediately AFTER the brand row (which carries the "Sync"
+    // half of the wordmark) and immediately BEFORE the primary <nav>.
+    const before = notice.previousElementSibling as HTMLElement;
+    const after = notice.nextElementSibling as HTMLElement;
+    expect(within(before).getByText("Sync")).toBeDefined();
+    expect(after.tagName.toLowerCase()).toBe("nav");
+  });
+
+  it("shows no notice when the app is already up to date (available: false, error: null)", async () => {
+    mockShellCommands();
+    mockCommand(commands, "appCheckForUpdate", async () => upToDate());
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    // Not just "eventually absent" - give the async check a turn to resolve,
+    // then confirm it stayed absent.
+    await waitFor(() => expect(commands.appCheckForUpdate).toHaveBeenCalled());
+    expect(screen.queryByTestId("sidebar-update-notice")).toBeNull();
+  });
+
+  it("shows no notice when the update server could not be reached, even though that is also available: false (BL-NI-77 shape)", async () => {
+    mockShellCommands();
+    mockCommand(commands, "appCheckForUpdate", async () => ({
+      currentVersion: "9.9.9",
+      available: false,
+      newVersion: null,
+      notes: null,
+      error: { code: "fetch_failed", message: "could not reach the update server", remediation: "", context: null },
+    }));
+    render(<AppShell />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+
+    await waitFor(() => expect(commands.appCheckForUpdate).toHaveBeenCalled());
+    expect(screen.queryByTestId("sidebar-update-notice")).toBeNull();
   });
 });

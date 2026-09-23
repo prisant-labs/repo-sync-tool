@@ -6,7 +6,7 @@ status: draft
 tier: SHOULD
 scope: The eleven settled-but-unbuilt items the 2026-09-16 composite recorded as `build` pins, audited against the code on 2026-09-22. Criteria are written only for the four that are unblocked; the rest carry their blocker instead.
 created: 2026-09-22
-updated: 2026-09-22
+updated: 2026-09-23
 linked-effort: E-21
 linked-plan: null
 linked-strategy-brief: null
@@ -29,7 +29,17 @@ source: The annotation rail of `_local/design/4-composite/2026-09-16_composite.h
   pins and **dropped all 27 build pins**, correctly (a build pin is not a question) but with nothing
   carrying them afterwards. Eleven turned out to be unbuilt with no spec, no roadmap row and no
   test. This is that missing home.
-- **Next:** build AC-1 through AC-4, the four that are unblocked. The rest are blocked and say so.
+- **Built 2026-09-23** by a seven-agent workflow, then audited: AC-1 through AC-4 all land. Every
+  audit returned WEAK on first pass and the findings were fixed in place - see below.
+- **Two things the build changed about the spec itself.** AC-4's link-out is GONE: `on_navigation`
+  (`src-tauri/src/lib.rs:440`) routes every navigation through `allow_navigation`, which permits
+  only the `tauri` scheme, `tauri.localhost`, and dev `localhost`, so an https anchor is refused.
+  The link rendered, took focus and did nothing. Removed, and AC-12 now carries the backend opener
+  it would need. And AC-2 gained a gate nobody asked for: the sidebar's check is an ON-LAUNCH check,
+  which `auto_update_check` exists to control, so shipping it ungated would have put a network call
+  on every launch for a user who had turned that off.
+- **Next:** the seven blocked criteria, in the order their blockers clear. AC-11 (the column budget)
+  unblocks three of them at once.
 - **Blockers:** AC-5 needs a backend field; AC-6 to AC-9 need design decisions that do not exist;
   AC-10 and AC-11 are hard-blocked on the Repos column budget (register L.6).
 
@@ -64,12 +74,12 @@ The eleven unbuilt pins, each either built to a criterion below or carrying its 
 
 ### Unblocked - build these
 
-- [ ] **AC-1: The Activity tab shows how many entries it holds.** The repo detail drawer's Activity
+- [x] **AC-1: The Activity tab shows how many entries it holds.** The repo detail drawer's Activity
   tab carries a count beside its label. The panel already fetches this repository's activity on
   mount regardless of which tab is showing, so the number exists before the tab is opened and no new
   read is introduced. A repository with no activity shows no count rather than a zero, matching the
   sidebar's own null-versus-zero rule. Composite pin 33, register ledger BADGE. [S1][S2]
-- [ ] **AC-2: The sidebar says when an app update is available.** A line under the app name appears
+- [x] **AC-2: The sidebar says when an app update is available.** A line under the app name appears
   only when `app_check_for_update` reports `available == true`, and carries the new version. It does
   not appear when the app is up to date, and it does not appear when the update server could not be
   reached - those are three distinct states the `UpdateAvailability` type already separates, and
@@ -77,15 +87,20 @@ The eleven unbuilt pins, each either built to a criterion below or carrying its 
   controls stay in Settings (pin 41, already built); this is notification only. Composite pin 1,
   round-three note J.3: *"move to the sidebar - top under the app name, or bottom above Settings, in
   an obvious but nuanced way"*. [S1][S3]
-- [ ] **AC-3: Settings has a docked section navigation.** A nav rail lists the screen's sections and
+- [x] **AC-3: Settings has a docked section navigation.** A nav rail lists the screen's sections and
   marks the one currently in view as the page scrolls. Every section is reachable by keyboard, and
   the marker follows the scroll position rather than only responding to clicks. Composite pin 28,
   register F.3 / STG1. [S1][S2]
-- [ ] **AC-4: Settings has an About section.** It names the running version, which
+- [x] **AC-4: Settings has an About section.** It names the running version, which
   `UpdateAvailability.currentVersion` and `getVersion()` both already supply. **Past releases are
   explicitly NOT in this criterion**: no data source for them exists, and inventing one is a
-  capability, not a build. The section links out to the releases page instead, and AC-12 records the
-  gap. Composite pin 29, register STG4. [S1][S4]
+  capability, not a build. **Nor does it link out**, which is a correction to this criterion made
+  while building it: `on_navigation` (`src-tauri/src/lib.rs:440`) routes every navigation through
+  `allow_navigation`, which permits only the `tauri` scheme, `tauri.localhost`, and dev
+  `localhost`. An https anchor is refused, so the link rendered, took keyboard focus and did
+  nothing - worse than no control, and the shape `src/lib/ui-reachability.test.ts` guards one level
+  up. AC-12 carries the backend opener a working link would need. Composite pin 29, register STG4.
+  [S1][S4]
 
 ### Blocked - the blocker is the deliverable
 
@@ -121,9 +136,15 @@ The eleven unbuilt pins, each either built to a criterion below or carrying its 
   - Folder becomes an icon with the path on hover - saves 106px, more than twice any other single
   change, and is the largest available lever. It reverses T1, which was settled the same day
   *without the width budget attached*: a Stage 0 failure, recorded as such. [S2]
-- [ ] **AC-12: "Past releases" has no data source, and that is written down.** Either a capability
-  spec exists for fetching RepoSync's own release history, or AC-4's link-out is accepted as the
-  permanent answer. Not left implied. [S4]
+- [ ] **AC-12: The About section can neither list releases nor link to them, and both gaps are
+  written down.** Two separate misses, found while building AC-4. (a) No data source for RepoSync's
+  own release history exists - every `commands.*` release read takes a repo id and reads THAT
+  repo's upstream. (b) There is no generic "open this URL" command either: every external open in
+  this app is a bespoke repo- or path-scoped backend command (`repo_open_remote`,
+  `repo_open_homepage`, `diagnostics_open_log_dir`), and the webview refuses a plain anchor. A
+  working link therefore needs `src-tauri` work - an `app_open_releases`-style command through
+  `opener.rs`'s existing URL-handling pattern. Until one exists, About names the version and stops.
+  [S4]
 
 ## Dependencies
 

@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
 import { Activity, AlertTriangle, LayoutDashboard, List, Plus, Settings, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { events } from "@/lib/bindings";
 import { useToast } from "@/hooks/use-toast";
+import { useAppVersion } from "@/hooks/use-app-version";
 import { Button } from "@/components/ui/button";
 import { GroupsNav } from "@/components/groups-nav";
 import {
+  useAppUpdateAvailability,
   useBackendEvents,
   useDbRecoveryNotice,
   useGroups,
   useRepoGroupMemberships,
   useRepoList,
+  useSettings,
   useSummaryToday,
 } from "@/hooks/queries";
 import { groupScope } from "@/lib/group-scope";
@@ -184,31 +186,31 @@ function useTheme() {
   return { dark, toggle: () => setDark((d) => !d) };
 }
 
-/**
- * The running app version, read once from Tauri at mount (the real semver
- * from `tauri.conf.json`, not a hand-maintained literal). Falls back to a
- * loading placeholder while the async call resolves, following the same
- * mounted-guard idiom as `useAsync` (hooks/use-async.ts).
- */
-function useAppVersion() {
-  const [version, setVersion] = useState<string | null>(null);
-  useEffect(() => {
-    let active = true;
-    getVersion().then((v) => {
-      if (active) setVersion(v);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-  return version;
-}
-
 export function AppShell() {
   const [view, setView] = useState<View>("dashboard");
   const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
   const { dark, toggle } = useTheme();
   const appVersion = useAppVersion();
+  /**
+   * AC-2 (E-21, composite pin 1): the sidebar's own line for "an app update
+   * exists". `UpdateAvailability` (bindings.ts) separates three states, and
+   * only the first one draws anything here - up to date and unreachable both
+   * render nothing, on purpose. Rendering the unreachable case the same as
+   * up to date would report a network failure as reassurance, which is the
+   * defect shape BL-NI-77 was filed about; conflating it with "available"
+   * would be just as wrong the other way. The check-and-install controls
+   * stay in Settings (composite pin 41, already built) - this is
+   * notification only.
+   */
+  // `?? false` while settings load: do not call before we know the user's
+  // answer. A brief no-notice window is the honest default; the alternative
+  // checks first and asks permission afterwards.
+  const settingsState = useSettings();
+  const updateCheck = useAppUpdateAvailability(settingsState.data?.autoUpdateCheck ?? false);
+  const availableUpdate =
+    updateCheck.data?.available === true && updateCheck.data.newVersion
+      ? updateCheck.data
+      : null;
   const groupsState = useGroups();
   const groups = groupsState.data ?? [];
   const toast = useToast();
@@ -360,6 +362,25 @@ export function AppShell() {
             {appVersion ?? "..."}
           </span>
         </div>
+
+        {/*
+          AC-2 / composite pin 1, round-three note J.3: "move to the sidebar
+          - top under the app name, or bottom above Settings, in an obvious
+          but nuanced way" - drawn top, directly under the brand row above.
+          See the `availableUpdate` comment for why the other two
+          `UpdateAvailability` states render nothing here.
+        */}
+        {availableUpdate && (
+          <div
+            data-testid="sidebar-update-notice"
+            className="mx-2.5 mb-2 flex items-center gap-2 rounded-md border-l-2 border-l-primary-ink bg-muted px-2.5 py-2"
+          >
+            <span className="text-xs font-medium text-foreground">
+              Update available: v{availableUpdate.newVersion}
+            </span>
+          </div>
+        )}
+
         <nav className="flex flex-col gap-0.5 px-2.5 py-2">
           {PRIMARY_NAV.map(({ id, label, Icon }) => (
             <NavButton
