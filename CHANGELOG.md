@@ -30,6 +30,18 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   yet, shows nothing rather than a zero.
 - **An Add repositories button in the sidebar**, above Settings, reachable
   from any screen instead of only from the Repos and Dashboard headers.
+- **The sidebar tells you when a new version of RepoSync is available**, in a
+  line under the app name. It appears only when the update check found one. If
+  the check could not reach the server, it says nothing, rather than implying
+  you are up to date. If you have turned off automatic update checks, it makes
+  no check at all.
+- **Settings has a section bar across the top.** It lists every section,
+  jumps to one when you click it, and highlights the one you are reading as
+  you scroll, including the last one at the bottom of the page.
+- **Settings has an About section** that names the version you are running. It
+  stays available even if your settings cannot be read.
+- **The repository drawer's Activity tab shows how many entries it holds.**
+  More than 60 shows as "60+", because that is as many as it loads.
 
 ### Changed
 - **An empty Branch column now says why it is empty.** A repository can have no

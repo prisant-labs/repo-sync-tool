@@ -84,6 +84,39 @@ export function useDbRecoveryNotice() {
   return useAsync(() => unwrap(commands.dbRecoveryNotice()), []);
 }
 
+/**
+ * The app's own self-update availability (E-18 auto-update), read once at
+ * shell mount, for the sidebar's notice (AC-2 of E-21, composite pin 1).
+ *
+ * `appCheckForUpdate` is infallible by design (its doc comment in
+ * bindings.ts): an unreachable update server is a PAYLOAD state
+ * (`available: false, error: <set>`), not a thrown rejection, so this calls
+ * it directly rather than through `unwrap`, which every other hook here uses
+ * because every other command returns a `commands.*` Result.
+ *
+ * There is no backend event for "an update became available" to subscribe
+ * to instead - the on-launch check raises an OS toast directly (see
+ * `updates.rs`), outside the typed event bus - so this and the Settings
+ * screen's own "Check for updates" button each call the command
+ * independently rather than sharing one read.
+ */
+export function useAppUpdateAvailability(enabled: boolean) {
+  // GATED on the user's own setting, and that gate is not optional. The
+  // `auto_update_check` field's doc comment in `crates/reposync-core/src/ipc.rs`
+  // says it "gates ONLY the on-launch check; the manual Check for updates action
+  // runs regardless". The sidebar notice IS an on-launch check - it fires when
+  // the shell mounts - so shipping it ungated would have put a network call on
+  // every launch for a user who had explicitly turned that off. In a tool whose
+  // own framing is no-telemetry and OSS, that is a consent defect, not a detail.
+  //
+  // `enabled === false` resolves to null rather than calling: `AppShell` renders
+  // no notice for a null payload, which is the same branch as "up to date".
+  return useAsync(
+    () => (enabled ? commands.appCheckForUpdate() : Promise.resolve(null)),
+    [enabled],
+  );
+}
+
 /** Live list of repo groups (tags) with member counts, for the sidebar + management. */
 export function useGroups() {
   return useAsync(() => unwrap(commands.groupList()), []);

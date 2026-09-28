@@ -65,7 +65,22 @@ export function TabList({
   "aria-label": ariaLabel,
   className,
 }: {
-  tabs: { value: string; label: string }[];
+  tabs: {
+    value: string;
+    label: string;
+    /**
+     * A count shown beside the label (composite pin 33). Same null-vs-zero
+     * rule as the sidebar's own repo count in `app-shell.tsx` (`NavButton`'s
+     * `badge` prop, SB4): omitted, `null`, or a `count` of `0` all mean
+     * "nothing to show" - only a positive `count` draws a badge.
+     *
+     * `display` is the short visual form (e.g. "3" or "60+"); `description`
+     * is the full form a screen reader announces (e.g. "3 entries"). They can
+     * differ, as they do here, because a badge that reads "60+" visually
+     * would be a strange thing to read aloud as literally "sixty plus".
+     */
+    badge?: { count: number; display: string; description: string } | null;
+  }[];
   "aria-label": string;
   className?: string;
 }) {
@@ -156,6 +171,34 @@ export function TabList({
             )}
           >
             {t.label}
+            {t.badge != null && t.badge.count > 0 && (
+              <>
+                {/* The digits: `aria-hidden` so a screen reader does not say
+                    the count twice - once as these raw digits, once from the
+                    `sr-only` span below. Per the accname spec, "name from
+                    content" is not supposed to skip clip-positioned text the
+                    way `sr-only` hides it visually (only `display:none`,
+                    `visibility:hidden`, or `aria-hidden` are excluded), so
+                    that span's text is expected to become part of THIS
+                    BUTTON'S accessible name rather than staying a separate
+                    description - confirmed here under jsdom, not against a
+                    real browser/AT. Deliberate, matching `NavButton`'s own
+                    badge in `app-shell.tsx` (SB4): "the count is real
+                    information ... it is said properly instead". The
+                    consequence: a tab's name is no longer always exactly its
+                    label once a badge is showing, which is why callers
+                    matching `{ name: "Activity" }` need a prefix match
+                    (`/^Activity/`) once activity is non-empty - see
+                    `repo-detail.test.tsx`. */}
+                <span
+                  aria-hidden
+                  className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground"
+                >
+                  {t.badge.display}
+                </span>
+                <span className="sr-only">{`, ${t.badge.description}`}</span>
+              </>
+            )}
           </button>
         );
       })}

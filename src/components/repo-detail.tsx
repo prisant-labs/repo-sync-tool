@@ -439,6 +439,38 @@ function DetailBody({
   const isBusy = busy !== null;
   const badgeCount =
     status === "behind" ? (r.behindCount ?? 0) : status === "ahead" ? (r.aheadCount ?? 0) : undefined;
+  // AC-1 (composite pin 33, register ledger BADGE): how many entries the
+  // Activity tab holds, beside its label. `activity` is already fetched on
+  // mount regardless of which tab is showing (see `RepoDetailPanel`), so this
+  // reads that existing state rather than introducing a new one.
+  //
+  // Counted through the SAME `paginate` the tab's own body uses (below,
+  // `ActivitySection`), not `activity.data.length` directly: the fetch asks
+  // for `ACTIVITY_FETCH_LIMIT` (one more row than the page, a sentinel - see
+  // `lib/activity.ts`), so a repo with 61+ real entries would otherwise badge
+  // "61" - one more than the panel underneath ever shows, and still not the
+  // true total. `paginate`'s own `hasMore` says whether that
+  // sentinel came back; the badge reads "60+" in that case rather than a bare
+  // "60", since a bare number here would claim a total this capped fetch
+  // cannot know. A larger true count (say 10,000) still reads "60+": telling
+  // the two apart would need a real count query, which is a new read AC-1's
+  // brief rules out.
+  //
+  // Null-vs-zero rule matches the sidebar's own repo count in `app-shell.tsx`
+  // (`NavButton`'s `badge` prop, SB4): no data yet (`null`) and a real zero
+  // both show no count - only `TabList` rendering `badge.count > 0` draws one.
+  const activityPage = activity.data ? paginate(activity.data) : null;
+  const activityBadge = activityPage
+    ? {
+        count: activityPage.visible.length,
+        display: activityPage.hasMore ? `${activityPage.visible.length}+` : `${activityPage.visible.length}`,
+        description: activityPage.hasMore
+          ? `${activityPage.visible.length} or more entries`
+          : activityPage.visible.length === 1
+            ? "1 entry"
+            : `${activityPage.visible.length} entries`,
+      }
+    : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -616,7 +648,11 @@ function DetailBody({
       </div>
 
       <Tabs value={tab} onValueChange={(v) => onTabChange(v as PanelTab)} className="flex min-h-0 flex-1 flex-col">
-        <TabList aria-label="Repository sections" tabs={PANEL_TABS} className="px-5" />
+        <TabList
+          aria-label="Repository sections"
+          tabs={PANEL_TABS.map((t) => (t.value === "activity" ? { ...t, badge: activityBadge } : t))}
+          className="px-5"
+        />
         {/*
           `overflow-auto` lives on EACH TabPanel, not on a shared wrapper
           around all three, and that is what keeps each tab's scroll position
