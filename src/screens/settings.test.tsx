@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { commands } from "@/lib/bindings";
 import type { Diagnostics, Settings } from "@/lib/bindings";
-import { mockCommand, ok } from "@/test/mock-ipc";
+import { err, mockCommand, ok } from "@/test/mock-ipc";
 import { SettingsScreen } from "@/screens/settings";
 
 /**
@@ -19,12 +19,10 @@ import { SettingsScreen } from "@/screens/settings";
  * link a genuinely focusable element) rather than matching on label text,
  * so a rename of a section's visible label does not break them.
  *
- * AC-4: an About section names the running version and links out to the
- * releases page. It deliberately does NOT assert that the link opens a
- * browser - this app has no generic "open a URL" Tauri command or plugin
- * (see the comment above `AboutCard` in settings.tsx), so the link is a
- * plain anchor whose runtime behaviour inside the packaged webview is not
- * verified by a DOM-only test.
+ * AC-4: an About section names the running version, and carries no link,
+ * because the webview refuses an https navigation (see the comment above
+ * `AboutCard` in settings.tsx). Corrected 2026-09-28: this header used to say
+ * About linked out to the releases page, after the link had been removed.
  */
 
 vi.mock("@tauri-apps/api/app", () => ({ getVersion: vi.fn(async () => "9.9.9") }));
@@ -113,15 +111,43 @@ class FakeIntersectionObserver {
   }
 }
 
-function fireIntersecting(target: Element) {
-  const observer = FakeIntersectionObserver.instances.at(-1);
-  if (!observer) throw new Error("no IntersectionObserver was constructed");
+/**
+ * The observer that is watching `target`. The screen runs two observers, one
+ * for the sections and one for the page-edge markers, so "the last one
+ * constructed" no longer names a specific observer.
+ */
+function observerWatching(target: Element): FakeIntersectionObserver {
+  const observer = FakeIntersectionObserver.instances.find((o) => o.observed.includes(target));
+  if (!observer) throw new Error("no IntersectionObserver is watching that element");
+  return observer;
+}
+
+/** Report `target` entering (or, with `false`, leaving) its observer's area, as a real scroll would. */
+function fireIntersecting(target: Element, isIntersecting = true) {
+  const observer = observerWatching(target);
   act(() => {
     observer.callback(
-      [{ target, isIntersecting: true } as IntersectionObserverEntry],
+      [{ target, isIntersecting } as IntersectionObserverEntry],
       observer as unknown as IntersectionObserver,
     );
   });
+}
+
+function pageEdge(edge: "top" | "bottom"): Element {
+  const el = document.querySelector(`[data-page-edge="${edge}"]`);
+  if (!el) throw new Error(`no page-edge marker for the ${edge} of the page`);
+  return el;
+}
+
+function navLinks() {
+  const nav = screen.getByRole("navigation", { name: "Settings sections" });
+  return within(nav).getAllByRole("link");
+}
+
+function currentHrefs() {
+  return navLinks()
+    .filter((l) => l.hasAttribute("aria-current"))
+    .map((l) => l.getAttribute("href"));
 }
 
 beforeEach(() => {
@@ -221,16 +247,88 @@ describe("Settings section nav (AC-3)", () => {
   it("registers each section it lists with the scroll-spy observer", async () => {
     await renderSettings();
 
-    const observer = FakeIntersectionObserver.instances.at(-1);
-    expect(observer).toBeDefined();
+    const observer = observerWatching(screen.getByTestId("settings-section-appearance"));
 
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const links = within(nav).getAllByRole("link");
     for (const link of links) {
       const id = link.getAttribute("href")!.slice(1);
       const section = document.getElementById(id);
-      expect(observer!.observed).toContain(section);
+      expect(observer.observed).toContain(section);
     }
+  });
+
+  it("lists its links in the same order the sections appear on the page", async () => {
+    // The nav is built from `SETTINGS_SECTIONS`; the sections are written out
+    // by hand. Nothing else ties the two orders together.
+    await renderSettings();
+
+    const linkOrder = navLinks().map((l) => l.getAttribute("href")!.slice(1));
+    const pageOrder = [...document.querySelectorAll('section[data-testid^="settings-section-"]')].map((s) => s.id);
+    expect(linkOrder).toEqual(pageOrder);
+  });
+
+  it("stops marking a section once it has left the band, rather than keeping the earliest one it ever saw", async () => {
+    await renderSettings();
+    const integrations = screen.getByTestId("settings-section-integrations");
+    const diagnostics = screen.getByTestId("settings-section-diagnostics");
+
+    // Both inside the band at once: document order picks the earlier one.
+    fireIntersecting(integrations);
+    fireIntersecting(diagnostics);
+    expect(currentHrefs()).toEqual(["#integrations"]);
+
+    // Scrolling on, Integrations leaves the band. If the exit were ignored,
+    // first-match would keep picking Integrations forever.
+    fireIntersecting(integrations, false);
+    expect(currentHrefs()).toEqual(["#diagnostics"]);
+  });
+
+  it("marks the LAST section once the page has been scrolled to its end, even though that section never reaches the band", async () => {
+    // Measured 2026-09-28 in a headless render at 1440x900: About is too short
+    // to scroll up into the band, so clicking About left Diagnostics marked.
+    await renderSettings();
+    fireIntersecting(screen.getByTestId("settings-section-diagnostics"));
+    expect(currentHrefs()).toEqual(["#diagnostics"]);
+
+    fireIntersecting(pageEdge("top"), false);
+    fireIntersecting(pageEdge("bottom"), true);
+
+    expect(currentHrefs()).toEqual(["#about"]);
+  });
+
+  it("does NOT jump to the last section when the whole page fits on screen and nothing was scrolled", async () => {
+    await renderSettings();
+    const firstHref = navLinks()[0]!.getAttribute("href");
+
+    fireIntersecting(pageEdge("top"), true);
+    fireIntersecting(pageEdge("bottom"), true);
+
+    expect(currentHrefs()).toEqual([firstHref]);
+  });
+});
+
+describe("Settings when the settings read has not succeeded", () => {
+  it("keeps About, and links only to sections that are actually on the page, when the read fails", async () => {
+    mockCommand(commands, "settingsGet", async () => err("db.unavailable", "Could not read settings"));
+    render(<SettingsScreen dark={false} onToggleTheme={() => {}} />);
+    await screen.findByText("Could not read settings");
+
+    const about = screen.getByTestId("settings-section-about");
+    expect(await within(about).findByText("9.9.9")).toBeDefined();
+
+    const hrefs = navLinks().map((l) => l.getAttribute("href"));
+    expect(hrefs).toEqual(["#appearance", "#about"]);
+    for (const href of hrefs) expect(document.getElementById(href!.slice(1))).not.toBeNull();
+  });
+
+  it("keeps About, and links only to sections that are actually on the page, while the read is still pending", async () => {
+    mockCommand(commands, "settingsGet", () => new Promise(() => {}));
+    render(<SettingsScreen dark={false} onToggleTheme={() => {}} />);
+
+    const about = await screen.findByTestId("settings-section-about");
+    expect(await within(about).findByText("9.9.9")).toBeDefined();
+    expect(navLinks().map((l) => l.getAttribute("href"))).toEqual(["#appearance", "#about"]);
   });
 });
 

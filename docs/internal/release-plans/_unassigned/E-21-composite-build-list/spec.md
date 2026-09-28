@@ -6,7 +6,7 @@ status: draft
 tier: SHOULD
 scope: The eleven settled-but-unbuilt items the 2026-09-16 composite recorded as `build` pins, audited against the code on 2026-09-22. Criteria are written only for the four that are unblocked; the rest carry their blocker instead.
 created: 2026-09-22
-updated: 2026-09-23
+updated: 2026-09-28
 linked-effort: E-21
 linked-plan: null
 linked-strategy-brief: null
@@ -38,6 +38,15 @@ source: The annotation rail of `_local/design/4-composite/2026-09-16_composite.h
   it would need. And AC-2 gained a gate nobody asked for: the sidebar's check is an ON-LAUNCH check,
   which `auto_update_check` exists to control, so shipping it ungated would have put a network call
   on every launch for a user who had turned that off.
+- **Reviewed 2026-09-28**, by a Codex adversarial review and a headless render of the real
+  components. Two defects were fixed. First, AC-3's marker could never reach About: About is short
+  and last, so the page ran out of scroll before About entered the marker's band, and clicking it
+  left Diagnostics marked. The scroll-spy now marks the last section once the page is scrolled to
+  its end. Second, a failed or pending settings read removed About and left the nav with links to
+  six absent sections. About now renders without the settings read, and the nav lists only the
+  sections on the page. Four comments that described a releases link or a section order the code
+  does not have were corrected. Six tests were added, each shown to fail against the defect it
+  covers. The review record is at `_local/codex/2026-09-28_adversarial-review_e21-branch.md`.
 - **Next:** the seven blocked criteria, in the order their blockers clear. AC-11 (the column budget)
   unblocks three of them at once.
 - **Blockers:** AC-5 needs a backend field; AC-6 to AC-9 need design decisions that do not exist;

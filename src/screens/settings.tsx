@@ -20,10 +20,13 @@ import { useToast } from "@/hooks/use-toast";
 
 /**
  * AC-3 (E-21, composite pin 28, register F.3 / STG1): the screen's own
- * section list, in document order. A single source of truth for three
- * things that must otherwise drift apart - the nav rail's links, the ids the
- * scroll-spy observer watches, and each `<section>` wrapper below - so
- * adding or reordering a section only ever means editing this array.
+ * section list, in document order. It drives two things: the nav's links and
+ * the ids the scroll-spy treats as sections. It does NOT drive the
+ * `<section>` wrappers below, which are written out by hand in their own
+ * order. Reordering this array reorders the nav and nothing else, so the
+ * nav-order test in `settings.test.tsx` is what holds the two orders
+ * together, not this array. Corrected 2026-09-28: an earlier version of this
+ * comment said the array governed the wrappers too.
  *
  * F.3 (`_local/design/3-decisions/2026-09-22_ui-delivery-plan.md`) is a
  * prose recommendation answering jp's own "what is standard" question:
@@ -47,6 +50,9 @@ const SETTINGS_SECTIONS: { id: string; label: string }[] = [
   { id: "about", label: "About" },
 ];
 const SECTION_IDS = SETTINGS_SECTIONS.map((s) => s.id);
+// The sections that render without a settings read. The rest live inside the
+// settings panel and are absent while that read is loading or has failed.
+const SECTION_IDS_WITHOUT_SETTINGS = SECTION_IDS.filter((id) => id === "appearance" || id === "about");
 
 /**
  * Tracks which Settings section is currently in view, via
@@ -83,12 +89,25 @@ const SECTION_IDS = SETTINGS_SECTIONS.map((s) => s.id);
  *
  * Threshold geometry: a section counts as "current" once it has crossed a
  * band roughly 15%-25% down the viewport, the standard IntersectionObserver
- * scrollspy recipe. This is a best-effort default, NOT measured against the
- * packaged app's real rendered header height - the exact percentages were
- * not verified in a live browser.
+ * scrollspy recipe.
+ *
+ * The page end needs its own rule, because the band alone cannot reach the
+ * last section. About is short and last, so the page runs out of scroll
+ * before About's top gets anywhere near the band. Measured 2026-09-28 in a
+ * headless render at 1440x900: after clicking About, its top stopped 692px
+ * down, and the marker stayed on Diagnostics. So a second observer watches
+ * two one-pixel markers at the page's top and bottom edges. When the bottom
+ * one is in view and the top one is not, the page has been scrolled to its
+ * end, and the LAST section is current whatever the band says. When both are
+ * in view, the whole page fits on screen and nothing was scrolled, so the
+ * band decides as usual.
  */
 function useSectionScrollSpy(sectionIds: readonly string[]) {
   const [intersecting, setIntersecting] = useState<ReadonlySet<string>>(() => new Set());
+  // Whether each page-edge marker is inside the viewport. The top starts
+  // visible and the bottom hidden, which is the unscrolled state of any page
+  // taller than the window.
+  const [edges, setEdges] = useState<{ top: boolean; bottom: boolean }>({ top: true, bottom: false });
 
   const [observer] = useState<IntersectionObserver | null>(() => {
     if (typeof IntersectionObserver === "undefined") return null;
@@ -109,6 +128,25 @@ function useSectionScrollSpy(sectionIds: readonly string[]) {
     );
   });
 
+  // The page-edge observer. No root margin: an edge marker counts as in view
+  // the moment any of it is inside the viewport.
+  const [edgeObserver] = useState<IntersectionObserver | null>(() => {
+    if (typeof IntersectionObserver === "undefined") return null;
+    return new IntersectionObserver(
+      (entries) => {
+        setEdges((prev) => {
+          const next = { ...prev };
+          for (const entry of entries) {
+            const edge = (entry.target as HTMLElement).dataset.pageEdge;
+            if (edge === "top" || edge === "bottom") next[edge] = entry.isIntersecting;
+          }
+          return next;
+        });
+      },
+      { threshold: 0 },
+    );
+  });
+
   // Derived during render, not stored in its own state: "current" is a pure
   // function of `intersecting`, so a separate `activeId` state kept in sync
   // via an effect would just be a second copy that could fall a render
@@ -118,15 +156,26 @@ function useSectionScrollSpy(sectionIds: readonly string[]) {
   // earliest one in `sectionIds` wins, so the marker never has to pick
   // between two simultaneous reports. Falls back to the first section
   // before anything has been observed yet (mount, or no
-  // `IntersectionObserver` at all).
-  const activeId = sectionIds.find((id) => intersecting.has(id)) ?? sectionIds[0];
+  // `IntersectionObserver` at all). The page-end rule described above the
+  // hook takes precedence over all of that.
+  const lastId = sectionIds[sectionIds.length - 1];
+  const scrolledToEnd = edges.bottom && !edges.top;
+  const activeId =
+    scrolledToEnd && lastId !== undefined
+      ? lastId
+      : (sectionIds.find((id) => intersecting.has(id)) ?? sectionIds[0]);
 
   // Only the FULL screen unmounting (navigating away from Settings) tears
-  // down the observer today; no section here unmounts on its own while the
-  // screen stays up, so there is no per-section unobserve path to write yet.
+  // down the observers. The sections inside the settings panel do unmount if
+  // a later settings read fails, and they are not unobserved when they do.
+  // That is harmless: a detached element never reports as intersecting, and
+  // `activeId` only considers the ids the caller says are on the page.
   useEffect(() => {
-    return () => observer?.disconnect();
-  }, [observer]);
+    return () => {
+      observer?.disconnect();
+      edgeObserver?.disconnect();
+    };
+  }, [observer, edgeObserver]);
 
   function sectionRef(id: string) {
     return (el: HTMLElement | null) => {
@@ -137,7 +186,16 @@ function useSectionScrollSpy(sectionIds: readonly string[]) {
     };
   }
 
-  return { activeId, sectionRef };
+  function edgeRef(edge: "top" | "bottom") {
+    return (el: HTMLElement | null) => {
+      if (el && edgeObserver) {
+        el.dataset.pageEdge = edge;
+        edgeObserver.observe(el);
+      }
+    };
+  }
+
+  return { activeId, sectionRef, edgeRef };
 }
 
 type SectionRef = (id: string) => (el: HTMLElement | null) => void;
@@ -164,12 +222,16 @@ type SectionRef = (id: string) => (el: HTMLElement | null) => void;
  * - a filled header band per card, with an icon and the section name) is
  * unratified and deliberately NOT built here; this file builds only the
  * section structure that treatment would apply to.
+ *
+ * It lists only the sections that are on the page (`sectionIds`). While the
+ * settings read is loading or has failed, most sections are not rendered,
+ * and a link to one of them would do nothing when activated.
  */
-function SettingsSectionNav({ activeId }: { activeId: string }) {
+function SettingsSectionNav({ activeId, sectionIds }: { activeId: string; sectionIds: readonly string[] }) {
   return (
     <nav aria-label="Settings sections">
       <ul className="flex flex-wrap gap-x-4 gap-y-1">
-        {SETTINGS_SECTIONS.map((section) => {
+        {SETTINGS_SECTIONS.filter((section) => sectionIds.includes(section.id)).map((section) => {
           const current = activeId === section.id;
           return (
             <li key={section.id}>
@@ -195,10 +257,18 @@ function SettingsSectionNav({ activeId }: { activeId: string }) {
 
 export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggleTheme: () => void }) {
   const settings = useSettings();
-  const { activeId, sectionRef } = useSectionScrollSpy(SECTION_IDS);
+  // The same test `AsyncPanel` applies before it renders its children, so this
+  // is true exactly when the form's sections are on the page.
+  const formShown = settings.error === null && settings.data !== null;
+  const presentIds = formShown ? SECTION_IDS : SECTION_IDS_WITHOUT_SETTINGS;
+  const { activeId, sectionRef, edgeRef } = useSectionScrollSpy(presentIds);
 
   return (
-    <PageShell title="Settings" width="narrow" toolbar={<SettingsSectionNav activeId={activeId} />}>
+    <PageShell
+      title="Settings"
+      width="narrow"
+      toolbar={<SettingsSectionNav activeId={activeId} sectionIds={presentIds} />}
+    >
 
       {/*
         Appearance sits OUTSIDE the AsyncPanel on purpose. Theme is not a
@@ -215,6 +285,8 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
         data-testid="settings-section-appearance"
         className="scroll-mt-32"
       >
+        {/* The page's top edge marker. See `useSectionScrollSpy`. The negative margin cancels its one pixel, so layout is unchanged. */}
+        <div ref={edgeRef("top")} aria-hidden="true" className="-mb-px h-px" />
         <Card>
           <CardHeader>
             <CardTitle>Appearance</CardTitle>
@@ -231,9 +303,41 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
       </section>
 
       <AsyncPanel state={settings}>
-        {(s) => <SettingsForm initial={s} onSaved={settings.refetch} sectionRef={sectionRef} />}
+        {(s) => (
+          <SettingsForm initial={s} onSaved={settings.refetch} sectionRef={sectionRef} edgeRef={edgeRef} />
+        )}
       </AsyncPanel>
+
+      {/*
+        About has no settings data dependency, so a failed or pending settings
+        read must not take it away, for the same reason Appearance sits outside
+        the panel. It still renders INSIDE `SettingsForm` once the form is up.
+        The Save bar is sticky within the form's box, so it comes to rest at
+        the form's end. With About inside the form, that resting place is the
+        bottom of the page, below About (register S1). With About after the
+        panel, the bar would rest above About. The two render sites are
+        mutually exclusive: this one only while the form is absent.
+      */}
+      {!formShown && <AboutSection sectionRef={sectionRef} edgeRef={edgeRef} />}
     </PageShell>
+  );
+}
+
+type EdgeRef = (edge: "top" | "bottom") => (el: HTMLElement | null) => void;
+
+/**
+ * About (AC-4, E-21 composite pin 29, register STG4): the running version, and
+ * nothing that needs a settings read. Last section, matching where "about this
+ * app" info usually sits, so it also carries the page's bottom edge marker for
+ * the scroll-spy's page-end rule.
+ */
+function AboutSection({ sectionRef, edgeRef }: { sectionRef: SectionRef; edgeRef: EdgeRef }) {
+  return (
+    <section id="about" ref={sectionRef("about")} data-testid="settings-section-about" className="scroll-mt-32">
+      <AboutCard />
+      {/* The page's bottom edge marker. The negative margin cancels its one pixel. */}
+      <div ref={edgeRef("bottom")} aria-hidden="true" className="-mt-px h-px" />
+    </section>
   );
 }
 
@@ -241,10 +345,12 @@ function SettingsForm({
   initial,
   onSaved,
   sectionRef,
+  edgeRef,
 }: {
   initial: Settings;
   onSaved: () => void;
   sectionRef: SectionRef;
+  edgeRef: EdgeRef;
 }) {
   const toast = useToast();
   const [draft, setDraft] = useState<Settings>(initial);
@@ -465,15 +571,8 @@ function SettingsForm({
       <DiagnosticsCard />
       </section>
 
-      {/*
-        About (AC-4, E-21 composite pin 29, register STG4): the running
-        version, plus a link-out to the releases page rather than an inline
-        history. Last section, matching where "about this app" info usually
-        sits.
-      */}
-      <section id="about" ref={sectionRef("about")} data-testid="settings-section-about" className="scroll-mt-32">
-      <AboutCard />
-      </section>
+      {/* About, last, and before the Save bar. See `AboutSection` and the note where `SettingsScreen` renders its fallback copy. */}
+      <AboutSection sectionRef={sectionRef} edgeRef={edgeRef} />
 
       <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-background/80 py-3 backdrop-blur">
         <span className="text-xs text-muted-foreground">
@@ -643,7 +742,8 @@ function UpdateOutcome({
  * The "About" section (AC-4, E-21 composite pin 29, register STG4). Names
  * the running version via the shared `useAppVersion` hook (the same one
  * `app-shell.tsx`'s sidebar and `UpdatesCard` above use - one `getVersion()`
- * call site, not three) and links out to the releases page.
+ * call site, not three). It does not link out; see below. Corrected
+ * 2026-09-28: this sentence used to say it linked to the releases page.
  *
  * Deliberately excludes a past-releases list. No data source for RepoSync's
  * own release history exists anywhere in this codebase - every `commands.*`
