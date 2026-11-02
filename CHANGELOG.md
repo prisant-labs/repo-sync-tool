@@ -162,6 +162,16 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   who owns it.
 
 ### Security
+- **Eighteen published security advisories against RepoSync's dependencies are
+  closed, and none is waived.** The weekly dependency check had failed since
+  2026-10-19. Most of the fixes are routine updates to the TLS libraries that
+  secure every HTTPS connection RepoSync makes: to GitHub, and to the update
+  server. Four advisories concerned unpacking zip archives during an update.
+  RepoSync never receives its updates as zip archives, so that code is now left
+  out of the app altogether rather than patched. Two older advisories that had
+  been knowingly tolerated are also gone, because the library that carried them
+  was fixed upstream.
+
 - **The editor and terminal settings are now checked when you save them, not
   only when they are used.** RepoSync would store whatever you typed and only
   find out it was wrong the next time you tried to open a repository. It now
