@@ -73,8 +73,10 @@ of scope.
 ## A note on current posture
 
 RepoSync is **public beta** software. During the v0.9.x line, release binaries are
-unsigned on every platform and the auto-update path is deliberately dark, so an
-installed copy will not update itself. Two consequences worth stating plainly:
+unsigned on every platform. The production updater signing key landed in PR #99
+(production updater signing key), but no release has been signed with it yet,
+so the auto-update path is not live: an installed copy will not update itself.
+Two consequences worth stating plainly:
 
 - **You cannot verify what you downloaded against a publisher identity,** because
   there is no code-signing certificate on Windows and no Apple notarization on

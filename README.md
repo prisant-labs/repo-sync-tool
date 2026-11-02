@@ -42,10 +42,10 @@ RepoSync is in **public beta**. It works, it is actively developed, and it is us
 | **macOS** | **Experimental and unsupported.** Compiles and bundles in CI so the codebase does not rot, but it has **never been run on real Mac hardware by anyone**, and it is neither signed nor notarized. No packaged macOS download is published. Build from source if you want to try it, and expect Gatekeeper to block it. |
 | **Linux** | Not a target. |
 | **Installers** | **Unsigned.** Windows will show a SmartScreen "unknown publisher" warning on first run. There is no Authenticode certificate yet. |
-| **Auto-updater** | Wired but deliberately **dark**. It ships with a placeholder signing key and will not fetch or apply updates. **Update by downloading a new release manually; the in-app updater will not notice one.** |
-| **Latest release** | [v0.9.0](https://github.com/prisant-labs/repo-sync-tool/releases/tag/v0.9.0), marked pre-release. Windows artifacts only. |
+| **Auto-updater** | The real production signing key is in source as of PR #99 (production updater signing key). But no release has been signed with it yet, so no installed copy currently receives updates. **Update by downloading a new release manually; the in-app updater will not notice one.** |
+| **Latest release** | [v0.9.0](https://github.com/prisant-labs/repo-sync-tool/releases/tag/v0.9.0), marked pre-release. Windows artifacts only, and built before the production key landed, so it cannot verify updates signed with it. |
 
-None of that is an oversight. Code signing, Apple enrollment, and updater key custody are deliberate, human-gated steps that cost money or legal identity and have not happened yet. Shipping an unsigned binary while claiming otherwise would be the real problem. When they land, this table changes.
+None of that is an oversight. Code signing and Apple enrollment are deliberate, human-gated steps that cost money or legal identity and have not happened yet. The updater key has landed, but publishing a signed release and proving the update path end to end have not. Shipping an unsigned binary while claiming otherwise would be the real problem. When the remaining steps land, this table changes.
 
 ## Install
 
