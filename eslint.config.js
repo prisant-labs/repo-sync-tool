@@ -23,7 +23,11 @@ export default tseslint.config(
     // case-insensitively but eslint's ignore matching is case-SENSITIVE, and
     // `.gitignore` line 28 spells it `_LOCAL/` while the working tree spells
     // it `_local` - so a single entry silently misses on one of them.
-    ignores: ["dist", "src-tauri", "target", "_local", "_LOCAL"],
+    // `.claude` holds agent worktrees (`.claude/worktrees/<name>/`), each a full
+    // second checkout with its own `src/` and `tsconfig.json`. Linting from the
+    // root then finds two candidate tsconfig roots and fails every file inside
+    // the worktree with a parser error, while the real `src/` is fine.
+    ignores: ["dist", "src-tauri", "target", "_local", "_LOCAL", ".claude"],
   },
   {
     files: ["**/*.{ts,tsx}"],
