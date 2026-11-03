@@ -67,6 +67,13 @@ describe("readColumnPrefs", () => {
     expect(readColumnPrefs(KEY, DEFAULT_ORDER, DEFAULT_ORDER).order).toEqual(["b", "a", "c"]);
   });
 
+  it("keeps each stored id once, first occurrence winning, so a duplicated id cannot add a column", () => {
+    // The Codex review's case: a malformed saved order that repeats an id.
+    // Before the fix this read back as four entries for three columns.
+    writeColumnPrefs(KEY, { order: ["b", "c", "b", "a", "c"], visibility: {} });
+    expect(readColumnPrefs(KEY, DEFAULT_ORDER, DEFAULT_ORDER).order).toEqual(["b", "c", "a"]);
+  });
+
   it("drops a visibility entry for an id that no longer exists", () => {
     writeColumnPrefs(KEY, { order: DEFAULT_ORDER, visibility: { "ghost-column": false, b: false } });
     expect(readColumnPrefs(KEY, DEFAULT_ORDER, DEFAULT_ORDER).visibility).toEqual({ b: false });

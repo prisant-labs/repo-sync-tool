@@ -453,4 +453,20 @@ describe("DataTable column visibility and order (E-21 AC-16)", () => {
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
     expect(headers).toEqual(["Repository", "Score", "Plain"]);
   });
+
+  it("a duplicated id in columnOrder renders its column once, for an ordinary and a frozen column alike", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        columnOrder={["score", "repo", "score", "plain", "repo"]}
+      />,
+    );
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toEqual(["Repository", "Score", "Plain"]);
+    for (const row of screen.getAllByRole("row").slice(1)) {
+      expect(within(row).getAllByRole("cell")).toHaveLength(3);
+    }
+  });
 });

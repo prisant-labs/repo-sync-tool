@@ -53,7 +53,17 @@ export function readColumnPrefs(
 
     const known = new Set(knownIds);
     const storedOrder = Array.isArray(parsed.order) ? parsed.order : [];
-    const order = storedOrder.filter((id): id is string => typeof id === "string" && known.has(id));
+    // Known ids only, and each at most once (first occurrence wins). Without the
+    // de-duplication, a stored `["repo","stars","stars"]` became eleven columns
+    // for ten, rendered duplicate keyed headers, and was written straight back
+    // by the screen's save effect, so it survived every restart (Codex review of
+    // PR #108, 2026-11-02).
+    const seen = new Set<string>();
+    const order = storedOrder.filter((id): id is string => {
+      if (typeof id !== "string" || !known.has(id) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
     const missing = defaultOrder.filter((id) => !order.includes(id));
 
     const visibility: Record<string, boolean> = {};

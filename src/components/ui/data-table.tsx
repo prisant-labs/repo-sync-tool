@@ -263,10 +263,18 @@ export function DataTable<T>({
     let cols = columns;
     if (columnOrder) {
       const byId = new Map(cols.map((c) => [c.id, c]));
-      const ordered = columnOrder
-        .map((id) => byId.get(id))
-        .filter((c): c is DataTableColumn<T> => c !== undefined);
-      const seen = new Set(ordered.map((c) => c.id));
+      // Each column at most once, first occurrence wins, whatever the caller
+      // passes: a duplicated id would otherwise render two headers and two
+      // cells under one React key.
+      const seen = new Set<string>();
+      const ordered: DataTableColumn<T>[] = [];
+      for (const id of columnOrder) {
+        const c = byId.get(id);
+        if (c && !seen.has(c.id)) {
+          seen.add(c.id);
+          ordered.push(c);
+        }
+      }
       cols = [...ordered, ...cols.filter((c) => !seen.has(c.id))];
     }
     if (columnVisibility) {
