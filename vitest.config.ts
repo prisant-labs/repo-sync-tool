@@ -15,12 +15,21 @@ export default defineConfig({
     },
   },
   test: {
-    // Node, not jsdom. The first test set is pure logic (status derivation, time
-    // conversion) and needs no DOM, so pulling in a DOM implementation would cost
-    // startup time and a dependency for nothing. When the first component test
-    // arrives it should add jsdom (or happy-dom) plus testing-library and switch
-    // this to an environment-per-file annotation, not a blanket change.
+    // `node` stays the default so the pure-logic tests in `src/lib` keep proving
+    // they need no DOM at all. Component tests opt in per file with a
+    // `// @vitest-environment jsdom` docblock, which keeps the environment
+    // visible at the top of the file that needs it rather than in config the
+    // reader has to go looking for.
     environment: "node",
+    // `src/test/mock-ipc.ts` stubs generated commands with `vi.spyOn`. Without
+    // this, a stub survives into the next test and the failure depends on test
+    // order, which is the hardest kind of test failure to read.
+    //
+    // This setting used to sit in a `test` block in vite.config.ts, where it
+    // never took effect: Vitest reads this file instead whenever it exists. A
+    // probe proved it on 2026-11-02 - a spy installed in one test was still
+    // stubbed in the next.
+    restoreMocks: true,
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     // Fail rather than silently pass when a run matches no files. A test suite
     // that quietly matches nothing looks identical to one that passes.

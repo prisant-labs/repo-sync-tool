@@ -27,6 +27,10 @@ yarn-error.log*
 _local/
 _LOCAL/
 .memsearch/
+# Agent tooling state: per-machine permission settings and temporary git
+# worktrees that agents create for isolated work. Neither belongs in the repo.
+.claude/settings.local.json
+.claude/worktrees/
 
 # Editor / IDE cruft
 .idea/

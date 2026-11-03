@@ -52,6 +52,16 @@ the typed helpers in `src/test/mock-ipc.ts` rather than stubbing `invoke`
 directly; they are typed against the generated bindings, so a mock cannot drift
 from the real command signature without failing to compile.
 
+Test settings go in `vitest.config.ts` only. Vitest ignores `vite.config.ts`
+whenever `vitest.config.ts` exists, so a `test` block added there looks
+configured and does nothing. That happened here: `restoreMocks: true` sat in
+`vite.config.ts` and was never in effect until 2026-11-02.
+
+Agents that work in isolated git worktrees create them under
+`.claude/worktrees/`, which is gitignored and excluded from ESLint. Remove a
+worktree with `git worktree remove` once its branch is pushed; while one
+exists, run gates from the main checkout, not from inside it.
+
 Component tests are `*.test.tsx` beside the component, rendered with
 `@testing-library/react`. The vitest environment stays `node` by default so the
 pure-logic tests in `src/lib` keep proving they need no DOM; a component test
