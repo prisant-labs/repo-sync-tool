@@ -4,16 +4,16 @@ title: The composite's unbuilt decisions
 type: spec
 status: draft
 tier: SHOULD
-scope: The eleven settled-but-unbuilt items the 2026-09-16 composite recorded as `build` pins, audited against the code on 2026-09-22. Criteria are written only for the four that are unblocked; the rest carry their blocker instead.
+scope: The eleven settled-but-unbuilt items the 2026-09-16 composite recorded as `build` pins, audited against the code on 2026-09-22. Criteria are written only for the four that are unblocked; the rest carry their blocker instead. Extended 2026-11-02 with five settled table and scope decisions that were never composite pins (AC-13 to AC-17).
 created: 2026-09-22
-updated: 2026-09-28
+updated: 2026-11-02
 linked-effort: E-21
 linked-plan: null
 linked-strategy-brief: null
 linked-release: null
 depends_on: [E-06, E-16, E-17, E-18, E-20]
-ac-count: 12
-source-count: 4
+ac-count: 17
+source-count: 6
 source: The annotation rail of `_local/design/4-composite/2026-09-16_composite.html`, which its own header calls "the build list"; the audit of all 29 build and backend pins recorded as section L.4 of `_local/design/3-decisions/2026-09-22_ui-delivery-plan.md`; and the code, read 2026-09-22.
 ---
 
@@ -47,7 +47,15 @@ source: The annotation rail of `_local/design/4-composite/2026-09-16_composite.h
   sections on the page. Four comments that described a releases link or a section order the code
   does not have were corrected. Six tests were added, each shown to fail against the defect it
   covers. The review record is at `_local/codex/2026-09-28_adversarial-review_e21-branch.md`.
-- **Next:** the seven blocked criteria, in the order their blockers clear. AC-11 (the column budget)
+- **Extended 2026-11-02 with AC-13 to AC-17.** These are settled decisions that were never
+  composite pins, so the 29-pin audit could not see them: the web link icons, the scope banner,
+  sortable headers, the Columns popover, and column lines with zebra rows. The 2026-09-28 audit of
+  the target spec against the code found them (finalization backlog FB-06, FB-07, FB-09, FB-10,
+  FB-11 in the maintainer's local UI register). All five are unblocked, and the 2026-10-28
+  prototype review holds them constant across its three candidates, so the choice of candidate
+  does not change them. AC-16 comes first: the likely answer to AC-11's minimum width depends on it.
+- **Next:** AC-16 and AC-15 as one shared table change, then AC-13, AC-14 and AC-17. After them,
+  the seven blocked criteria, in the order their blockers clear. AC-11 (the column budget)
   unblocks three of them at once.
 - **Blockers:** AC-5 needs a backend field; AC-6 to AC-9 need design decisions that do not exist;
   AC-10 and AC-11 are hard-blocked on the Repos column budget (register L.6).
@@ -138,6 +146,38 @@ The eleven unbuilt pins, each either built to a criterion below or carrying its 
   two are invisible is going backwards. Register L.6 carries the full budget table. Composite pin
   16, register P7.5. [S1][S2]
 
+### Settled table and scope decisions the pin audit could not see - build these
+
+Added 2026-11-02. Each was marked Keep by the maintainer in round two (2026-09-15) or settled in the
+decisions bench (2026-09-21), and none was a composite pin. The visual values (stripe strength, icon
+size) are tuned against a render; the behaviour below is not open.
+
+- [ ] **AC-13: The Repository cell shows web link icons when there is somewhere to go.** A globe opens
+  the repository's remote and a link icon opens its homepage. Each icon is absent, not disabled,
+  when its value is null. Both are buttons with accessible names, reachable by keyboard, and neither
+  opens the detail drawer. Both backend halves exist: `RepoSummary.remoteOriginUrl` with
+  `repo_open_remote`, and `homepage` with `repo_open_homepage`. Round two RR1
+  (Keep), backlog BL-NI-94 (web link glyphs), FB-06. [S5][S6]
+- [ ] **AC-14: The group scope is a banner above the Repos toolbar, and nothing in the toolbar.** When
+  a group is engaged, one line above the toolbar names it, gives its count, and offers a way to clear
+  it. The toolbar's own group control is removed. Decisions bench R1-b (Keep), FB-07. [S5]
+- [ ] **AC-15: Every sortable column sorts from its header, and the active sort stays visible.** A
+  header click sorts by that column, a second click reverses it, and a caret shows the direction. The
+  header is a button, and the table carries `aria-sort`. A "sorted by" chip in the toolbar names the
+  active sort and clears it. Unknown values sort after known ones in both directions, so an unknown
+  star count never sorts as zero. Sorting applies to the rows the filters leave. Round two RC5 (Keep),
+  carets from J.2, FB-09. [S5][S6]
+- [ ] **AC-16: A Columns control shows and hides columns.** A "Columns" button, carrying the count of
+  visible columns, opens a popover of checkboxes, one per column. Repository is always shown and its
+  checkbox is locked. Columns can be reordered there by dragging, and by keyboard as well. Headers and
+  cells stay aligned after any change, and the shared DataTable primitive holds the mechanism, so the
+  Activity table can use it too. Round two RC4 (Keep: "as drawn: checkboxes, Repository locked, drag to
+  reorder"), FB-10. [S5][S6]
+- [ ] **AC-17: The table has light vertical column lines and zebra rows.** The striping is weaker than
+  the round-two bench drew it, and its exact strength is a value tuned against a render, not a
+  question. Every new colour pair is added to the contrast gate in `src/lib/contrast.test.ts` in the
+  same change. Round two RR7 (Keep), FB-11. [S5]
+
 ### Recorded gaps, not work
 
 - [ ] **AC-11: The column budget is resolved before AC-8, AC-9 or AC-10 are attempted.** A minimum
@@ -187,6 +227,11 @@ of them passed against the exact bug they were written to catch.
   which already separate available / up-to-date / unreachable.
 - [S4] The code, read 2026-09-22: `getVersion()` in `app-shell.tsx`, and the absence of any release
   history source for RepoSync itself.
+- [S5] `_local/design/3-decisions/2026-09-22_ui-delivery-plan.md`, revision 13: section H.1 (round-two
+  marks RR1, RR7, RC4, RC5), section L.1 (decisions bench R1-b), and "The finalization backlog"
+  rows FB-06, FB-07, FB-09, FB-10 and FB-11, each citing the file and line read on 2026-09-28.
+- [S6] `_local/design/2-options/rounds/r2_2026-09-15_consolidation/FEEDBACK.md`, the maintainer's
+  round-two marks with the option text each Keep refers to.
 
 ## Provenance
 

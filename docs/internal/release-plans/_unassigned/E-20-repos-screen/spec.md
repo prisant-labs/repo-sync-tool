@@ -214,13 +214,18 @@ effort covering one coherent thing, and this is one coherent thing.
   a fast-forward-only update mode regardless of what the repository is actually configured for, which
   belongs to the sync-model slice rather than to this screen. Source: session log 2026-09-18
   (outstanding issues). [S5]
+  **2026-11-02:** that one known violation was fixed by PR #100 (the update-mode bug, and the Repos
+  column gate): the drawer now applies the repository's configured mode. Left unticked on purpose,
+  because the criterion covers every control on the screen and no full audit of them has been done.
 
-- [ ] **AC-17: A status filter that is selected stays visible even when it matches nothing.** A chip
+- [x] **AC-17: A status filter that is selected stays visible even when it matches nothing.** A chip
   renders when its count is above zero OR when it is the selected filter, so a filter that is still
   narrowing the table can never be invisible. Without this, selecting Behind and then searching for
   an in-sync repository leaves an empty table beside chips reading All 1 and In sync 1, with nothing
   on screen explaining why no rows are shown. Source: the Codex adversarial review of PRs #93 to #96,
-  finding 3, 2026-09-18. [S11]
+  finding 3, 2026-09-18. [S11] **Met:** the chip row renders a chip when its count is above zero or
+  it is the selected filter (`src/screens/repos.tsx`, the chip loop's comment cites AC-17), shipped
+  in PR #96 and on main since PR #92 merged on 2026-09-18.
 
 - [x] **AC-18: Every status a repository can be in is reachable as a filter.** One was not. The chip
   row iterates a fixed list of six statuses that omits "no upstream", so a repository in that state is
