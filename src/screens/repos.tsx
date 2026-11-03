@@ -327,15 +327,13 @@ export function ReposScreen({
   // (`RepoSummary.size`'s own doc comment), unhumanized, which would only
   // matter once that column ships.
   //
-  // The two round-five web-link glyphs (globe to the repo's web URL, link
-  // glyph to `homepage`) ratified for this identity cell are NOT built here:
-  // see BL-NI-94 (web link glyphs need two backend gaps) in `docs/backlog.md`
-  // and the PR body. In short, `RepoSummary` (unlike `RepoDetail`) carries no
-  // `remoteOriginUrl` to gate the globe's "hidden when null" requirement on,
-  // and no IPC command opens an arbitrary URL like `homepage` at all (only
-  // `repoOpenRemote`, which opens the git remote specifically) - both are
-  // `crates/reposync-core` / `src-tauri` changes, out of scope for this
-  // `src/`-only slice per the shell-crate chokepoint.
+  // The two web-link icons ratified for this identity cell (a globe to the
+  // repo's remote, a link icon to `homepage`) are not built yet. Nothing
+  // blocks them: both backend halves shipped on 2026-08-31, so
+  // `RepoSummary.remoteOriginUrl` and `RepoSummary.homepage` gate "hidden when
+  // null", and `commands.repoOpenRemote` / `commands.repoOpenHomepage` open
+  // them. The frontend work is E-21 AC-13 (web link icons) in
+  // `docs/internal/release-plans/_unassigned/E-21-composite-build-list/spec.md`.
   const columns: DataTableColumn<RepoSummary>[] = useMemo(
     () => [
       {
