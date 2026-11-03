@@ -16,39 +16,9 @@
 # lockfile still turns CI red.
 
 [advisories]
-ignore = [
-  # --------------------------------------------------------------------------
-  # RUSTSEC-2026-0194 - quick-xml 0.39.4
-  #   "Quadratic run time when checking a start tag for duplicate attribute names"
-  #   Severity 7.5 (high). Fixed in quick-xml >= 0.41.0.
-  #
-  # RUSTSEC-2026-0195 - quick-xml 0.39.4
-  #   "Unbounded namespace-declaration allocation in NsReader enables
-  #   memory-exhaustion denial of service"
-  #   Severity 7.5 (high). Fixed in quick-xml >= 0.41.0.
-  #
-  # Both are the same crate, same fixed version, same dependency path:
-  #   quick-xml -> plist -> tauri-utils -> { tauri-build (build-dependencies), tauri }
-  #
-  # Reachability: RepoSync does not parse XML or property-list input anywhere. The
-  # crate enters the graph through Tauri's own configuration and bundling tooling
-  # (plist handling, which is macOS-oriented), not through any RepoSync code path,
-  # and not through any input an attacker supplies at runtime. Both advisories are
-  # denial-of-service classes that require feeding hostile XML to the parser, and
-  # there is no route by which a watched repository, a Git remote, or the GitHub
-  # API reaches this parser.
-  #
-  # Why not simply fix it: the version is chosen by `plist`, which is chosen by
-  # `tauri-utils`. Forcing it requires either an upstream Tauri release that bumps
-  # plist, or a `[patch]` override that pins a transitive dependency of a
-  # framework we do not control. Waiting for the upstream bump is the correct
-  # call for a DoS-class advisory with no reachable path.
-  #
-  # Owner: maintainer (@jprisant)
-  # Action: track the Tauri or plist release that brings quick-xml >= 0.41.0 and
-  #         drop both entries the moment it lands.
-  # Review by: 2026-10-31. Do not renew silently.
-  # --------------------------------------------------------------------------
-  "RUSTSEC-2026-0194",
-  "RUSTSEC-2026-0195",
-]
+# Empty since 2026-11-02. The last two entries, RUSTSEC-2026-0194 and
+# RUSTSEC-2026-0195 (quick-xml 0.39.4, two denial-of-service parser advisories
+# reached only through Tauri's plist handling), were removed when plist 1.10.3
+# brought quick-xml 0.42.0, past the fixed 0.41.0. They were removed at their
+# review date, as the rules above require, rather than renewed.
+ignore = []

@@ -47,7 +47,15 @@ tauri-plugin-autostart = "2"
 # Edge-only, like the notification/autostart plugins - reposync-core never depends on
 # it; the check/download/install/verify all live at the edge. `tauri-plugin-process`
 # provides the post-install relaunch surface.
-tauri-plugin-updater = "2"
+# Default features minus `zip`. That feature is Windows-only and lets the plugin unpack
+# a `.zip`-wrapped installer, the Tauri v1-compatible updater artifact. RepoSync sets
+# `createUpdaterArtifacts: true` (the v2 format), which publishes the NSIS setup .exe
+# itself, so the zip path is never taken. Dropping it removes `zip` 4.x from the graph,
+# along with four extraction advisories (RUSTSEC-2026-0367/0368/0369/0429) that are only
+# fixed in zip >= 9, which no 2.x updater accepts. If the release ever switches to
+# `"v1Compatible"`, this feature must come back. macOS tar.gz extraction is unaffected:
+# the plugin depends on `tar` and `flate2` unconditionally on macOS.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-process = "2"
 # BL-NI-46 native folder picker for "Add repositories": the "Add repo" / "Scan parent"
 # flow uses tauri-plugin-dialog to pick a folder (Explorer on Windows, Finder on macOS)
