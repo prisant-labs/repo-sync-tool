@@ -575,6 +575,186 @@ mod tests {
         assert_eq!(stars, None);
     }
 
+    /// Upgrade proof for migration 0011, the last one never checked against a
+    /// populated database.
+    ///
+    /// 0011 adds `repo_local_state.head_state` so an empty Branch cell can say
+    /// WHICH kind of empty it is. Its own header makes two promises that only an
+    /// upgrade can test, because every other test in this suite builds a fresh
+    /// pool where the ALTER TABLE runs against zero rows:
+    ///
+    ///   1. It is additive and nullable with no default, so a row written before
+    ///      the column existed survives untouched and reads NULL - "not observed
+    ///      since this column existed", a fourth fact distinct from the three
+    ///      real head states.
+    ///   2. It does NOT backfill. The cheap derivation (`head_sha IS NULL AND NOT
+    ///      is_detached` means unborn) is the exact defect the column was added
+    ///      to avoid: `git/inspect.rs` also yields no `head_sha` when the commit
+    ///      exists but cannot be READ, so that reading labels a damaged object
+    ///      store "no commits" - confident, wrong, and reassuring.
+    ///
+    /// The three seeded rows are the three shapes a pre-0011 install actually
+    /// holds, including the ambiguous one the column exists to disambiguate. All
+    /// three must come back NULL: an upgrade that guessed would put a false
+    /// statement about the user's repository on screen before anything
+    /// re-checked it.
+    #[tokio::test]
+    async fn upgrading_a_populated_pre_0011_database_adds_head_state_without_guessing_it() {
+        use sqlx::migrate::Migrator;
+
+        let dir = TempDir::new().expect("tempdir");
+        let db = dir.path().join("upgrade-0011.db");
+        let pool = open_pool(&db).await.expect("open_pool");
+
+        // Build the prior schema: 0001-0010 only (0011 is the migration under
+        // test). Filtering the embedded set keeps this fixture honest - it is the
+        // same SQL that shipped, not a hand-copied snapshot that can drift.
+        let released = Migrator::with_migrations(
+            sqlx::migrate!("./migrations")
+                .iter()
+                .filter(|m| m.version <= 10)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        released.run(&pool).await.expect("apply 0001-0010");
+
+        // Guard the fixture's own premise. If this fires, the filter above is
+        // wrong and the rest of the test would be proving nothing.
+        assert!(
+            !column_exists(&pool, "repo_local_state", "head_state").await,
+            "fixture is not at the pre-0011 schema: 0011 appears to have been applied already"
+        );
+
+        // The three shapes a real pre-0011 install holds. `unknown` is the
+        // ambiguous one: no branch, no sha, not detached - which is EITHER a
+        // repository with no commits yet OR one whose HEAD could not be read.
+        // Nothing already in the database can tell those apart, which is the
+        // whole reason for the column.
+        let mut seeded = Vec::new();
+        for (name, branch, sha, detached) in [
+            ("healthy", Some("main"), Some("abc123"), 0_i64),
+            ("detached", None, Some("def456"), 1),
+            ("unknown", None, None, 0),
+        ] {
+            let repo_id = sqlx::query(
+                "INSERT INTO repos (local_name, local_path, host_type, created_at) \
+                 VALUES (?, ?, 'github', 0)",
+            )
+            .bind(name)
+            .bind(format!("C:/{name}"))
+            .execute(&pool)
+            .await
+            .expect("seed a repos row")
+            .last_insert_rowid();
+
+            sqlx::query(
+                "INSERT INTO repo_local_state \
+                   (repo_id, active_branch, head_sha, is_detached, is_dirty, \
+                    ahead_count, behind_count, last_checked_at, consecutive_failures) \
+                 VALUES (?, ?, ?, ?, 1, 3, 7, 999000, 2)",
+            )
+            .bind(repo_id)
+            .bind(branch)
+            .bind(sha)
+            .bind(detached)
+            .execute(&pool)
+            .await
+            .expect("seed a pre-0011 repo_local_state row");
+
+            seeded.push((name, repo_id));
+        }
+
+        // Now upgrade. This is the statement that has never run against rows.
+        run_migrations(&pool).await.expect("upgrade to current");
+
+        assert!(
+            column_exists(&pool, "repo_local_state", "head_state").await,
+            "0011 did not add head_state on upgrade"
+        );
+
+        for (name, repo_id) in &seeded {
+            let row = sqlx::query(
+                "SELECT head_state, active_branch, head_sha, is_detached, is_dirty, \
+                        ahead_count, behind_count, last_checked_at, consecutive_failures \
+                 FROM repo_local_state WHERE repo_id = ?",
+            )
+            .bind(repo_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_else(|e| panic!("{name} row survives the upgrade: {e}"));
+
+            let head_state: Option<String> = row.try_get("head_state").expect("new column");
+            assert_eq!(
+                head_state, None,
+                "{name}: 0011 must leave head_state NULL on an upgraded row. A backfilled \
+                 value would assert an observation no inspection made, and for the \
+                 `unknown` shape it would label an unreadable HEAD as 'no commits' - the \
+                 confident wrong answer this column exists to prevent"
+            );
+
+            // Everything the user already had is untouched. A rebuild that
+            // dropped or reset a column would be invisible until someone noticed
+            // their counts had reset.
+            let is_dirty: i64 = row.try_get("is_dirty").expect("existing column");
+            let ahead: i64 = row.try_get("ahead_count").expect("existing column");
+            let behind: i64 = row.try_get("behind_count").expect("existing column");
+            let checked: i64 = row.try_get("last_checked_at").expect("existing column");
+            let failures: i64 = row
+                .try_get("consecutive_failures")
+                .expect("existing column");
+            assert_eq!(is_dirty, 1, "{name}: upgrade must not reset is_dirty");
+            assert_eq!(ahead, 3, "{name}: upgrade must not reset ahead_count");
+            assert_eq!(behind, 7, "{name}: upgrade must not reset behind_count");
+            assert_eq!(
+                checked, 999_000,
+                "{name}: upgrade must not reset last_checked_at, which drives cadence"
+            );
+            assert_eq!(
+                failures, 2,
+                "{name}: upgrade must not reset consecutive_failures, which drives auto-pause"
+            );
+
+            // `is_detached` STAYS, per the migration's own note: every existing
+            // reader still uses it, and the two are written from one inspection.
+            let is_detached: i64 = row.try_get("is_detached").expect("existing column");
+            assert_eq!(
+                is_detached,
+                i64::from(*name == "detached"),
+                "{name}: upgrade must not disturb is_detached"
+            );
+        }
+
+        // The database is still usable for the thing the column is for: a write
+        // lands on an upgraded row, so a repository that was ambiguous before can
+        // say which kind of empty it is. This is what the first check after an
+        // upgrade does, and it is how the NULL window closes, one repository at a
+        // time.
+        let unknown_id = seeded
+            .iter()
+            .find(|(name, _)| *name == "unknown")
+            .map(|(_, id)| *id)
+            .expect("the unknown row was seeded");
+        sqlx::query("UPDATE repo_local_state SET head_state = 'unborn' WHERE repo_id = ?")
+            .bind(unknown_id)
+            .execute(&pool)
+            .await
+            .expect("write the new column on an upgraded row");
+
+        let resolved: Option<String> =
+            sqlx::query("SELECT head_state FROM repo_local_state WHERE repo_id = ?")
+                .bind(unknown_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read it back")
+                .try_get("head_state")
+                .expect("new column");
+        assert_eq!(
+            resolved,
+            Some("unborn".to_string()),
+            "an upgraded row must accept a head_state on its next inspection"
+        );
+    }
+
     #[tokio::test]
     async fn migrations_create_all_v1_tables() {
         let (_dir, pool) = fresh_pool().await;

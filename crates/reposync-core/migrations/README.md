@@ -80,6 +80,21 @@ additions (`repos.scoped_bookmark_blob`, `repo_local_state.consecutive_failures`
   `pr_etag` are deliberately left alone; they are the release and
   pull-request sub-resources' own independently-cached ETags (BL-NI-15b) and
   have no bearing on the six repo-resource columns this migration adds.
+- `0011_head_state.sql` - one additive, nullable `TEXT` column,
+  `repo_local_state.head_state`, holding `HeadState::as_db_str`'s three values
+  (`branch`, `detached`, `unborn`). `active_branch` is NULL for three genuinely
+  different reasons and `is_detached` separates only one of them, so the Repos
+  table rendered one bare dash for two facts it could not tell apart (RR6).
+  Recorded where it is OBSERVED, in `git::inspect`, rather than derived from
+  `head_sha IS NULL AND NOT is_detached`: that derivation is lossy in the
+  direction that matters, because `inspect` also yields no `head_sha` when the
+  commit exists but cannot be READ, so it would label a damaged object store "no
+  commits". **Deliberately does NOT backfill.** NULL means "not observed since
+  this column existed", a fourth fact distinct from the three real states, and it
+  is what lets the UI say "never run" instead of guessing; it self-resolves on
+  each repository's first check. `is_detached` is retained unchanged - every
+  existing reader keeps working, and the two are written from one inspection in
+  one statement, so they cannot drift.
 
 ## Migration policy
 
@@ -112,3 +127,37 @@ present).
 There is exactly ONE migration at each version number. Never leave two `0001_*`
 files in this directory: `sqlx::migrate!` keys off the numeric prefix and two
 files sharing a version break the runner.
+
+### Every column-adding migration gets an upgrade test against a POPULATED database
+
+A test that builds a fresh pool and runs the whole migration set only ever
+exercises the new-user path. It cannot catch a migration that is fine on a blank
+database and wrong on a populated one, which is the only case that reaches a
+shipped user - and it is the case an `ALTER TABLE` on a table with rows actually
+tests.
+
+The shape, in `db.rs`'s test module, is the same three steps every time:
+
+1. Build the PRIOR schema by filtering the embedded set -
+   `Migrator::with_migrations(sqlx::migrate!("./migrations").iter().filter(|m| m.version <= N-1)...)`.
+   Filtering rather than hand-copying a snapshot is what keeps the fixture honest:
+   it is the same SQL that shipped, and it cannot silently drift.
+2. Assert the fixture's own premise with `column_exists`, so a wrong filter fails
+   loudly instead of making the rest of the test prove nothing.
+3. Seed rows shaped like a real install, run `run_migrations`, and assert BOTH
+   that the new column holds what it should AND that nothing the user already had
+   was disturbed.
+
+Three migrations carry one today:
+
+| Migration | Test | What it pins |
+|---|---|---|
+| `0007` | `upgrading_a_v0_9_0_database_backfills_close_minimizes_to_tray` | The new column backfills to the value that PRESERVES prior behaviour |
+| `0010` | `upgrading_a_pre_0010_database_clears_the_repo_resource_etag` | The data-migration statement runs, and clears only what it should |
+| `0011` | `upgrading_a_populated_pre_0011_database_adds_head_state_without_guessing_it` | The new column does NOT backfill, because any guess would be an unearned claim |
+
+Note that 0007 and 0011 pin opposite behaviours, and both are right. Backfill
+when the old rows genuinely had the state you are recording (a v0.9.0 user really
+did have close-to-tray). Leave NULL when they did not, because a value nothing
+observed is a statement the app has not earned. Deciding which of the two a new
+column is - and writing the test that says so - is the point of this rule.
