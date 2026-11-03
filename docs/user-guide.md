@@ -109,9 +109,10 @@ utility, not a commercial product. Two practical consequences:
   make either message go away. Blanket overrides are a well-trodden route to
   installing something you did not intend to, and on an unsupported platform
   RepoSync cannot help you tell a signing problem from a real one.
-- The in-app auto-updater is **dark** and will stay dark until a production
-  signing key exists. It is not waiting on anything that will resolve on its own.
-  See [section 11](#11-auto-update-honest-about-where-it-stands).
+- The in-app updater does not yet deliver updates. The production signing key
+  is in source since PR #99 (production updater signing key), but no release
+  has been signed with it, so an installed copy cannot receive one. See
+  [section 11](#11-auto-update-honest-about-where-it-stands).
 
 **First run.** The first time you launch RepoSync, your library is empty and
 the Dashboard and Repos screens both show a plain "No repositories yet" empty
@@ -447,12 +448,14 @@ a stale or rolled-back release listing can't push you backward. None of this
 touches telemetry or an account, the update channel is a public GitHub
 Release manifest, checked anonymously.
 
-**What's honestly not live yet:** this v0.9.0 build ships with the updater
-**disabled in practice**, "dark" is the internal term for it. It originally had
-two causes: the repository was private, so the manifest could not be downloaded
-even anonymously, and no production signing key existed. **The first cause is
-gone** (the repository has been public since 2026-07-17) and updating did **not**
-start working. That is the useful thing to know, and it is worth being precise
+**What's honestly not live yet:** the updater is still **disabled in practice**,
+"dark" is the internal term for it. It originally had two causes: the
+repository was private, so the manifest could not be downloaded even
+anonymously, and no production signing key existed. Both of those causes are
+now gone. The repository has been public since 2026-07-17, and the real
+production key landed in source in PR #99 (production updater signing key).
+Updating still does **not** work, because no release has been signed with
+that key yet. That is the useful thing to know, and it is worth being precise
 about why, because the obvious guess is wrong.
 
 **The signing key is necessary but not sufficient, and it cannot rescue a copy

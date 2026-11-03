@@ -38,10 +38,12 @@ The steps below are ORDERED; each depends on the one before it.
 
 1. **Generate and custody the production keypair.** Human-only. The private key goes
    to CI secrets (`TAURI_SIGNING_PRIVATE_KEY`), and whoever holds it can authorize an
-   update every installed copy will trust.
+   update every installed copy will trust. **DONE 2026-09-22** in PR #99 (production
+   updater signing key), commit 73df9ad; both CI secrets are confirmed set.
 2. **Commit the real public key** to `plugins.updater.pubkey` in
    `src-tauri/tauri.conf.json`, replacing the ship-dark placeholder. This is what
-   `updates::updater_is_live` inspects, and it is compiled INTO each build.
+   `updates::updater_is_live` inspects, and it is compiled INTO each build. **DONE
+   2026-09-22**, same PR: the committed key is minisign key id `C9A8A404AAE05574`.
 3. **Verify the release workflow's updater arguments** before relying on a real cut.
    `.github/workflows/release.yml` still carries an explicit note that how its args
    thread through (Tauri CLI vs cargo passthrough) needs confirming. Related and
