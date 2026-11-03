@@ -44,6 +44,14 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   More than 60 shows as "60+", because that is as many as it loads.
 
 ### Changed
+- **Docs now describe the updater's real state instead of an outdated one.**
+  The production signing key landed in PR #99 (production updater signing
+  key), so it is no longer a placeholder. But no release has been signed with
+  it yet, so no installed copy currently receives updates, and the end-to-end
+  update proof in `scripts/updater-e2e.md` is still owed. The README status
+  table, `SECURITY.md`, the security model, the user guide, the release
+  runbook, and the internal status docs are corrected to say all three things
+  together.
 - **An empty Branch column now says why it is empty.** A repository can have no
   branch name for three different reasons - it is checked out to a commit
   rather than a branch, it has no commits yet, or RepoSync has not looked at it

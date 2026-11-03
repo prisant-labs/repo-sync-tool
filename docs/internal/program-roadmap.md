@@ -90,7 +90,7 @@ Each effort's contract (`spec.md`) and execution (`implementation-plan.md`) live
 | E-15 | [spec](release-plans/plan_v0.9.0/E-15-autostart/spec.md) | [plan](release-plans/plan_v0.9.0/E-15-autostart/implementation-plan.md) | Done (core; plugin wiring deferred) | #17 |
 | E-16 | [spec](release-plans/plan_v0.9.0/E-16-groups/spec.md) | [plan](release-plans/plan_v0.9.0/E-16-groups/implementation-plan.md) | Built 2026-07-03 (a85e0fc backend, 51daaa7 frontend); spec retroactive | #18 |
 | E-17 | [spec](release-plans/plan_v0.9.0/E-17-branch-intel/spec.md) | [plan](release-plans/plan_v0.9.0/E-17-branch-intel/implementation-plan.md) | Shipped (Phase 4, 2026-07-05; commit 4efb0ab, review fixes 1543d4d) | #19 |
-| E-18 | [spec](release-plans/plan_v0.9.0/E-18-auto-update/spec.md) | [plan](release-plans/plan_v0.9.0/E-18-auto-update/implementation-plan.md) | Shipped, ships DARK (Phase 4, 2026-07-05; commit c7eff64; updater wired but inactive until the production signing key is generated) | #20 |
+| E-18 | [spec](release-plans/plan_v0.9.0/E-18-auto-update/spec.md) | [plan](release-plans/plan_v0.9.0/E-18-auto-update/implementation-plan.md) | Shipped (Phase 4, 2026-07-05; commit c7eff64). Production signing key landed in PR #99 (production updater signing key), commit 73df9ad; still inactive until a signed release is published | #20 |
 
 ## Dependency graph
 
