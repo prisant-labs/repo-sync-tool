@@ -11,77 +11,137 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 ## [Unreleased]
 
 ### Added
+
 - **Updates are now signed, and RepoSync checks the signature before it installs
   one.** A downloaded update is verified against a key that only the author
   holds, and a file that does not match is refused rather than installed. This
   is what stops someone serving you a tampered update. Updates are still never
   installed without you confirming first.
-- **The Activity list shows how long each check or update took**, in a Duration
-  column. Entries recorded before durations were tracked show a dash rather
-  than a zero.
 
 - **The sidebar tells you when something needs attention**, with a small
   amber dot on Dashboard. It appears only when a repository is dirty or its
   last check failed, and it respects the group you have selected: if the only
   repository needing attention is outside that group, no dot, because the
   Dashboard it points at would say All clear.
+
 - **The sidebar shows how many repositories you are tracking**, next to Repos.
   Selected a group? It counts that group. Nothing to count yet, or not known
   yet, shows nothing rather than a zero.
-- **An Add repositories button in the sidebar**, above Settings, reachable
-  from any screen instead of only from the Repos and Dashboard headers.
+
 - **The sidebar tells you when a new version of RepoSync is available**, in a
   line under the app name. It appears only when the update check found one. If
   the check could not reach the server, it says nothing, rather than implying
   you are up to date. If you have turned off automatic update checks, it makes
   no check at all.
-- **Settings has a section bar across the top.** It lists every section,
-  jumps to one when you click it, and highlights the one you are reading as
-  you scroll, including the last one at the bottom of the page.
-- **Settings has an About section** that names the version you are running. It
-  stays available even if your settings cannot be read.
+
+- **An Add repositories button in the sidebar**, above Settings, reachable
+  from any screen instead of only from the Repos and Dashboard headers.
+
+- **A "Check all" button on the Repos toolbar checks every enabled
+  repository at once.** It was previously reachable only from the tray
+  icon's menu. It reports what actually happened rather than a blanket
+  success message: every repository checked, how many failed (with
+  Activity as the place to see why), or that nothing produced a result at
+  all.
+
+- **Activity can be filtered by action and outcome.** Two rows of chips above the
+  list narrow it to checks or updates, and to successes or failures, so finding
+  the one failed update for one repository no longer means scrolling. The filter
+  runs in the database, not over the rows already on screen, so "show me failures"
+  searches the whole log rather than the most recent page of it. The list also now
+  says when it is showing only the newest matching entries, instead of leaving a
+  full page looking like the complete history.
+
+- **Activity entries open a full receipt.** Selecting a row in Activity shows
+  what RepoSync actually ran, what git printed back on both streams, the exit
+  code, and how long it took. RepoSync has always recorded this; nothing
+  displayed it, so answering "why did that repository not update" meant opening
+  the database by hand. Captured output has already had credentials stripped
+  from it, so the receipt shows exactly what is stored.
+
+- **The Activity list shows how long each check or update took**, in a Duration
+  column. Entries recorded before durations were tracked show a dash rather
+  than a zero.
+
 - **The repository drawer's Activity tab shows how many entries it holds.**
   More than 60 shows as "60+", because that is as many as it loads.
 
+- **The Repos table shows each GitHub repository's star and fork counts.**
+  RepoSync has fetched this metadata for a while; it is only now displayed,
+  as two new columns. A real zero renders as "0"; a dash means RepoSync has
+  not refreshed that repository yet, or it isn't hosted on GitHub. License,
+  size, and visibility are fetched the same way but are not shown anywhere
+  in the app yet.
+
+- **Settings has a section bar across the top.** It lists every section,
+  jumps to one when you click it, and highlights the one you are reading as
+  you scroll, including the last one at the bottom of the page.
+
+- **Settings has an About section** that names the version you are running. It
+  stays available even if your settings cannot be read.
+
+- **A Diagnostics panel in Settings, with an "Open logs" button.** It shows
+  where your data, database, and log folders are; whether logging is actually
+  running and under what retention; which `git` executable was found and its
+  version; and how many scheduled cycles have run since launch. It flags the
+  three conditions worth acting on - logging that failed to start, a data folder
+  inside a OneDrive-synced tree, and a database that had to be recovered at
+  startup - and a "Copy details" button produces a plain-text summary for a bug
+  report. The log folder was previously reachable only by knowing its path.
+
+- **Scheduled check outcomes that fail to save are now counted where you can see
+  them.** When a background check finishes but its result cannot be written, the
+  repository simply stays due and retries, which is the right behavior and
+  completely silent. The Diagnostics panel now carries the count, so a database
+  problem that would otherwise present as "checks seem to run twice" is visible.
+
+- **RepoSync now keeps a diagnostic log.** Background failures that a tray app
+  cannot show you - a scheduled check that could not save its result, an
+  activity entry that failed to write, git going missing, an update check that
+  could not reach the server - are written to a rotating file under the app data
+  directory (`logs/reposync.<date>.log`) instead of vanishing. Previously they
+  went to a console that a release build does not even have, so a problem that
+  happened while you were not looking left no trace at all. Fourteen days are
+  kept by default, capped at 32 MiB total, oldest first. Three environment
+  variables adjust it: `REPOSYNC_LOG=debug` for more detail while reproducing a
+  problem, and `REPOSYNC_LOG_DAYS` / `REPOSYNC_LOG_MAX_MB` if you need a longer
+  history or a smaller footprint.
+
+- A published [security model](docs/security-model.md) describing trust
+  boundaries, the controls in place, and the known weaknesses that remain.
+
+- A real [README](README.md), including an honest platform and signing status
+  table.
+
 ### Changed
-- **Docs now describe the updater's real state instead of an outdated one.**
-  The production signing key landed in PR #99 (production updater signing
-  key), so it is no longer a placeholder. But no release has been signed with
-  it yet, so no installed copy currently receives updates, and the end-to-end
-  update proof in `scripts/updater-e2e.md` is still owed. The README status
-  table, `SECURITY.md`, the security model, the user guide, the release
-  runbook, and the internal status docs are corrected to say all three things
-  together.
-- **An empty Branch column now says why it is empty.** A repository can have no
-  branch name for three different reasons - it is checked out to a commit
-  rather than a branch, it has no commits yet, or RepoSync has not looked at it
-  yet - and all three used to show the same dash. They now read "detached",
-  "no commits" and "never run". Repositories added before this update show
-  "never run" until their next check.
-- **Dashboard numbers are fully scoped to the selected group.** The "checked,
-  no change" line under Under watch used to count your whole library even with
-  a group selected, and said "(all repos)" because it could not do better. It
-  counts the group now, so the caveat is gone.
+
+- **Settings is pinned at the bottom of the sidebar**, separated from the
+  rest of the list by a hairline. On the Repos screen, the search box, the
+  status chips, and the active group filter now live together in one
+  toolbar pinned to the top of the screen; the active group shows there as
+  "Filtered to [group], N repos" with a Clear control, replacing a separate
+  banner that used to sit below the header.
 
 - **The sidebar now reads Dashboard, Repos, Activity**, and Groups sits as a
   plain line beneath the whole list rather than indented under Repos behind a
   vertical guide line. Groups are not a sub-part of the Repos screen, and the
   old indent said they were.
+
 - **The group you have selected stays marked in the sidebar on every screen.**
   It used to lose its highlight the moment you left Repos, even though the
   filter itself was still applied - so the app was narrowing what you saw
   without showing you why.
-- **The Activity list now honours the selected group.** Previously it showed
-  every repository's history regardless, which meant the sidebar could say you
-  were scoped to a group while the list in front of you was not. When nothing
-  matches, the empty message names the group and says where to clear it, since
-  that control is in the sidebar and not on the Activity screen.
-- **Filter buttons and status labels now look like one family.** The filters
-  above a list were outlined ovals while the statuses inside it were filled
-  blocks, so the same word - "Behind" as something you can filter by, "Behind"
-  as something a repository is - was drawn two different ways one line apart.
-  Filters are now filled too: plain grey until you turn one on, blue when it is
-  on.
+
+- **The Repos and Activity screens are now built as proper tables.** Repos
+  keeps its header and the Repository column in view while the rest of a
+  wide row scrolls, and gains Branch (showing "detached" when a checkout
+  isn't on any branch), Folder, and separate Ahead/Behind columns; group
+  membership is now its own column instead of chips under the repository
+  name, and the small per-row "lag" bar is gone from the list (it still
+  appears in a repository's own detail panel). Activity gets the same
+  treatment: Time, Repository, Action, Outcome, and Summary are now their
+  own labeled columns, replacing a dense row where the repository name used
+  to be the smallest, grayest thing in it.
 
 - **Every action on a repository is now in one row at the top of its detail
   panel.** They used to be split across two rows further down, inside the
@@ -90,17 +150,116 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   whichever tab you are reading. Opening actions are on the left - Folder,
   Terminal, Editor, Remote, Website - and the ones that change something are on
   the right, with "Check now" as the one highlighted button.
+
+- **The repository detail panel is wider and organized into three tabs:
+  Overview, Activity, and Settings.** Group membership shows as removable
+  pills with an inline control for adding the repository to another group.
+  The new Activity tab lists that one repository's own recent history and
+  opens the same full receipt available from the main Activity screen,
+  without leaving the panel.
+
 - **A repository's path and remote URL are now shown under its name**, rather
   than further down the Overview tab. Long paths are shortened with the full
   value on hover.
 
+- **The dashboard's four tiles and its "Needs attention" list are more
+  scoped and more explicit.** Only "Under watch" is clickable (it opens
+  Repos); "Need attention," "Updated today," and "New releases" stay
+  informational for now, since the Repos screen has no way yet to filter by
+  what they would represent. When a group is selected in the sidebar, every
+  tile's headline number and the attention list below them narrow to that
+  group. Each row in "Needs attention" now states why it is there -
+  uncommitted local changes, a failed check, how far behind - with an icon
+  marking whether the cause is local (your machine) or remote (GitHub); a
+  cause RepoSync does not recognize shows with no guessed icon at all.
+
+- **Dashboard numbers are fully scoped to the selected group.** The "checked,
+  no change" line under Under watch used to count your whole library even with
+  a group selected, and said "(all repos)" because it could not do better. It
+  counts the group now, so the caveat is gone.
+
+- **The Activity list now honours the selected group.** Previously it showed
+  every repository's history regardless, which meant the sidebar could say you
+  were scoped to a group while the list in front of you was not. When nothing
+  matches, the empty message names the group and says where to clear it, since
+  that control is in the sidebar and not on the Activity screen.
+
+- **Filter buttons and status labels now look like one family.** The filters
+  above a list were outlined ovals while the statuses inside it were filled
+  blocks, so the same word - "Behind" as something you can filter by, "Behind"
+  as something a repository is - was drawn two different ways one line apart.
+  Filters are now filled too: plain grey until you turn one on, blue when it is
+  on.
+
+- **An empty Branch column now says why it is empty.** A repository can have no
+  branch name for three different reasons - it is checked out to a commit
+  rather than a branch, it has no commits yet, or RepoSync has not looked at it
+  yet - and all three used to show the same dash. They now read "detached",
+  "no commits" and "never run". Repositories added before this update show
+  "never run" until their next check.
+
+- **Warning banners and the Diagnostics panel have a more consistent
+  look.** The database-recovery notice and the Settings -> Diagnostics
+  warnings list moved from a tinted background to a left-edge accent
+  stripe, and Diagnostics rows now use the same label-and-value layout as
+  the repository detail panel. What they say and when they appear is
+  unchanged.
+
+- **Launching RepoSync while it is already running now brings the running copy
+  to the front instead of starting a second one.** RepoSync lives in the tray,
+  so it is easy to forget it is there and open it again from the Start menu or a
+  shortcut; until now that started a second, independent copy. Two copies shared
+  one database and, worse, could run `git` in the same folder at the same time,
+  which can corrupt a repository. The second launch now hands over to the one
+  already running and closes itself. Only one RepoSync runs per signed-in
+  Windows user, which also means one tray icon rather than two.
+
+- Group colors can be edited after creation, not only at create time. A
+  rejected duplicate name now leaves both the name and the color unchanged.
+
+- The close (X) button is configurable: **Settings -> System -> "Close button
+  minimizes to tray"**, on by default. Off makes the close button quit the app.
+  Existing installs keep the previous behavior on upgrade. Tray **Quit** always
+  exits either way.
+
+- **The repository is now public** (2026-07-17), at
+  `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0
+  notes below describe a private build and are kept as the historical record;
+  see the note at the end of that section for what has since changed.
+- **Docs now describe the updater's real state instead of an outdated one.**
+  The production signing key landed in PR #99 (production updater signing
+  key), so it is no longer a placeholder. But no release has been signed with
+  it yet, so no installed copy currently receives updates, and the end-to-end
+  update proof in `scripts/updater-e2e.md` is still owed. The README status
+  table, `SECURITY.md`, the security model, the user guide, the release
+  runbook, and the internal status docs are corrected to say all three things
+  together.
+
 ### Fixed
-- **Repositories with no upstream could not be filtered for.** The Repos screen
-  showed the state in the table and counted it in All, but offered no button to
-  narrow the list to just those repositories - so you could see they existed and
-  had no way to ask for them. There is now a No upstream filter alongside the
-  others. It appears, like every status filter, only when something is actually
-  in that state.
+
+- **A repository whose upstream branch was deleted no longer reads "In sync".**
+  RepoSync has always known the difference between a repository tracking a live
+  upstream, one with no upstream at all, and one whose upstream was deleted from
+  the remote, and it correctly skips checking the last of those instead of
+  reporting a failure. Nothing carried that verdict out to the views, so they
+  fell through to the most reassuring answer available. One repository recorded
+  this outcome 39 times over ten days, green every time, while showing "In sync"
+  for a branch that structurally could not sync. It now has its own status,
+  **No upstream**. Two limits worth knowing: it ranks below "dirty" and "failed"
+  and stays out of the "Needs attention" count, because it describes a fact
+  about the repository rather than something to act on today; and a repository
+  last checked before this release keeps its previous badge until its next
+  check, then changes over.
+
+- **A repository whose checks are failing now actually appears in "Needs
+  attention", and shows as failed in the Repos list.** It previously appeared
+  only if it also happened to have uncommitted changes. The error code every one
+  of those views reads was declared in the database and read in three places, and
+  nothing ever wrote it, so it was empty forever: a repository that had been
+  unable to reach its remote for a week looked healthy everywhere except the
+  activity log. The failure reason is now recorded whenever a check or update
+  fails, and cleared again when the repository recovers.
+
 - **A damaged repository could be reported as having no commits.** When RepoSync
   could not read a repository's HEAD at all - a corrupt reference, an unreadable
   file - it recorded that as "no commits yet", which is a confident and
@@ -108,16 +267,105 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   now reads "unreadable", which is what it actually knows. A repository that
   genuinely has no commits still reads "no commits", and one nothing has looked
   at yet still reads "never run".
+
+- **Repositories with no upstream could not be filtered for.** The Repos screen
+  showed the state in the table and counted it in All, but offered no button to
+  narrow the list to just those repositories - so you could see they existed and
+  had no way to ask for them. There is now a No upstream filter alongside the
+  others. It appears, like every status filter, only when something is actually
+  in that state.
+
 - **A filter you had selected could vanish while it was still filtering.** Pick
   Behind, then type a name that matches only an in-sync repository, and the
   Behind button disappeared while the list stayed filtered to Behind. The result
   was an empty table with nothing on screen explaining why. The selected filter
   now stays visible, showing zero.
+
+- **Filter counts on the Repos screen were counting the wrong repositories.**
+  With a group selected, the buttons above the list reported totals for your
+  whole library rather than for the group, so "All 2" could sit above a single
+  row.
+
 - **The sidebar could keep counting repositories you had removed.** Adding or
   removing a repository, or changing its groups, refreshed the screen you were
   on but not the sidebar beside it. Removing your last repository was the worst
   case: with nothing left to check, nothing would ever correct the count, so it
   stayed wrong until you restarted the app.
+
+- **A failed check now reports itself instead of disappearing.** Checking a
+  repository whose fetch fails used to raise an error that stopped the completion
+  from being announced at all, so other open views never learned the check had
+  finished and the tray's "Check All Now" did not count it. A failed check is now
+  a completed check that reports what went wrong, carrying the reason with it, and
+  the repository detail view says which of the three causes it was (credentials,
+  network, or something else) and points at the Activity receipt for the exact
+  git output. A run of "Check All Now" in which some repositories failed reports
+  once for the whole run rather than once per repository, and names the most
+  actionable problem it saw: a credential failure is reported ahead of a network
+  failure, because the first will not fix itself.
+
+- **A problem at GitHub no longer reports itself as a problem with your internet.**
+  When GitHub answered a metadata refresh with an error, RepoSync classified
+  every case it did not have a specific name for as a lost connection and told
+  you "no network connection" - about a request that had plainly gone through,
+  since a round trip had to complete for that error to come back at all. You
+  would go and check your wifi while the actual problem was a GitHub outage or a
+  refused request. It now reports which error GitHub returned, and how it is
+  treated follows from that: a server error (5xx) is temporary and gets retried,
+  while a refusal (4xx) is not and stops, where previously every case was retried
+  forever under the wrong explanation. Requests that genuinely never reach GitHub
+  still report as a lost connection, which is what that message was always for.
+
+- **Quiet hours no longer discards the notifications it withholds, and the
+  setting now describes both halves of what it does.** The hint mentioned only
+  the paused checks, so turning it on to stop overnight git activity also muted
+  failure alerts without saying so. Worse, a cycle that began before the window
+  opened and finished inside it had every notification it produced destroyed
+  rather than delayed: a fetch that failed at 21:59 with quiet hours starting at
+  22:00 was never reported at all, and the next cycle had nothing left to report
+  with. Withheld notifications are now held and delivered on the first cycle
+  after the window ends, folded in with that cycle's own. Held alerts live in
+  memory and do not survive a restart, which can cost you the alert but never
+  the record: the failure stays on the repository, in the Activity log, and in
+  the "Needs attention" count.
+
+- **Opening a repository's details from the keyboard was unreliable in the
+  Repos list.** Each row doubled as one button-like control with a second,
+  independently clickable button (Check now) nested inside it, which
+  confuses assistive technology and made Enter and Space behave
+  inconsistently. There is now exactly one keyboard path into a
+  repository's detail panel: the arrow button at the end of the row.
+  Clicking anywhere else on the row with a mouse still opens it too.
+
+- **The folder path on the Repos list now opens the folder.** It has always shown
+  an "Open in File Explorer" tooltip and done nothing when you clicked it. It is
+  now a real button, it can be reached with the Tab key, and if the folder has
+  been moved or deleted since the last check it tells you so instead of silently
+  doing nothing.
+
+- **Removed a button that went somewhere other than its label said.** A repo's
+  detail panel carried a globe labelled "Open repository website" that actually
+  opened the git remote, duplicating the "Remote" button beside it. A screen
+  reader announced the website and took you to the code. The globe is gone.
+
+- **The homepage button now says "Website".** It was an unlabelled icon whose
+  destination you could only find by hovering, sitting next to a clearly
+  labelled "Remote". It appears only for repositories whose host reports a
+  homepage URL, and it opens exactly that URL - RepoSync has no way to confirm
+  who owns it.
+
+- **The Remove-repository icon no longer looks like a trash can.**
+  Removing a repository only stops RepoSync from tracking it; it does not
+  touch the folder or the git repository on disk, which the confirmation
+  text already said. The button and its confirmation used a trash-can icon
+  that suggested otherwise. It is now a plain "no entry" mark (a circle
+  with a line through it), consistent with what the action actually does.
+
+- **The repository detail panel, the activity receipt, and the Add repos /
+  New group dialogs now identify themselves to screen readers.** None of
+  the four exposed an accessible name before, so a screen reader announced
+  each one only as "dialog," with no indication of which one.
+
 - **Three more places where text sat below the contrast level the project
   requires, all measured rather than estimated.** The dash marking an empty
   table cell and the small icons beside cell values were being faded, which put
@@ -128,23 +376,12 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   of the app uses. And the marker on the selected sidebar item fell to 2.91:1
   against its own highlight when the blue was deepened, so it now uses the blue
   the app reserves for text.
-- **The user guide described a keyboard shortcut that does not exist.** It said
-  you could Tab to a row in the Repos list and press Enter or Space to open that
-  repository's details. Rows stopped being focusable some time ago, on purpose,
-  because wrapping a keyboard-operable row around its own buttons made Enter
-  ambiguous. The keyboard path is the row's own buttons, including a chevron
-  labelled "Open details", and the guide now says so. Nothing about the app
-  changed here; the documentation was wrong, which for a keyboard user is worse
-  than saying nothing.
+
 - **Buttons in dark mode were hard to read.** The white label on RepoSync's blue
   buttons sat below the contrast level the project requires, in every dark-mode
   window since the theme shipped. The blue is slightly deeper now, which fixes
   it, and the app checks this automatically from here on so it cannot come back
   unnoticed.
-- **Filter counts on the Repos screen were counting the wrong repositories.**
-  With a group selected, the buttons above the list reported totals for your
-  whole library rather than for the group, so "All 2" could sit above a single
-  row.
 
 - **The "Failed" filter on the Activity screen was too faint to read in light
   mode.** It used the app's general-purpose error red rather than the red the
@@ -160,22 +397,67 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   Separately, the outcome badge on an activity receipt was showing colour alone;
   it now shows a tick or a cross as well, so it still reads in greyscale or if you
   cannot easily tell red from green.
-- **The folder path on the Repos list now opens the folder.** It has always shown
-  an "Open in File Explorer" tooltip and done nothing when you clicked it. It is
-  now a real button, it can be reached with the Tab key, and if the folder has
-  been moved or deleted since the last check it tells you so instead of silently
-  doing nothing.
-- **Removed a button that went somewhere other than its label said.** A repo's
-  detail panel carried a globe labelled "Open repository website" that actually
-  opened the git remote, duplicating the "Remote" button beside it. A screen
-  reader announced the website and took you to the code. The globe is gone.
-- **The homepage button now says "Website".** It was an unlabelled icon whose
-  destination you could only find by hovering, sitting next to a clearly
-  labelled "Remote". It appears only for repositories whose host reports a
-  homepage URL, and it opens exactly that URL - RepoSync has no way to confirm
-  who owns it.
+
+- **The "Under watch" tile no longer claims repositories are "in sync."**
+  A repository checked today that is only behind - which it can be by
+  design, since the default update mode never touches your working tree -
+  was being counted toward "in sync." The hint now reads "N checked, no
+  change." The "All clear" message under "Needs attention" is narrowed the
+  same way, to "No dirty or failed repositories," rather than a broader
+  claim that everything is in sync or intentionally paused.
+
+- **The Dashboard's "Needs attention" hint promised a rule the count does not
+  implement.** It read "dirty, failed, behind"; the number has only ever counted
+  repositories that are dirty or have a recorded failure. It now reads "dirty or
+  failed". Behind-ness was deliberately left out rather than folded in: the
+  default update mode fetches without touching your working tree, so a watched
+  library drifting behind is the intended steady state rather than an anomaly,
+  and counting it would make the number permanently non-zero and stop it meaning
+  "act on this". Behind-ness keeps its own badge on the Repos screen.
+
+- **The Settings row for a GitHub token described a keychain RepoSync has never
+  written to.** It read "Stored in the OS keychain, never on disk. Managed
+  outside this screen." None of that is true in this version: there is no token
+  provider, nothing writes to a keychain, and there is no other screen. The row
+  now says what actually applies, that RepoSync reads GitHub without signing in
+  and GitHub allows 60 requests an hour that way, shared across all your
+  repositories. Its value reads "not supported yet" rather than "not set",
+  because "not set" invited you to go and set it and there was nowhere to do
+  that. The row stayed rather than being hidden because that 60-per-hour ceiling
+  is a real constraint on a large library.
+
+- **The user guide described a keyboard shortcut that does not exist.** It said
+  you could Tab to a row in the Repos list and press Enter or Space to open that
+  repository's details. Rows stopped being focusable some time ago, on purpose,
+  because wrapping a keyboard-operable row around its own buttons made Enter
+  ambiguous. The keyboard path is the row's own buttons, including a chevron
+  labelled "Open details", and the guide now says so. Nothing about the app
+  changed here; the documentation was wrong, which for a keyboard user is worse
+  than saying nothing.
+
+- **A manual update that recovers a repository now lifts everything together.**
+  Clearing the error, the failure streak, and the automatic pause used to be two
+  separate writes, so a failure between them could leave a repository paused out
+  of scheduled checking while looking healthy in every view that would have told
+  you about it.
+
+- **Adding a repository is now atomic.** Previously the registry row and its
+  local-state row were written separately, so a failure between them left a
+  repository that would list forever, never record a check, never report an
+  error, and refuse to be re-added because the incomplete row still held the
+  unique-path constraint.
+
+- **A check now records its outcome and its receipt together.** Previously a
+  failure between the two could advance a repository's "last checked" time with
+  no matching entry in the activity log, which made the activity log quietly
+  incomplete rather than visibly wrong.
+
+- **A momentarily busy database is no longer reported as a permanent failure.**
+  SQLite lock contention is now classified as retryable, so it surfaces as "the
+  database is busy, retry" instead of a hard error with no useful next step.
 
 ### Security
+
 - **Eighteen published security advisories against RepoSync's dependencies are
   closed, and none is waived.** The weekly dependency check had failed since
   2026-10-19. Most of the fixes are routine updates to the TLS libraries that
@@ -185,6 +467,21 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   out of the app altogether rather than patched. Two older advisories that had
   been knowingly tolerated are also gone, because the library that carried them
   was fixed upstream.
+
+- **Captured git output is now bounded.** Each stored command, stdout, and
+  stderr stream is capped at 16 KiB with an explicit truncation marker. Git's
+  output is controlled by the remote, and a check is recorded per repository per
+  cycle indefinitely, so this was an unbounded write amplifier pointed at your
+  disk.
+
+- **Credentials are stripped from captured git output before it is stored,
+  shown, or logged.** Any credentials embedded in a URL are removed outright,
+  and well-known GitHub and GitLab token formats plus `Authorization:` headers
+  are removed on a best-effort basis. This runs at the moment output is
+  captured, so the database, the error messages on screen, and the diagnostic
+  log all get the filtered version. Note the honest limit: arbitrary secrets in
+  unfamiliar formats are not guaranteed to be caught, and paths and repository
+  names are deliberately left intact because they are the diagnostic value.
 
 - **The editor and terminal settings are now checked when you save them, not
   only when they are used.** RepoSync would store whatever you typed and only
@@ -206,175 +503,6 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   cannot find now says so plainly, naming what it looked for, instead of failing
   with a generic launch error.
 
-### Changed
-- **Launching RepoSync while it is already running now brings the running copy
-  to the front instead of starting a second one.** RepoSync lives in the tray,
-  so it is easy to forget it is there and open it again from the Start menu or a
-  shortcut; until now that started a second, independent copy. Two copies shared
-  one database and, worse, could run `git` in the same folder at the same time,
-  which can corrupt a repository. The second launch now hands over to the one
-  already running and closes itself. Only one RepoSync runs per signed-in
-  Windows user, which also means one tray icon rather than two.
-- **The repository is now public** (2026-07-17), at
-  `github.com/prisant-labs/repo-sync-tool` under the MIT license. The v0.9.0
-  notes below describe a private build and are kept as the historical record;
-  see the note at the end of that section for what has since changed.
-- Group colors can be edited after creation, not only at create time. A
-  rejected duplicate name now leaves both the name and the color unchanged.
-- The close (X) button is configurable: **Settings -> System -> "Close button
-  minimizes to tray"**, on by default. Off makes the close button quit the app.
-  Existing installs keep the previous behavior on upgrade. Tray **Quit** always
-  exits either way.
-
-### Added
-- **Activity can be filtered by action and outcome.** Two rows of chips above the
-  list narrow it to checks or updates, and to successes or failures, so finding
-  the one failed update for one repository no longer means scrolling. The filter
-  runs in the database, not over the rows already on screen, so "show me failures"
-  searches the whole log rather than the most recent page of it. The list also now
-  says when it is showing only the newest matching entries, instead of leaving a
-  full page looking like the complete history.
-- **Activity entries open a full receipt.** Selecting a row in Activity shows
-  what RepoSync actually ran, what git printed back on both streams, the exit
-  code, and how long it took. RepoSync has always recorded this; nothing
-  displayed it, so answering "why did that repository not update" meant opening
-  the database by hand. Captured output has already had credentials stripped
-  from it, so the receipt shows exactly what is stored.
-- **A Diagnostics panel in Settings, with an "Open logs" button.** It shows
-  where your data, database, and log folders are; whether logging is actually
-  running and under what retention; which `git` executable was found and its
-  version; and how many scheduled cycles have run since launch. It flags the
-  three conditions worth acting on - logging that failed to start, a data folder
-  inside a OneDrive-synced tree, and a database that had to be recovered at
-  startup - and a "Copy details" button produces a plain-text summary for a bug
-  report. The log folder was previously reachable only by knowing its path.
-- **Scheduled check outcomes that fail to save are now counted where you can see
-  them.** When a background check finishes but its result cannot be written, the
-  repository simply stays due and retries, which is the right behavior and
-  completely silent. The Diagnostics panel now carries the count, so a database
-  problem that would otherwise present as "checks seem to run twice" is visible.
-- A published [security model](docs/security-model.md) describing trust
-  boundaries, the controls in place, and the known weaknesses that remain.
-- A real [README](README.md), including an honest platform and signing status
-  table.
-- **RepoSync now keeps a diagnostic log.** Background failures that a tray app
-  cannot show you - a scheduled check that could not save its result, an
-  activity entry that failed to write, git going missing, an update check that
-  could not reach the server - are written to a rotating file under the app data
-  directory (`logs/reposync.<date>.log`) instead of vanishing. Previously they
-  went to a console that a release build does not even have, so a problem that
-  happened while you were not looking left no trace at all. Fourteen days are
-  kept by default, capped at 32 MiB total, oldest first. Three environment
-  variables adjust it: `REPOSYNC_LOG=debug` for more detail while reproducing a
-  problem, and `REPOSYNC_LOG_DAYS` / `REPOSYNC_LOG_MAX_MB` if you need a longer
-  history or a smaller footprint.
-
-### Fixed
-- **A problem at GitHub no longer reports itself as a problem with your internet.**
-  When GitHub answered a metadata refresh with an error, RepoSync classified
-  every case it did not have a specific name for as a lost connection and told
-  you "no network connection" - about a request that had plainly gone through,
-  since a round trip had to complete for that error to come back at all. You
-  would go and check your wifi while the actual problem was a GitHub outage or a
-  refused request. It now reports which error GitHub returned, and how it is
-  treated follows from that: a server error (5xx) is temporary and gets retried,
-  while a refusal (4xx) is not and stops, where previously every case was retried
-  forever under the wrong explanation. Requests that genuinely never reach GitHub
-  still report as a lost connection, which is what that message was always for.
-- **A repository whose upstream branch was deleted no longer reads "In sync".**
-  RepoSync has always known the difference between a repository tracking a live
-  upstream, one with no upstream at all, and one whose upstream was deleted from
-  the remote, and it correctly skips checking the last of those instead of
-  reporting a failure. Nothing carried that verdict out to the views, so they
-  fell through to the most reassuring answer available. One repository recorded
-  this outcome 39 times over ten days, green every time, while showing "In sync"
-  for a branch that structurally could not sync. It now has its own status,
-  **No upstream**. Two limits worth knowing: it ranks below "dirty" and "failed"
-  and stays out of the "Needs attention" count, because it describes a fact
-  about the repository rather than something to act on today; and a repository
-  last checked before this release keeps its previous badge until its next
-  check, then changes over.
-- **Quiet hours no longer discards the notifications it withholds, and the
-  setting now describes both halves of what it does.** The hint mentioned only
-  the paused checks, so turning it on to stop overnight git activity also muted
-  failure alerts without saying so. Worse, a cycle that began before the window
-  opened and finished inside it had every notification it produced destroyed
-  rather than delayed: a fetch that failed at 21:59 with quiet hours starting at
-  22:00 was never reported at all, and the next cycle had nothing left to report
-  with. Withheld notifications are now held and delivered on the first cycle
-  after the window ends, folded in with that cycle's own. Held alerts live in
-  memory and do not survive a restart, which can cost you the alert but never
-  the record: the failure stays on the repository, in the Activity log, and in
-  the "Needs attention" count.
-- **The Dashboard's "Needs attention" hint promised a rule the count does not
-  implement.** It read "dirty, failed, behind"; the number has only ever counted
-  repositories that are dirty or have a recorded failure. It now reads "dirty or
-  failed". Behind-ness was deliberately left out rather than folded in: the
-  default update mode fetches without touching your working tree, so a watched
-  library drifting behind is the intended steady state rather than an anomaly,
-  and counting it would make the number permanently non-zero and stop it meaning
-  "act on this". Behind-ness keeps its own badge on the Repos screen.
-- **The Settings row for a GitHub token described a keychain RepoSync has never
-  written to.** It read "Stored in the OS keychain, never on disk. Managed
-  outside this screen." None of that is true in this version: there is no token
-  provider, nothing writes to a keychain, and there is no other screen. The row
-  now says what actually applies, that RepoSync reads GitHub without signing in
-  and GitHub allows 60 requests an hour that way, shared across all your
-  repositories. Its value reads "not supported yet" rather than "not set",
-  because "not set" invited you to go and set it and there was nowhere to do
-  that. The row stayed rather than being hidden because that 60-per-hour ceiling
-  is a real constraint on a large library.
-- **A repository whose checks are failing now actually appears in "Needs
-  attention", and shows as failed in the Repos list.** It previously appeared
-  only if it also happened to have uncommitted changes. The error code every one
-  of those views reads was declared in the database and read in three places, and
-  nothing ever wrote it, so it was empty forever: a repository that had been
-  unable to reach its remote for a week looked healthy everywhere except the
-  activity log. The failure reason is now recorded whenever a check or update
-  fails, and cleared again when the repository recovers.
-- **A failed check now reports itself instead of disappearing.** Checking a
-  repository whose fetch fails used to raise an error that stopped the completion
-  from being announced at all, so other open views never learned the check had
-  finished and the tray's "Check All Now" did not count it. A failed check is now
-  a completed check that reports what went wrong, carrying the reason with it, and
-  the repository detail view says which of the three causes it was (credentials,
-  network, or something else) and points at the Activity receipt for the exact
-  git output. A run of "Check All Now" in which some repositories failed reports
-  once for the whole run rather than once per repository, and names the most
-  actionable problem it saw: a credential failure is reported ahead of a network
-  failure, because the first will not fix itself.
-- **A manual update that recovers a repository now lifts everything together.**
-  Clearing the error, the failure streak, and the automatic pause used to be two
-  separate writes, so a failure between them could leave a repository paused out
-  of scheduled checking while looking healthy in every view that would have told
-  you about it.
-- **Adding a repository is now atomic.** Previously the registry row and its
-  local-state row were written separately, so a failure between them left a
-  repository that would list forever, never record a check, never report an
-  error, and refuse to be re-added because the incomplete row still held the
-  unique-path constraint.
-- **A check now records its outcome and its receipt together.** Previously a
-  failure between the two could advance a repository's "last checked" time with
-  no matching entry in the activity log, which made the activity log quietly
-  incomplete rather than visibly wrong.
-- **A momentarily busy database is no longer reported as a permanent failure.**
-  SQLite lock contention is now classified as retryable, so it surfaces as "the
-  database is busy, retry" instead of a hard error with no useful next step.
-
-### Security
-- **Captured git output is now bounded.** Each stored command, stdout, and
-  stderr stream is capped at 16 KiB with an explicit truncation marker. Git's
-  output is controlled by the remote, and a check is recorded per repository per
-  cycle indefinitely, so this was an unbounded write amplifier pointed at your
-  disk.
-- **Credentials are stripped from captured git output before it is stored,
-  shown, or logged.** Any credentials embedded in a URL are removed outright,
-  and well-known GitHub and GitLab token formats plus `Authorization:` headers
-  are removed on a best-effort basis. This runs at the moment output is
-  captured, so the database, the error messages on screen, and the diagnostic
-  log all get the filtered version. Note the honest limit: arbitrary secrets in
-  unfamiliar formats are not guaranteed to be caught, and paths and repository
-  names are deliberately left intact because they are the diagnostic value.
 - **CI now runs a dependency advisory gate** on every pull request, covering
   both the Rust and the production npm dependency graphs. Any accepted advisory
   is recorded explicitly in `.cargo/audit.toml` with a reason, so a known
