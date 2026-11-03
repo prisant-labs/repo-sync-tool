@@ -412,7 +412,7 @@ export function DataTable<T>({
                         aria-label={`Sort by ${col.header}`}
                         className={cn(
                           HEADER_TEXT_CLASSES,
-                          "flex h-full w-full items-center gap-1 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                          "relative flex h-full w-full items-center text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                         )}
                         style={{ padding: `0 ${CELL_PADDING}px` }}
                         onClick={() => {
@@ -423,12 +423,25 @@ export function DataTable<T>({
                           onSortChange?.(next);
                         }}
                       >
-                        <span className="truncate">{col.header}</span>
+                        {/* No `truncate`: an ellipsis clipped "BEHIND" to
+                            "BEHI..." even unsorted, because the label is about
+                            40px in a 40px content box. The plain header on main
+                            lets the text run into its padding and clips only at
+                            the header's own border, and this matches it. */}
+                        <span className="whitespace-nowrap">{col.header}</span>
+                        {/* The caret sits in the header's right padding, out of
+                            the label's flow. In flow, it took 16px from the
+                            64px Ahead and Behind headers and truncated "BEHIND"
+                            to "BE..." the moment that column was sorted (seen
+                            in a headless render, 2026-11-02; jsdom does no
+                            layout). Absolute, it costs the label nothing, and
+                            the settled column widths stay as the gate locks
+                            them. */}
                         {isActiveSort &&
                           (sort!.direction === "asc" ? (
-                            <ChevronUp aria-hidden className="size-3 shrink-0" />
+                            <ChevronUp aria-hidden className="absolute top-1/2 right-px size-2.5 -translate-y-1/2" />
                           ) : (
-                            <ChevronDown aria-hidden className="size-3 shrink-0" />
+                            <ChevronDown aria-hidden className="absolute top-1/2 right-px size-2.5 -translate-y-1/2" />
                           ))}
                       </button>
                     ) : (
