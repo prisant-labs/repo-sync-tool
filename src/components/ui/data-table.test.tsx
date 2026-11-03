@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach } from "vitest";
 import { Clock } from "lucide-react";
@@ -240,5 +240,233 @@ describe("DataTable", () => {
     // scroll container - there is no such thing as scrolling horizontally
     // against one ancestor and vertically against another.
     expect(scroller.className).not.toMatch(/\boverflow-x-auto\b/);
+  });
+});
+
+/**
+ * E-21 AC-15 (sortable headers) and AC-16 (column visibility/order), as
+ * generic primitive behaviour - independent of `repos.tsx`'s own wiring,
+ * which has its own tests for the Stars real-zero-vs-null case and for
+ * composing with the status filter.
+ */
+type SortRow = { id: number; name: string; score: number | null };
+
+const SORT_ROWS: SortRow[] = [
+  { id: 1, name: "bravo", score: 5 },
+  { id: 2, name: "alpha", score: null },
+  { id: 3, name: "charlie", score: 0 },
+];
+
+function sortableColumns(): DataTableColumn<SortRow>[] {
+  return [
+    { id: "repo", header: "Repository", width: "minmax(180px,240px)", frozen: true, cell: (r) => r.name, sortValue: (r) => r.name },
+    // Deliberately NOT sortable, like Groups/Status on the real screen - a
+    // plain header, proving the two states coexist in one table.
+    { id: "plain", header: "Plain", width: "80px", cell: () => "x" },
+    { id: "score", header: "Score", width: "80px", align: "right", cell: (r) => (r.score === null ? null : String(r.score)), sortValue: (r) => r.score },
+  ];
+}
+
+describe("DataTable sorting (E-21 AC-15)", () => {
+  it("a column with no sortValue renders a plain, unclickable header", () => {
+    render(<DataTable columns={sortableColumns()} rows={SORT_ROWS} rowKey={(r) => r.id} />);
+    const plainHeader = screen.getByRole("columnheader", { name: "Plain" });
+    expect(within(plainHeader).queryByRole("button")).toBeNull();
+    expect(plainHeader.hasAttribute("aria-sort")).toBe(false);
+  });
+
+  it("a sortable, unsorted column's header is a button carrying aria-sort=\"none\"", () => {
+    render(<DataTable columns={sortableColumns()} rows={SORT_ROWS} rowKey={(r) => r.id} />);
+    const header = screen.getByRole("columnheader", { name: "Score" });
+    expect(header.getAttribute("aria-sort")).toBe("none");
+    expect(within(header).getByRole("button", { name: "Sort by Score" })).toBeDefined();
+  });
+
+  it("clicking a sortable header asks to sort ascending; clicking it again reverses to descending", async () => {
+    const onSortChange = vi.fn();
+    const { rerender } = render(
+      <DataTable columns={sortableColumns()} rows={SORT_ROWS} rowKey={(r) => r.id} sort={null} onSortChange={onSortChange} />,
+    );
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Sort by Score" }));
+    expect(onSortChange).toHaveBeenLastCalledWith({ columnId: "score", direction: "asc" });
+
+    // DataTable is controlled: it does not manage sort state itself, so the
+    // caller has to hand the new value back for the header to reflect it.
+    rerender(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        sort={{ columnId: "score", direction: "asc" }}
+        onSortChange={onSortChange}
+      />,
+    );
+    expect(screen.getByRole("columnheader", { name: "Score" }).getAttribute("aria-sort")).toBe("ascending");
+
+    await user.click(screen.getByRole("button", { name: "Sort by Score" }));
+    expect(onSortChange).toHaveBeenLastCalledWith({ columnId: "score", direction: "desc" });
+  });
+
+  it("clicking a DIFFERENT sortable header always starts that column at ascending, regardless of the previous column's direction", async () => {
+    const onSortChange = vi.fn();
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        sort={{ columnId: "score", direction: "desc" }}
+        onSortChange={onSortChange}
+      />,
+    );
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Sort by Repository" }));
+
+    expect(onSortChange).toHaveBeenCalledWith({ columnId: "repo", direction: "asc" });
+  });
+
+  it("shows a caret only on the active sort column, and none on an unsorted sortable column", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        sort={{ columnId: "score", direction: "asc" }}
+        onSortChange={vi.fn()}
+      />,
+    );
+    const scoreHeader = screen.getByRole("columnheader", { name: "Score" });
+    const repoHeader = screen.getByRole("columnheader", { name: "Repository" });
+    expect(scoreHeader.querySelector("svg")).not.toBeNull();
+    expect(repoHeader.querySelector("svg")).toBeNull();
+  });
+
+  it("sorts ascending by the numeric sortValue, with unknown (null) sorting AFTER every known value - including a real zero", () => {
+    const { rerender } = render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        sort={{ columnId: "score", direction: "asc" }}
+        onSortChange={vi.fn()}
+      />,
+    );
+    // charlie (0) then bravo (5) then alpha (null) - the real zero sorts
+    // before the nonzero known value, and null sorts after both.
+    const bodyNames = () =>
+      screen
+        .getAllByRole("row")
+        .slice(1)
+        .map((r) => within(r).getAllByRole("cell")[0].textContent);
+    expect(bodyNames()).toEqual(["charlie", "bravo", "alpha"]);
+
+    rerender(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        sort={{ columnId: "score", direction: "desc" }}
+        onSortChange={vi.fn()}
+      />,
+    );
+    // Reversing direction swaps the two KNOWN values but null stays last in
+    // BOTH directions - the exact rule an "unknown sorts as zero" bug would
+    // violate (alpha's null would have jumped to the front here instead).
+    expect(bodyNames()).toEqual(["bravo", "charlie", "alpha"]);
+  });
+
+  it("an unsorted table (sort=null) renders rows in the order the caller gave them - sorting composes with whatever filtering already happened", () => {
+    render(<DataTable columns={sortableColumns()} rows={SORT_ROWS} rowKey={(r) => r.id} sort={null} onSortChange={vi.fn()} />);
+    const bodyNames = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => within(r).getAllByRole("cell")[0].textContent);
+    expect(bodyNames).toEqual(["bravo", "alpha", "charlie"]);
+  });
+});
+
+describe("DataTable column visibility and order (E-21 AC-16)", () => {
+  it("hiding a column removes BOTH its header and every row's cell for it", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        columnVisibility={{ score: false }}
+      />,
+    );
+    expect(screen.queryByRole("columnheader", { name: "Score" })).toBeNull();
+    // Two remaining columns (Repository, Plain) per row; Score's cell is
+    // gone too, not just its header - a header-only implementation would
+    // still show 3 cells per row here.
+    const bodyRows = screen.getAllByRole("row").slice(1);
+    for (const row of bodyRows) {
+      expect(within(row).getAllByRole("cell")).toHaveLength(2);
+    }
+  });
+
+  it("cannot hide the frozen column, even if columnVisibility explicitly sets it false", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        columnVisibility={{ repo: false }}
+      />,
+    );
+    expect(screen.getByRole("columnheader", { name: "Repository" })).toBeDefined();
+  });
+
+  it("columnOrder reorders the header AND every row's cells together", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        columnOrder={["score", "plain", "repo"]}
+      />,
+    );
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    // The frozen column is force-sorted back to the front regardless of
+    // what columnOrder asked for (see data-table.tsx's own comment) - it
+    // must stay first for the sticky-left CSS to mean anything.
+    expect(headers).toEqual(["Repository", "Score", "Plain"]);
+
+    const firstRow = screen.getAllByRole("row")[1];
+    const cells = within(firstRow).getAllByRole("cell").map((c) => c.textContent);
+    // bravo's row: repo="bravo", score="5", plain="x" - in the SAME reordered
+    // sequence as the headers above.
+    expect(cells).toEqual(["bravo", "5", "x"]);
+  });
+
+  it("an unknown id in columnOrder is ignored, and a column missing from columnOrder is appended at the end", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        columnOrder={["score", "ghost-column"]}
+      />,
+    );
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toEqual(["Repository", "Score", "Plain"]);
+  });
+
+  it("a duplicated id in columnOrder renders its column once, for an ordinary and a frozen column alike", () => {
+    render(
+      <DataTable
+        columns={sortableColumns()}
+        rows={SORT_ROWS}
+        rowKey={(r) => r.id}
+        columnOrder={["score", "repo", "score", "plain", "repo"]}
+      />,
+    );
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    expect(headers).toEqual(["Repository", "Score", "Plain"]);
+    for (const row of screen.getAllByRole("row").slice(1)) {
+      expect(within(row).getAllByRole("cell")).toHaveLength(3);
+    }
   });
 });

@@ -437,6 +437,16 @@ pub fn run() {
                 .min_inner_size(900.0, 600.0)
                 .center()
                 .visible(false)
+                // Tauri's native drag-and-drop handler is on by default, and on
+                // Windows it swallows the webview's HTML5 drag events, so the
+                // Columns popover's drag-to-reorder (E-21 AC-16) would work in a
+                // browser and do nothing in this app. Tauri documents disabling
+                // it as required for HTML5 drag and drop on Windows. Nothing here
+                // consumes native file drops (no `onDragDropEvent` listener). A
+                // file dropped on the window now reaches the webview instead,
+                // where a drop that tries to open a `file://` URL is refused by
+                // `allow_navigation` below.
+                .disable_drag_drop_handler()
                 .on_navigation(|url| {
                     allow_navigation(url.scheme(), url.host_str(), tauri::is_dev())
                 })
@@ -1016,6 +1026,18 @@ mod nav_guard_tests {
         // a `tauri build --debug` bundle (debug_assertions on) loads from tauri.localhost,
         // so gating on is_dev rather than debug_assertions avoids a needless hole.
         assert!(!allow_navigation("http", Some("localhost"), false));
+    }
+
+    #[test]
+    fn denies_a_dropped_file() {
+        // With the native drag-drop handler disabled (for the Columns popover's
+        // HTML5 reorder), a file dropped on the window reaches the webview, which
+        // may try to open it. That arrives here as a `file://` navigation, with no
+        // host on Windows or a `localhost` one on some URL forms. Both must be
+        // refused, in dev and in release.
+        assert!(!allow_navigation("file", None, false));
+        assert!(!allow_navigation("file", None, true));
+        assert!(!allow_navigation("file", Some("localhost"), false));
     }
 
     #[test]

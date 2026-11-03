@@ -18,6 +18,16 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
   is what stops someone serving you a tampered update. Updates are still never
   installed without you confirming first.
 
+- **You can sort the Repos table and choose which columns it shows.** Click a
+  column header to sort by it, and click again to reverse. A "Sorted by" chip
+  above the table says what the sort is and clears it. Repositories with no
+  value in that column, such as one GitHub has not reported stars for, always
+  sort to the bottom rather than counting as zero. The new Columns button
+  opens a list where you can hide columns you do not need and change their
+  order, by dragging or with the arrow buttons. Repository always stays. Your
+  choice is remembered the next time you open RepoSync. The sort is not: it
+  resets each time.
+
 - **The sidebar tells you when something needs attention**, with a small
   amber dot on Dashboard. It appears only when a repository is dirty or its
   last check failed, and it respects the group you have selected: if the only
