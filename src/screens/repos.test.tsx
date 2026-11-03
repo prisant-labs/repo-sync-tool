@@ -179,11 +179,18 @@ beforeEach(() => {
   ]) {
     vi.spyOn(ev, "listen").mockResolvedValue(() => {});
   }
+  // E-21 AC-16: the column popover persists to `localStorage`, and jsdom's
+  // store survives across test cases in the same file (it is not reset by
+  // `cleanup()`/`restoreAllMocks()`). Without this, one test's stored column
+  // order would leak into the next and the cell-index assertions elsewhere
+  // in this file would start failing depending on run order.
+  localStorage.clear();
 });
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  localStorage.clear();
 });
 
 describe("ReposScreen table", () => {
@@ -364,7 +371,9 @@ describe("ReposScreen table", () => {
     await screen.findByText("repo-behind");
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole("button", { name: /Behind/ }));
+    // Anchored: the Behind COLUMN HEADER is also a button now (E-21 AC-15,
+    // "Sort by Behind"), and an unanchored /Behind/ matches both.
+    await user.click(screen.getByRole("button", { name: /^Behind/ }));
 
     expect(screen.getByText("repo-behind")).toBeDefined();
     expect(screen.queryByText("repo-sync")).toBeNull();
@@ -838,5 +847,265 @@ describe("ReposScreen toolbar group control (N5)", () => {
 
     const button = screen.getByRole("button", { name: "Open repo-nine in File Explorer" });
     expect(button.className).toContain("w-full");
+  });
+});
+
+/**
+ * E-21 AC-15 (sortable headers) and AC-16 (the Columns popover), wired
+ * through the real screen. The generic sort/visibility/order mechanism has
+ * its own tests in `data-table.test.tsx`; these cover the things only this
+ * screen's real fixtures and `localStorage` key can prove: the Stars real-
+ * zero-vs-null case, composing with the status filter, and persistence
+ * (including falling back on a corrupt stored value, which is `repos.tsx`'s
+ * own concern, not the primitive's).
+ */
+/**
+ * Maps each body row to whichever of `candidateNames` it contains, in DOM
+ * order. `within(row).queryByText(name)` matches the Repository cell's own
+ * name `<div>` by its EXACT text node - unlike `cell.textContent`, which
+ * concatenates every descendant text node in the cell (name, host type,
+ * `IntelSignals`) into one string nothing in these fixtures' names
+ * themselves ever appears as.
+ */
+function rowOrder(candidateNames: string[]): string[] {
+  const rows = screen.getAllByRole("row").slice(1);
+  return rows.map((row) => candidateNames.find((n) => within(row).queryByText(n) !== null) ?? "?");
+}
+
+describe("ReposScreen sorting (E-21 AC-15)", () => {
+  it("clicking the Stars header sorts ascending, with a real zero sorting before the unknown (null) star count", async () => {
+    renderScreen([
+      repo({ id: 1, localName: "repo-high", stars: 42 }),
+      repo({ id: 2, localName: "repo-unknown", stars: null }),
+      repo({ id: 3, localName: "repo-zero", stars: 0 }),
+    ]);
+    await screen.findByText("repo-high");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Sort by Stars" }));
+
+    expect(rowOrder(["repo-high", "repo-unknown", "repo-zero"])).toEqual([
+      "repo-zero",
+      "repo-high",
+      "repo-unknown",
+    ]);
+    expect(screen.getByRole("columnheader", { name: "Stars" }).getAttribute("aria-sort")).toBe("ascending");
+  });
+
+  it("a second click on the same header reverses to descending, and null still sorts last", async () => {
+    renderScreen([
+      repo({ id: 1, localName: "repo-high", stars: 42 }),
+      repo({ id: 2, localName: "repo-unknown", stars: null }),
+      repo({ id: 3, localName: "repo-zero", stars: 0 }),
+    ]);
+    await screen.findByText("repo-high");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Sort by Stars" }));
+    await user.click(screen.getByRole("button", { name: "Sort by Stars" }));
+
+    // Known values reverse (high before zero); the unknown star count stays
+    // last in BOTH directions - this is the exact case an "unknown sorts as
+    // zero" bug would get backwards, putting repo-unknown FIRST here.
+    expect(rowOrder(["repo-high", "repo-unknown", "repo-zero"])).toEqual([
+      "repo-high",
+      "repo-zero",
+      "repo-unknown",
+    ]);
+    expect(screen.getByRole("columnheader", { name: "Stars" }).getAttribute("aria-sort")).toBe("descending");
+  });
+
+  it("shows a 'sorted by' chip naming the column and direction, and Clear sort removes it and the sort", async () => {
+    renderScreen([
+      repo({ id: 1, localName: "repo-high", stars: 42 }),
+      repo({ id: 2, localName: "repo-zero", stars: 0 }),
+    ]);
+    await screen.findByText("repo-high");
+    const user = userEvent.setup();
+
+    expect(screen.queryByText("Sorted by")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Sort by Stars" }));
+
+    const chip = screen.getByText("Sorted by").closest("div") as HTMLElement;
+    expect(within(chip).getByText("Stars")).toBeDefined();
+    expect(within(chip).getByText("ascending")).toBeDefined();
+
+    await user.click(screen.getByRole("button", { name: "Clear sort" }));
+
+    expect(screen.queryByText("Sorted by")).toBeNull();
+    // Unsorted again: rows are back in the caller's own (unsorted) order.
+    expect(rowOrder(["repo-high", "repo-zero"])).toEqual(["repo-high", "repo-zero"]);
+  });
+
+  it("sorting composes with an active status filter - the sort only ever sees the rows the filter left", async () => {
+    renderScreen([
+      repo({ id: 1, localName: "behind-high", behindCount: 1, stars: 90 }),
+      repo({ id: 2, localName: "behind-low", behindCount: 1, stars: 10 }),
+      // In sync, NOT behind: must never appear in the sorted list below,
+      // however high its star count, because the Behind chip excludes it.
+      repo({ id: 3, localName: "sync-huge", behindCount: 0, stars: 999 }),
+    ]);
+    await screen.findByText("behind-high");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Behind/ }));
+    await user.click(screen.getByRole("button", { name: "Sort by Stars" }));
+
+    expect(rowOrder(["behind-high", "behind-low"])).toEqual(["behind-low", "behind-high"]);
+    expect(screen.queryByText("sync-huge")).toBeNull();
+  });
+});
+
+describe("ReposScreen the Columns popover (E-21 AC-16)", () => {
+  it("the Columns button carries the count of visible columns, all 10 by default", async () => {
+    renderScreen([repo()]);
+    await screen.findByText("repo-a");
+
+    expect(screen.getByRole("button", { name: "Columns 10" })).toBeDefined();
+  });
+
+  it("Repository's checkbox is locked (disabled) and carries an accessible explanation", async () => {
+    renderScreen([repo()]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Columns/ }));
+
+    const repoCheckbox = screen.getByRole("checkbox", { name: "Repository" }) as HTMLInputElement;
+    expect(repoCheckbox.disabled).toBe(true);
+    expect(repoCheckbox.getAttribute("aria-describedby")).not.toBeNull();
+  });
+
+  it("unchecking a column hides BOTH its header and its cells, and decrements the Columns count", async () => {
+    renderScreen([repo({ id: 1, localName: "repo-a", stars: 5 })]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Columns/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Stars" }));
+
+    expect(screen.queryByRole("columnheader", { name: "Stars" })).toBeNull();
+    expect(screen.queryByText("5")).toBeNull();
+    expect(screen.getByRole("button", { name: "Columns 9" })).toBeDefined();
+  });
+
+  it("checking a hidden column back on restores both its header and its cells", async () => {
+    renderScreen([repo({ id: 1, localName: "repo-a", stars: 5 })]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Columns/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Stars" }));
+    await user.click(screen.getByRole("checkbox", { name: "Stars" }));
+
+    expect(screen.getByRole("columnheader", { name: "Stars" })).toBeDefined();
+    expect(screen.getByText("5")).toBeDefined();
+  });
+
+  it("the Move-down button reorders a column's header AND its cells together, via the keyboard-operable pattern", async () => {
+    renderScreen([repo({ id: 1, localName: "repo-a" })]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    // Default order: Repository, Status, Branch, ... - move Status down
+    // past Branch.
+    await user.click(screen.getByRole("button", { name: /^Columns/ }));
+    await user.click(screen.getByRole("button", { name: "Move Status down" }));
+
+    const headerOrder = () =>
+      screen
+        .getAllByRole("columnheader")
+        .map((h) => h.getAttribute("aria-label") ?? h.textContent);
+    expect(headerOrder().slice(0, 3)).toEqual(["Repository", "Branch", "Status"]);
+
+    const firstRow = screen.getAllByRole("row")[1];
+    const cellTexts = within(firstRow).getAllByRole("cell").slice(0, 3);
+    // Status renders a StatusBadge (text "In sync" for this fixture);
+    // Branch renders "main" - both now swapped, in step with the headers.
+    expect(cellTexts[1].textContent).toContain("main");
+    expect(cellTexts[2].textContent).toContain("In sync");
+  });
+
+  it("the locked Repository row has no Move controls, so it can never be dragged or moved out of first position", async () => {
+    renderScreen([repo()]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Columns/ }));
+
+    expect(screen.queryByRole("button", { name: "Move Repository up" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move Repository down" })).toBeNull();
+  });
+
+  it("Escape closes the popover and returns focus to the Columns button, even from a control deep inside it", async () => {
+    renderScreen([repo()]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+    const columnsButton = screen.getByRole("button", { name: /^Columns/ });
+
+    await user.click(columnsButton);
+    screen.getByRole("checkbox", { name: "Stars" }).focus();
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("region", { name: "Choose and reorder columns" })).toBeNull();
+    expect(document.activeElement).toBe(columnsButton);
+  });
+
+  it("persists the column choice across a remount (localStorage)", async () => {
+    const { unmount } = renderScreen([repo({ id: 1, localName: "repo-a", stars: 5 })]);
+    await screen.findByText("repo-a");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: /^Columns/ }));
+    await user.click(screen.getByRole("checkbox", { name: "Stars" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Columns 9" })).toBeDefined());
+    unmount();
+
+    renderScreen([repo({ id: 1, localName: "repo-a", stars: 5 })]);
+    await screen.findByText("repo-a");
+
+    expect(screen.getByRole("button", { name: "Columns 9" })).toBeDefined();
+    expect(screen.queryByRole("columnheader", { name: "Stars" })).toBeNull();
+  });
+
+  it("a corrupt stored value falls back to the default columns, all visible, in the ratified order", async () => {
+    localStorage.setItem("reposync.repos.columns.v1", "{not json");
+    renderScreen([repo()]);
+    await screen.findByText("repo-a");
+
+    expect(screen.getByRole("button", { name: "Columns 10" })).toBeDefined();
+    for (const name of ["Repository", "Status", "Branch", "Ahead", "Behind", "Groups", "Folder", "Checked", "Stars", "Forks"]) {
+      expect(screen.getByRole("columnheader", { name })).toBeDefined();
+    }
+  });
+
+  it("a stored id for a column that no longer exists is ignored, and every real column still renders", async () => {
+    localStorage.setItem(
+      "reposync.repos.columns.v1",
+      JSON.stringify({ order: ["repo", "ghost-column", "stars"], visibility: {} }),
+    );
+    renderScreen([repo({ id: 1, localName: "repo-a", stars: 5 })]);
+    await screen.findByText("repo-a");
+
+    // The unknown id contributes nothing; every known column still renders,
+    // with Stars honouring the stored position right after Repository and
+    // the rest appended afterwards (readColumnPrefs's own contract).
+    const headerOrder = screen
+      .getAllByRole("columnheader")
+      .map((h) => h.getAttribute("aria-label") ?? h.textContent);
+    expect(headerOrder).toEqual([
+      "Repository",
+      "Stars",
+      "Status",
+      "Branch",
+      "Ahead",
+      "Behind",
+      "Groups",
+      "Folder",
+      "Checked",
+      "Forks",
+    ]);
   });
 });

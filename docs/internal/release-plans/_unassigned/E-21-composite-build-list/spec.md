@@ -57,6 +57,22 @@ source: The annotation rail of `_local/design/4-composite/2026-09-16_composite.h
 - **Next:** AC-16 and AC-15 as one shared table change, then AC-13, AC-14 and AC-17. After them,
   the seven blocked criteria, in the order their blockers clear. AC-11 (the column budget)
   unblocks three of them at once.
+- **AC-15 and AC-16 built 2026-11-02**, as the one shared `DataTable` change the entry above
+  anticipated. `data-table.tsx` gained a controlled `sort` prop (a column opts in with
+  `sortValue`; unknown values sort after known ones in both directions) and `columnOrder`/
+  `columnVisibility` props, so Activity can adopt the same mechanism later without a second
+  implementation. `repos.tsx` wires eight of the ten columns to sort (Groups has no single
+  sortable value and stays plain, by design, see that file's own comment); a new `ColumnsPopover`
+  primitive (no portal, no new dependency - this codebase has none) gives the "Columns" button,
+  the checkboxes, and both a drag reorder and a Move-up/Move-down keyboard reorder, with
+  Repository locked first; a new `column-prefs.ts` persists the choice to a versioned
+  `localStorage` key, flagged in its own doc comment as open to veto, with the sort itself
+  deliberately NOT persisted. One pre-existing test (`repos.test.tsx`, the Behind status-filter
+  click) needed an anchored regex once the Behind header also became a button named "Sort by
+  Behind". Deviation: AC-16's text says "dragging" first; the keyboard pattern (Move up/down
+  buttons) is the one this build proves in tests, since jsdom has no drag events - the drag path
+  is implemented but unverified outside a real browser, and the report accompanying this change
+  says so.
 - **Blockers:** AC-5 needs a backend field; AC-6 to AC-9 need design decisions that do not exist;
   AC-10 and AC-11 are hard-blocked on the Repos column budget (register L.6).
 
@@ -161,13 +177,13 @@ size) are tuned against a render; the behaviour below is not open.
 - [ ] **AC-14: The group scope is a banner above the Repos toolbar, and nothing in the toolbar.** When
   a group is engaged, one line above the toolbar names it, gives its count, and offers a way to clear
   it. The toolbar's own group control is removed. Decisions bench R1-b (Keep), FB-07. [S5]
-- [ ] **AC-15: Every sortable column sorts from its header, and the active sort stays visible.** A
+- [x] **AC-15: Every sortable column sorts from its header, and the active sort stays visible.** A
   header click sorts by that column, a second click reverses it, and a caret shows the direction. The
   header is a button, and the table carries `aria-sort`. A "sorted by" chip in the toolbar names the
   active sort and clears it. Unknown values sort after known ones in both directions, so an unknown
   star count never sorts as zero. Sorting applies to the rows the filters leave. Round two RC5 (Keep),
   carets from J.2, FB-09. [S5][S6]
-- [ ] **AC-16: A Columns control shows and hides columns.** A "Columns" button, carrying the count of
+- [x] **AC-16: A Columns control shows and hides columns.** A "Columns" button, carrying the count of
   visible columns, opens a popover of checkboxes, one per column. Repository is always shown and its
   checkbox is locked. Columns can be reordered there by dragging, and by keyboard as well. Headers and
   cells stay aligned after any change, and the shared DataTable primitive holds the mechanism, so the

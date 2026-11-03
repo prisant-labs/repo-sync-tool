@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -19,7 +19,8 @@ import type { GroupSummary, RepoSummary } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DataTable, type DataTableColumn } from "@/components/ui/data-table";
+import { DataTable, type DataTableColumn, type DataTableSort } from "@/components/ui/data-table";
+import { ColumnsPopover } from "@/components/ui/columns-popover";
 import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
 import { FilterChip } from "@/components/filter-chip";
@@ -32,6 +33,7 @@ import { PageShell } from "@/components/page-shell";
 import { useToast } from "@/hooks/use-toast";
 import { useBackendEvents, useRepoGroupMemberships, useRepoList } from "@/hooks/queries";
 import { groupScope } from "@/lib/group-scope";
+import { readColumnPrefs, writeColumnPrefs } from "@/lib/column-prefs";
 import {
   deriveStatus,
   relativeTime,
@@ -44,6 +46,34 @@ import { cn } from "@/lib/utils";
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
 
 type Chip = RepoStatus | "all";
+
+/**
+ * The ratified column set and order (README settled list + ui-delivery-plan.md
+ * ledger B5; the exact same list `repos-columns.test.ts` locks). Kept as its
+ * own constant, separate from the `columns` useMemo below, because the
+ * DEFAULT a first-run or corrupted-storage user falls back to has to exist
+ * before any render has computed the live column list - see
+ * `readColumnPrefs`'s call below. Keep the two in sync by hand; a column
+ * added or removed updates both this array AND `repos-columns.test.ts`'s own
+ * `SETTLED` list, in the same commit, same as that gate already requires.
+ */
+const DEFAULT_COLUMN_ORDER = [
+  "repo",
+  "status",
+  "branch",
+  "ahead",
+  "behind",
+  "groups",
+  "folder",
+  "checked",
+  "stars",
+  "forks",
+];
+
+/** Versioned so a future incompatible shape change can start clean rather
+ *  than trying to migrate an old value - see `column-prefs.ts`'s own doc
+ *  comment on why this lives in `localStorage` at all (E-21 AC-16). */
+const COLUMNS_STORAGE_KEY = "reposync.repos.columns.v1";
 
 export function ReposScreen({
   activeGroupId,
@@ -98,6 +128,41 @@ export function ReposScreen({
 
   const [query, setQuery] = useState("");
   const [chip, setChip] = useState<Chip>("all");
+
+  // Sort (E-21 AC-15): deliberately a plain `useState`, never read from or
+  // written to storage. The criterion says the active sort resets every
+  // session, unlike column visibility/order below, which persists.
+  const [sort, setSort] = useState<DataTableSort | null>(null);
+
+  // Column visibility and order (E-21 AC-16), loaded once from
+  // `localStorage` on mount (the lazy initializer runs exactly once, before
+  // the first render, so there is no flash of the default layout before the
+  // stored one applies). `readColumnPrefs` already falls back to the
+  // default order with everything visible on any problem - missing value,
+  // corrupt JSON, wrong shape, or a `localStorage` that throws - so this
+  // line can never crash the screen.
+  const [columnPrefs, setColumnPrefs] = useState(() =>
+    readColumnPrefs(COLUMNS_STORAGE_KEY, DEFAULT_COLUMN_ORDER, DEFAULT_COLUMN_ORDER),
+  );
+  useEffect(() => {
+    writeColumnPrefs(COLUMNS_STORAGE_KEY, columnPrefs);
+  }, [columnPrefs]);
+
+  const toggleColumn = useCallback((id: string) => {
+    // Repository can never be hidden (AC-16). The popover's own checkbox is
+    // already `disabled` for it; this is the second, independent guard -
+    // the same belt-and-suspenders `DataTable`'s `columnVisibility` prop
+    // applies for any frozen column, not relying on either guard alone.
+    if (id === "repo") return;
+    setColumnPrefs((prev) => ({
+      ...prev,
+      visibility: { ...prev.visibility, [id]: prev.visibility[id] === false ? true : false },
+    }));
+  }, []);
+
+  const reorderColumns = useCallback((nextOrder: string[]) => {
+    setColumnPrefs((prev) => ({ ...prev, order: nextOrder }));
+  }, []);
 
   const list = useMemo(() => repos.data ?? [], [repos.data]);
 
@@ -299,8 +364,11 @@ export function ReposScreen({
   // `forks` default ON (`("stars","Stars","76px","n",1,1)`,
   // `("forks","Forks","76px","n",1,1)`); `license`, `size` and `visibility` all
   // default OFF (`0`) and are therefore NOT rendered here - the lab's default
-  // on/off set decides which render, per the N3 task, since column show/hide
-  // is itself still deferred. Extracted values, stated here for veto:
+  // on/off set decides which render, per the N3 task. Column show/hide itself
+  // is no longer deferred (E-21 AC-16 built it), but that only covers the ten
+  // columns below: `license`, `size` and `visibility` have no `DataTableColumn`
+  // definition to show at all, with or without AC-16's popover. Extracted
+  // values, stated here for veto:
   //   - width 76px, kind "n" (number: label left in the header, value right in
   //     the cell, per the lab's own alignment default), for both.
   //   - icons: `STAR` / `FORK` in the lab's own glyph set, mapped to lucide's
@@ -352,6 +420,9 @@ export function ReposScreen({
             />
           </div>
         ),
+        // Case-insensitive, like every other string sort below - "Zulu"
+        // and "zulu" interleave by their letters, not by ASCII case.
+        sortValue: (r) => r.localName.toLowerCase(),
       },
       {
         id: "status",
@@ -363,6 +434,10 @@ export function ReposScreen({
             status === "behind" ? (r.behindCount ?? 0) : status === "ahead" ? (r.aheadCount ?? 0) : undefined;
           return <StatusBadge status={status} count={count} />;
         },
+        // Ranked by `STATUS_ORDER` (lib/status.ts), the same taxonomy order
+        // the toolbar's own chips iterate in - never null, so this column
+        // carries no "unknown sorts last" case of its own.
+        sortValue: (r) => STATUS_ORDER.indexOf(deriveStatus(r)),
       },
       {
         id: "branch",
@@ -415,6 +490,12 @@ export function ReposScreen({
             <span className="text-muted-foreground">{reason}</span>
           );
         },
+        // `activeBranch` itself, not the rendered reason text: sorting by a
+        // user-facing word like "detached" would sort branches alongside
+        // whichever real branch name happens to collate near it. `null`
+        // (any of the three empty-cell reasons this column's own comment
+        // above explains) sorts last, same as every other unknown value.
+        sortValue: (r) => r.activeBranch?.toLowerCase(),
       },
       {
         id: "ahead",
@@ -423,6 +504,12 @@ export function ReposScreen({
         align: "right",
         icon: ArrowUp,
         cell: (r) => ((r.aheadCount ?? 0) > 0 ? <span className="font-mono text-xs tabular-nums">{r.aheadCount}</span> : null),
+        // The RAW nullable count, not the `?? 0` the cell renders with: a
+        // repo that has never been inspected (`null`) is a different, less
+        // known thing than a repo inspected and found to be exactly even
+        // (`0`), and the sort should put the genuinely unknown ones last,
+        // not interleave them with real zeros.
+        sortValue: (r) => r.aheadCount,
       },
       {
         id: "behind",
@@ -432,11 +519,19 @@ export function ReposScreen({
         icon: ArrowDown,
         cell: (r) =>
           (r.behindCount ?? 0) > 0 ? <span className="font-mono text-xs tabular-nums">{r.behindCount}</span> : null,
+        sortValue: (r) => r.behindCount,
       },
       {
         id: "groups",
         header: "Groups",
         width: "160px",
+        // No `sortValue` (E-21 AC-15 never required every column to sort):
+        // a repo can belong to several groups, and no ratified rule says
+        // whether that should sort by count, by the first group's name, or
+        // by something else - inventing one here would be a design
+        // decision wearing a build criterion's clothes, the exact thing
+        // this effort's own spec warns against for a different column
+        // (AC-6's note on the same spec).
         cell: (r) => {
           const gs = groupsForRepo(r.id);
           if (gs.length === 0) return null;
@@ -498,6 +593,7 @@ export function ReposScreen({
             <span className="truncate">{r.localPath}</span>
           </button>
         ),
+        sortValue: (r) => r.localPath.toLowerCase(),
       },
       {
         id: "checked",
@@ -505,6 +601,10 @@ export function ReposScreen({
         width: "96px",
         icon: Clock,
         cell: (r) => <span className="font-mono text-xs text-muted-foreground">{relativeTime(r.lastCheckedAt)}</span>,
+        // The raw epoch seconds, not the rendered relative string ("not yet
+        // run" sort-wise has nothing to do with the English word "ago").
+        // `null` ("never checked") sorts last in both directions.
+        sortValue: (r) => r.lastCheckedAt,
       },
       {
         id: "stars",
@@ -516,6 +616,10 @@ export function ReposScreen({
         // GitHub's actual answer and renders as "0" - see the doc comment
         // above the column list for why this differs from Ahead/Behind.
         cell: (r) => (r.stars === null ? null : <span className="font-mono text-xs tabular-nums">{r.stars}</span>),
+        // The unknown-sorts-last rule matters most HERE: `stars` is the
+        // acceptance criterion's own example of a value that must never
+        // read as zero just because an ascending sort put it at the bottom.
+        sortValue: (r) => r.stars,
       },
       {
         id: "forks",
@@ -524,9 +628,24 @@ export function ReposScreen({
         align: "right",
         icon: GitFork,
         cell: (r) => (r.forks === null ? null : <span className="font-mono text-xs tabular-nums">{r.forks}</span>),
+        sortValue: (r) => r.forks,
       },
     ],
     [groupsForRepo, openFolder],
+  );
+
+  // The Columns popover's own item list (E-21 AC-16): every known column,
+  // labelled from the live `columns` array above, in the user's CURRENT
+  // order - not the ratified default order, so a reorder or a toggle is
+  // reflected back into the popover the next time it opens.
+  const columnPopoverItems = useMemo(
+    () =>
+      columnPrefs.order.map((id) => ({
+        id,
+        header: columns.find((c) => c.id === id)?.header ?? id,
+        locked: id === "repo",
+      })),
+    [columnPrefs.order, columns],
   );
 
   // ONE toolbar (N5, sidebar restructure and toolbar consolidation;
@@ -612,24 +731,42 @@ export function ReposScreen({
                       ),
                   )}
                 </div>
+                {/* E-21 AC-15: names the active sort and clears it. Absent
+                    entirely while unsorted - there is nothing to name or
+                    clear. */}
+                {sort && (
+                  <SortChip
+                    columnLabel={columns.find((c) => c.id === sort.columnId)?.header ?? sort.columnId}
+                    direction={sort.direction}
+                    onClear={() => setSort(null)}
+                  />
+                )}
               </>
             )}
             {activeGroup && (
               <GroupFilterControl group={activeGroup} count={inGroupCount} onClear={onClearGroup} />
             )}
-            {/* Provisional (N2 PR, veto invited): closes BL-NI-86, repo_check_all
-                has no consumer. */}
             {list.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="ml-auto"
-                disabled={checkAllBusy}
-                onClick={checkAll}
-              >
-                <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
-                Check all
-              </Button>
+              <div className="ml-auto flex items-center gap-2">
+                {/* E-21 AC-16. */}
+                <ColumnsPopover
+                  items={columnPopoverItems}
+                  visibility={columnPrefs.visibility}
+                  onToggle={toggleColumn}
+                  onReorder={reorderColumns}
+                />
+                {/* Provisional (N2 PR, veto invited): closes BL-NI-86,
+                    repo_check_all has no consumer. */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={checkAllBusy}
+                  onClick={checkAll}
+                >
+                  <RefreshCw className={checkAllBusy ? "animate-spin" : undefined} />
+                  Check all
+                </Button>
+              </div>
             )}
           </div>
     ) : undefined;
@@ -703,6 +840,10 @@ export function ReposScreen({
                 columns={columns}
                 rows={filtered}
                 rowKey={(r) => r.id}
+                sort={sort}
+                onSortChange={setSort}
+                columnOrder={columnPrefs.order}
+                columnVisibility={columnPrefs.visibility}
                 onRowClick={(r) => setSelectedId(r.id)}
                 actions={(r) => (
                   <>
@@ -778,6 +919,45 @@ function GroupChip({ group }: { group: GroupSummary }) {
       />
       {group.name}
     </span>
+  );
+}
+
+/**
+ * The "sorted by" chip (E-21 AC-15). Modelled on `GroupFilterControl` below,
+ * not `FilterChip`: this names and clears a STATE, the same shape as "Filtered
+ * to Work / Clear filter", not a toggle with `aria-pressed`. Wording is
+ * explicit for the same reason the group control's is ("jp's show-the-
+ * meaning-up-front preference," that component's own doc comment): "Sorted
+ * by Stars, descending" says the whole fact, rather than leaving the
+ * direction to a caret shape alone.
+ */
+function SortChip({
+  columnLabel,
+  direction,
+  onClear,
+}: {
+  columnLabel: string;
+  direction: "asc" | "desc";
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-sm">
+      <span className="text-muted-foreground">Sorted by</span>
+      <span className="font-semibold">{columnLabel}</span>
+      <span className="font-mono text-xs text-muted-foreground">
+        {direction === "asc" ? "ascending" : "descending"}
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 gap-1 px-1.5 text-xs"
+        onClick={onClear}
+        aria-label="Clear sort"
+      >
+        <X />
+        Clear sort
+      </Button>
+    </div>
   );
 }
 

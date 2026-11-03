@@ -78,6 +78,11 @@ const PAIRS: Pair[] = [
   { what: "muted text on the page", ink: "muted-foreground", on: "background" },
   { what: "muted text on a card", ink: "muted-foreground", on: "card" },
   { what: "muted text in a well", ink: "muted-foreground", on: "muted" },
+  // The DataTable header's own hover state (E-21 AC-15: a sortable header's
+  // `hover:text-foreground`) and the Columns popover's row hover (E-21
+  // AC-16: `hover:bg-muted` under label text and the Move buttons' own
+  // `hover:text-foreground`) both put default ink over `--muted` on hover.
+  { what: "default text hovering on a muted fill (sortable headers, the Columns popover rows)", ink: "foreground", on: "muted" },
   { what: "sidebar text", ink: "sidebar-foreground", on: "sidebar" },
 
   // --- the accent ----------------------------------------------------------
@@ -98,6 +103,38 @@ const PAIRS: Pair[] = [
     ink: "primary-ink",
     on: "background",
     wash: { token: "primary", alpha: 0.15 },
+  },
+
+  // --- the "sorted by" chip (E-21 AC-15) ------------------------------------
+  // Same shape as `GroupFilterControl`'s own "Filtered to X" chip (a
+  // `bg-muted/40` wash over the toolbar's `background`), registered here
+  // because `SortChip` is a new consumer of it.
+  {
+    what: "the 'sorted by' chip's label text (E-21 AC-15)",
+    ink: "muted-foreground",
+    on: "background",
+    wash: { token: "muted", alpha: 0.4 },
+  },
+  {
+    what: "the 'sorted by' chip's column name (E-21 AC-15)",
+    ink: "foreground",
+    on: "background",
+    wash: { token: "muted", alpha: 0.4 },
+  },
+
+  // --- the Columns popover panel (E-21 AC-16) -------------------------------
+  // The first consumer of `--popover` as a text surface this gate tracks
+  // (`Toast` paints on it too but was never registered - not this change's
+  // gap to fix, but not one to repeat either).
+  {
+    what: "a column checkbox's label text in the Columns popover (E-21 AC-16)",
+    ink: "foreground",
+    on: "popover",
+  },
+  {
+    what: "muted text in the Columns popover - the locked note, move buttons (E-21 AC-16)",
+    ink: "muted-foreground",
+    on: "popover",
   },
 
   // --- the sidebar set (SB3, SB4, L4) --------------------------------------

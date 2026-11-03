@@ -1,13 +1,26 @@
+import { useMemo } from "react";
 import type { ReactNode } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
  * Shared table primitive (N2, ui-delivery-plan.md ledger B5), built to the
  * table lab's settled values (`_local/gui/2026-08-28_iterations/README.md` and
- * `_generators/gen_lab2.py`). Presentational only: no sorting, no interactive
- * row/column selection, no column show/hide (all deliberately deferred,
- * ledger C).
+ * `_generators/gen_lab2.py`). Presentational, plus three pieces of state a
+ * caller can opt into (E-21 AC-15 (sortable headers) and AC-16 (the Columns
+ * popover), `ui-delivery-plan.md` round-two marks RC4/RC5): header sorting,
+ * column visibility, and column order. No interactive row/column SELECTION
+ * exists yet (ledger C) - that is a different, still-deferred thing from
+ * showing/hiding/reordering columns.
+ *
+ * All three are state the CALLER owns and hands in as props; this file never
+ * reads or writes storage itself. `repos.tsx` persists its choice to
+ * `localStorage` (see `columnOrder`/`columnVisibility`'s own doc comments);
+ * `sort` is deliberately NOT persisted anywhere (resets every session, per
+ * the acceptance criterion). A caller that passes none of the three (e.g.
+ * Activity, not wired in this change) gets exactly the old behaviour: every
+ * column, in the order given, no sort - so this is purely additive.
  *
  * `currentKey` (D2, restoring a highlight the pre-DataTable Activity screen
  * had) is NOT that deferred selection model: it does not let the table track
@@ -77,10 +90,21 @@ import { cn } from "@/lib/utils";
 
 export type DataTableDensity = "full" | "compact";
 export type DataTableAlign = "left" | "right";
+export type DataTableSortDirection = "asc" | "desc";
+
+export interface DataTableSort {
+  /** The `DataTableColumn.id` currently sorted. */
+  columnId: string;
+  direction: DataTableSortDirection;
+}
 
 const ROW_HEIGHT: Record<DataTableDensity, number> = { full: 52, compact: 44 };
 const HEADER_HEIGHT = 32;
 const CELL_PADDING = 12;
+/** Shared by a plain header's `<span>` and a sortable header's `<button>`, so
+ *  a column becoming sortable (AC-15) changes only its interactivity. */
+const HEADER_TEXT_CLASSES =
+  "font-mono text-[11px] font-bold tracking-wider text-muted-foreground uppercase whitespace-nowrap";
 /**
  * The lab's actions column is 64px, sized for its own bespoke 28px icon
  * button plus a small decorative chevron glyph. This primitive reuses the
@@ -117,6 +141,17 @@ export interface DataTableColumn<T> {
   icon?: LucideIcon;
   /** Cell content. Return null/undefined to render the muted dash placeholder. */
   cell: (row: T) => ReactNode;
+  /**
+   * Opts this column into sorting (E-21 AC-15). Return the raw comparable
+   * value, never a rendered node: a string or number for a known value, or
+   * null/undefined for an unknown one. Unknown values sort AFTER every known
+   * value in BOTH directions - an unknown star count must never read as a
+   * zero just because it fell to the bottom of an ascending sort. A column
+   * with no `sortValue` renders a plain, unclickable header; the ratified
+   * criterion never asked for every column to sort (Groups does not, in
+   * `repos.tsx` - see that file's own comment on why).
+   */
+  sortValue?: (row: T) => string | number | null | undefined;
 }
 
 export interface DataTableProps<T> {
@@ -157,6 +192,44 @@ export interface DataTableProps<T> {
    * (baseline `9a254c2`) and does not opt in.
    */
   currentKey?: string | number | null;
+  /**
+   * Controlled sort state (E-21 AC-15). `null`/omitted means unsorted - the
+   * table renders in `rows`' own order, which is already the order the
+   * caller's filters left it in, so sorting composes with filtering for
+   * free rather than needing its own merge step. The caller owns this state
+   * (`repos.tsx` keeps it in a plain `useState`, reset on remount, never
+   * persisted - the criterion says sort resets per session).
+   */
+  sort?: DataTableSort | null;
+  /** Fires when a sortable header is clicked. Omit to render sortable
+   *  headers as inert (no-op) buttons - every real caller passes this. */
+  onSortChange?: (sort: DataTableSort | null) => void;
+  /**
+   * Column display order, as a list of `DataTableColumn.id`s (E-21 AC-16).
+   * Omitted (the default): render `columns` in the array's own order,
+   * unchanged from before this prop existed. Any id here that no longer
+   * matches a column in `columns` is ignored (a column removed from the
+   * screen since the order was saved); any column in `columns` missing from
+   * this list is appended at the end (a column added since), so a stale or
+   * truncated stored value can never silently drop a column from the table.
+   * The caller (`repos.tsx`) is also where this gets persisted to
+   * `localStorage` - this file never reads or writes storage itself.
+   */
+  columnOrder?: string[];
+  /**
+   * Column visibility, as `id -> false` for hidden (E-21 AC-16). Omitted or
+   * a column absent from the map both mean visible - so a map that only
+   * ever records hidden columns, never the whole set, still works, and a
+   * newly-added column defaults to shown without the caller having to
+   * remember to add it here. A `frozen` column can NEVER be hidden this way,
+   * regardless of what the map says: this file's own contract for `frozen`
+   * is "the sticky, frozen-on-scroll column... must be first" (see that
+   * field's doc comment), and a hidden frozen column would leave the sticky
+   * machinery pinning nothing. That is also the generic form of AC-16's
+   * "Repository is always shown" rule - enforced here, once, for whichever
+   * column a caller freezes, not re-implemented per screen.
+   */
+  columnVisibility?: Record<string, boolean>;
 }
 
 export function DataTable<T>({
@@ -170,11 +243,67 @@ export function DataTable<T>({
   className,
   "aria-label": ariaLabel,
   currentKey,
+  sort,
+  onSortChange,
+  columnOrder,
+  columnVisibility,
 }: DataTableProps<T>) {
   const rowHeight = ROW_HEIGHT[density];
   const clickable = onRowClick !== undefined;
+
+  // Visibility and order (AC-16), applied ONCE here so the header row and
+  // every body row read the same effective column list - the thing that
+  // keeps "hide a column" and "reorder a column" from ever letting a header
+  // and its cells drift apart. A frozen column is force-sorted to the front
+  // regardless of `columnOrder`: the sticky-left CSS below assumes it is the
+  // first rendered column, and nothing upstream of this file enforces that a
+  // caller's stored order actually kept it there (a stale value saved before
+  // a column was added, for instance, could not know to).
+  const effectiveColumns = useMemo(() => {
+    let cols = columns;
+    if (columnOrder) {
+      const byId = new Map(cols.map((c) => [c.id, c]));
+      const ordered = columnOrder
+        .map((id) => byId.get(id))
+        .filter((c): c is DataTableColumn<T> => c !== undefined);
+      const seen = new Set(ordered.map((c) => c.id));
+      cols = [...ordered, ...cols.filter((c) => !seen.has(c.id))];
+    }
+    if (columnVisibility) {
+      cols = cols.filter((c) => c.frozen || columnVisibility[c.id] !== false);
+    }
+    const frozen = cols.filter((c) => c.frozen);
+    const rest = cols.filter((c) => !c.frozen);
+    return frozen.length > 0 ? [...frozen, ...rest] : cols;
+  }, [columns, columnOrder, columnVisibility]);
+
+  // The rows actually rendered: `rows` in the caller's own order (already
+  // past whatever filters it applied) when unsorted, or sorted by whichever
+  // column's `sortValue` the caller's `sort` state names. Sorting a COPY
+  // (`rows.slice()`), never the array the caller gave us.
+  const sortedRows = useMemo(() => {
+    if (!sort) return rows;
+    const col = columns.find((c) => c.id === sort.columnId);
+    const accessor = col?.sortValue;
+    if (!accessor) return rows;
+    const dir = sort.direction === "asc" ? 1 : -1;
+    return rows.slice().sort((a, b) => {
+      const av = accessor(a);
+      const bv = accessor(b);
+      const aUnknown = av === null || av === undefined;
+      const bUnknown = bv === null || bv === undefined;
+      // Unknown sorts after known, in BOTH directions - decided before `dir`
+      // is ever consulted, which is what makes it direction-independent.
+      if (aUnknown && bUnknown) return 0;
+      if (aUnknown) return 1;
+      if (bUnknown) return -1;
+      const cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return dir === 1 ? cmp : -cmp;
+    });
+  }, [rows, sort, columns]);
+
   const template =
-    columns.map((c) => c.width).join(" ") + " 1fr" + (actions ? ` ${actionsWidth}` : "");
+    effectiveColumns.map((c) => c.width).join(" ") + " 1fr" + (actions ? ` ${actionsWidth}` : "");
 
   return (
     <div
@@ -225,24 +354,89 @@ export function DataTable<T>({
                 zIndex: 3,
               }}
             >
-              {columns.map((col, i) => (
-                <div
-                  key={col.id}
-                  role="columnheader"
-                  className={cn(
-                    "flex min-w-0 items-center overflow-hidden bg-muted font-mono text-[11px] font-bold tracking-wider text-muted-foreground uppercase whitespace-nowrap",
-                    i > 0 && "border-l border-border",
-                    col.frozen && "z-[4]",
-                  )}
-                  style={{
-                    padding: `0 ${CELL_PADDING}px`,
-                    minWidth: 0,
-                    ...(col.frozen ? { position: "sticky", left: 0, zIndex: 4 } : {}),
-                  }}
-                >
-                  {col.header}
-                </div>
-              ))}
+              {effectiveColumns.map((col, i) => {
+                const sortable = col.sortValue !== undefined;
+                const isActiveSort = sortable && sort?.columnId === col.id;
+                // `aria-sort` only on columns that CAN sort - putting "none"
+                // on every header would claim every column supports sorting,
+                // which most of this file's own callers' columns do not (see
+                // `sortValue`'s doc comment).
+                const ariaSort: "ascending" | "descending" | "none" | undefined = !sortable
+                  ? undefined
+                  : isActiveSort
+                    ? sort!.direction === "asc"
+                      ? "ascending"
+                      : "descending"
+                    : "none";
+                return (
+                  <div
+                    key={col.id}
+                    role="columnheader"
+                    // Explicit, and distinct from the nested button's own
+                    // name (see below), so `getByRole("columnheader", {name:
+                    // col.header})` keeps finding this cell by its plain
+                    // label regardless of what the button inside is named.
+                    // Without this the columnheader's COMPUTED name would be
+                    // the button's accessible name, "Sort by X" - breaking
+                    // every existing lookup of a header by its bare text.
+                    aria-label={sortable ? col.header : undefined}
+                    aria-sort={ariaSort}
+                    className={cn(
+                      "flex min-w-0 items-center overflow-hidden bg-muted",
+                      i > 0 && "border-l border-border",
+                      col.frozen && "z-[4]",
+                    )}
+                    style={{
+                      padding: sortable ? 0 : `0 ${CELL_PADDING}px`,
+                      minWidth: 0,
+                      ...(col.frozen ? { position: "sticky", left: 0, zIndex: 4 } : {}),
+                    }}
+                  >
+                    {sortable ? (
+                      // A real <button>, not a clickable div (E-21 AC-15):
+                      // the only way a column header is independently
+                      // reachable and operable by keyboard. Carries the same
+                      // typography the plain header text used, so a column
+                      // becoming sortable changes behaviour, not how it reads.
+                      //
+                      // Named "Sort by X", not bare "X": a bare name would
+                      // collide with an existing status-filter CHIP of the
+                      // same word (`repos.tsx`'s "Behind"/"Ahead" chips
+                      // predate this change and are not renamed), and two
+                      // controls sharing one accessible name on the same
+                      // screen is itself an accessibility defect independent
+                      // of this gate - `getByRole("button", {name:
+                      // /^Behind/})` would start matching two buttons.
+                      <button
+                        type="button"
+                        aria-label={`Sort by ${col.header}`}
+                        className={cn(
+                          HEADER_TEXT_CLASSES,
+                          "flex h-full w-full items-center gap-1 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                        )}
+                        style={{ padding: `0 ${CELL_PADDING}px` }}
+                        onClick={() => {
+                          const next: DataTableSort = {
+                            columnId: col.id,
+                            direction: isActiveSort && sort!.direction === "asc" ? "desc" : "asc",
+                          };
+                          onSortChange?.(next);
+                        }}
+                      >
+                        <span className="truncate">{col.header}</span>
+                        {isActiveSort &&
+                          (sort!.direction === "asc" ? (
+                            <ChevronUp aria-hidden className="size-3 shrink-0" />
+                          ) : (
+                            <ChevronDown aria-hidden className="size-3 shrink-0" />
+                          ))}
+                      </button>
+                    ) : (
+                      <span className={HEADER_TEXT_CLASSES}>{col.header}</span>
+                    )}
+                  </div>
+                );
+              })}
               <div aria-hidden />
               {actions && (
                 <div
@@ -255,7 +449,7 @@ export function DataTable<T>({
           </div>
 
           <div role="rowgroup" className="contents">
-            {rows.map((row) => {
+            {sortedRows.map((row) => {
               const key = rowKey(row);
               // `!= null` (not bare truthiness) so a falsy-but-real key like
               // `0` still matches - see the prop's own doc comment.
@@ -273,7 +467,7 @@ export function DataTable<T>({
                   )}
                   style={{ gridTemplateColumns: template, minHeight: rowHeight }}
                 >
-                  {columns.map((col, i) => {
+                  {effectiveColumns.map((col, i) => {
                     const content = col.cell(row);
                     const empty = content === null || content === undefined;
                     const Icon = col.icon;
