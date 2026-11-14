@@ -2,6 +2,12 @@
 // `src/index.css` (`text-body`, `text-cell`, `text-meta`, `text-micro`, ...) is
 // the only way to size text. It reads string `Literal` and `TemplateElement`
 // nodes only, so a comment that mentions `text-sm` is never reported.
+//
+// Known limit, on purpose: an arbitrary value that could be either a size or a
+// colour (`text-[13]` with no unit, `text-[var(--x)]`) is NOT reported. Only
+// values that are provably lengths are: a number with a unit, a `length:` hint,
+// or `calc`/`clamp`/`min`/`max`. Colours (`#`, `rgb`, `oklch`, `color:` ...) are
+// never reported.
 
 const NAMED_SIZE = /^text-(xs|sm|base|lg|\d*xl)$/;
 
