@@ -126,8 +126,8 @@
 
           body  = text-sm      0.875rem, line-height calc(1.25 / 0.875)
           cell  = text-xs      0.75rem,  line-height calc(1 / 0.75)
-          meta  = text-[11px]  0.6875rem, font-size only
-          micro = text-[10px]  0.625rem,  font-size only
+          meta  = text-[11px]  11px, font-size only
+          micro = text-[10px]  10px, font-size only
 
         The earlier design intent for `cell` and `meta` (line-heights 1.4 and
         1.35, and weight 500 on meta so the 11px floor gains legibility from
@@ -166,8 +166,13 @@
   --text-cell--line-height: calc(1 / 0.75);
 
   /* Font-size only, on purpose: no line-height and no weight, matching
-     `text-[11px]`. See the retune note above. */
-  --text-meta: 0.6875rem;
+     `text-[11px]`. See the retune note above.
+
+     The unit is px ON PURPOSE. `text-[11px]` compiles to `font-size: 11px`,
+     which ignores the root font size; 0.6875rem would only match it at a 16px
+     root and would grow to 13.75px at a 20px root. A like-for-like migration
+     keeps px. Moving meta to rem is a VISIBLE retune, left for a later look. */
+  --text-meta: 11px;
   /* `inherit`, not absent: a look can only move a line-height or weight that
      the theme defines (see LOOKS below), and `inherit` is what a class with no
      line-height and no weight already does. Nothing renders differently. */
@@ -178,16 +183,18 @@
      today, and it BREAKS the documented 11px floor (DESIGN.md section 3). It
      exists so those call sites can move to a name without changing a pixel;
      each one is then raised to `meta` or `label` by a look, and this token is
-     deleted. Do not use it in new code. */
-  --text-micro: 0.625rem;
+     deleted. Do not use it in new code. px, not rem, for the same reason as
+     `meta`: it must match `text-[10px]` at any root font size. */
+  --text-micro: 10px;
 
   /* Raised from 0.625rem (10px) on 2026-08-28. 11px is the floor: nothing in
      this app renders body text below it. 10px was chosen when `label` meant
      only all-caps column heads, where the letterforms are simple and the
      strings are short; it is too small the moment a label carries a real word.
-     Same rem value as `meta` on purpose - they differ by weight and casing,
-     not by size, which is what keeps the ramp readable as four steps rather
-     than six near-identical ones. */
+     The same SIZE as `meta` at a 16px root on purpose - they differ by weight
+     and casing, not by size, which is what keeps the ramp readable as four
+     steps rather than six near-identical ones. Unlike `meta` this stays in rem
+     and is NOT a stand-in for any px class; nothing uses it yet. */
   --text-label: 0.6875rem;
   --text-label--line-height: 1;
   --text-label--font-weight: 600;
@@ -456,7 +463,7 @@
   --text-cell--line-height: 1.4;
   --text-meta--line-height: 1.35;
   --text-meta--font-weight: 500; /* at 11px, weight buys more than size */
-  --text-micro: 0.6875rem; /* 10px text rises to the 11px floor */
+  --text-micro: 11px; /* 10px text rises to the 11px floor */
 }
 
 /* Look B, "slate": bolder. Several levers move at once so the difference is
@@ -470,7 +477,7 @@
   --text-meta--line-height: 1.35;
   --text-meta--font-weight: 600;
   --text-label--font-weight: 700;
-  --text-micro: 0.6875rem;
+  --text-micro: 11px;
 }
 
 /* ...and the colour is one block per theme, with the same set of colour keys in
