@@ -25,6 +25,11 @@ tester.run("no-raw-text-size", rule, {
     // A comment that names a raw size is documentation, not usage.
     { code: `// text-sm was the old size\nconst a = "font-medium"; /* text-xs too */` },
     { code: "const a = `flex ${x} text-cell`;" },
+    // Colours, alignment and wrapping utilities that share the `text-` prefix.
+    { code: `const a = "text-[#333] text-[color:var(--x)] text-[oklch(0.5_0_0)]";` },
+    { code: `const a = "text-[rgb(0_0_0)] text-[var(--color-foo)] md:text-[#333]";` },
+    { code: `const a = "text-muted-foreground/80 text-center text-balance text-ellipsis";` },
+    { code: `const a = "md:hover:text-muted-foreground/80 hover:text-center";` },
   ],
   invalid: [
     {
@@ -63,6 +68,36 @@ tester.run("no-raw-text-size", rule, {
     {
       code: `const a = "text-2xl text-[13px]";`,
       errors: [{ messageId: "raw" }, { messageId: "raw" }],
+    },
+    // Forms Tailwind still turns into a font-size, each bare and behind variants.
+    ...[
+      "!text-sm",
+      "text-sm!",
+      "text-sm/6",
+      "!text-sm/6",
+      "text-[length:11px]",
+      "text-[.75rem]",
+      "text-[0.75rem]",
+      "text-[1.5em]",
+      "text-[110%]",
+      "text-[calc(1rem+2px)]",
+      "text-[clamp(1rem,2vw,2rem)]",
+      "text-[11px]/6",
+      "text-[11px]!",
+    ].flatMap((cls) => [cls, `md:hover:${cls}`]).map((cls) => ({
+      code: `const a = "flex ${cls}";`,
+      errors: [{ messageId: "raw" as const }],
+    })),
+    {
+      code: `const a = "md:hover:!text-sm";`,
+      errors: [{ messageId: "raw", data: { cls: "md:hover:!text-sm", hint: "use text-body" } }],
+    },
+    {
+      code: `const a = "text-sm/6 text-[11px]/6";`,
+      errors: [
+        { messageId: "raw", data: { cls: "text-sm/6", hint: "use text-body" } },
+        { messageId: "raw", data: { cls: "text-[11px]/6", hint: "use text-meta" } },
+      ],
     },
   ],
 });
