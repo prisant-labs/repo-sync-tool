@@ -128,8 +128,7 @@ export function AddReposDialog({
   return (
     <Dialog open={open} onClose={close} aria-labelledby={ADD_REPOS_DIALOG_TITLE_ID}>
       <div className="border-b border-border px-5 py-4">
-        {/* eslint-disable-next-line local/no-raw-text-size -- 16px has no named size yet; the ramp slice decides */}
-        <h2 id={ADD_REPOS_DIALOG_TITLE_ID} className="text-base font-semibold">
+        <h2 id={ADD_REPOS_DIALOG_TITLE_ID} className="text-heading font-semibold">
           Add repositories
         </h2>
         <p className="mt-0.5 text-body text-muted-foreground">

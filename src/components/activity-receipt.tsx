@@ -64,8 +64,7 @@ export function ActivityReceipt({
             </span>
             <StatusChip status={record.status} />
           </div>
-          {/* eslint-disable-next-line local/no-raw-text-size -- 16px has no named size yet; the ramp slice decides */}
-          <h3 id={ACTIVITY_RECEIPT_TITLE_ID} className="mt-1.5 truncate text-base font-semibold">
+          <h3 id={ACTIVITY_RECEIPT_TITLE_ID} className="mt-1.5 truncate text-heading font-semibold">
             {repoName ?? "Unknown repo"}
           </h3>
           <p className="text-cell text-foreground/70">

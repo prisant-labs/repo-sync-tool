@@ -168,6 +168,15 @@
      `text-[11px]`. See the retune note above. */
   --text-meta: 0.6875rem;
 
+  /* Exact stand-ins for Tailwind's `text-base` and `text-lg`, added so the
+     last raw sizes could move to a name without changing a pixel. `heading` is
+     a section or dialog heading (16px); `title` is a panel or drawer title
+     (18px). Values and line-heights are copied from Tailwind's own theme. */
+  --text-heading: 1rem;
+  --text-heading--line-height: calc(1.5 / 1);
+  --text-title: 1.125rem;
+  --text-title--line-height: calc(1.75 / 1.125);
+
   /* TEMPORARY, for migration only. 10px is `text-[10px]`, which the app uses
      today, and it BREAKS the documented 11px floor (DESIGN.md section 3). It
      exists so those call sites can move to a name without changing a pixel;

@@ -6,7 +6,8 @@ import rule from "./no-raw-text-size.js";
 // RuleTester calls the globals `describe` and `it`; point them at vitest.
 RuleTester.describe = describe;
 RuleTester.it = it;
-RuleTester.afterAll = afterAll;
+// `afterAll` is read by RuleTester at runtime but missing from its typings.
+(RuleTester as unknown as { afterAll: typeof afterAll }).afterAll = afterAll;
 
 const tester = new RuleTester({
   languageOptions: {
@@ -53,8 +54,15 @@ tester.run("no-raw-text-size", rule, {
       ],
     },
     {
-      code: `const a = "text-base text-2xl text-[13px]";`,
-      errors: [{ messageId: "raw" }, { messageId: "raw" }, { messageId: "raw" }],
+      code: `const a = "text-base text-lg";`,
+      errors: [
+        { messageId: "raw", data: { cls: "text-base", hint: "use text-heading" } },
+        { messageId: "raw", data: { cls: "text-lg", hint: "use text-title" } },
+      ],
+    },
+    {
+      code: `const a = "text-2xl text-[13px]";`,
+      errors: [{ messageId: "raw" }, { messageId: "raw" }],
     },
   ],
 });

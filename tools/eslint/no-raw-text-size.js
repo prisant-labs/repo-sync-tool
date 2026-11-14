@@ -10,6 +10,8 @@ const REPLACEMENT = {
   "text-xs": "text-cell",
   "text-[11px]": "text-meta",
   "text-[10px]": "text-micro",
+  "text-base": "text-heading",
+  "text-lg": "text-title",
 };
 
 // Drop variant prefixes (`md:hover:`), but only colons outside square brackets,
@@ -29,7 +31,7 @@ function stripVariants(token) {
 function hint(utility) {
   const named = REPLACEMENT[utility];
   if (named) return `use ${named}`;
-  return "use a named size: text-body (14px), text-cell (12px), text-meta (11px), text-label or text-page; see the type ramp in src/index.css";
+  return "use a named size: text-body (14px), text-cell (12px), text-meta (11px), text-heading (16px), text-title (18px), text-label or text-page; see the type ramp in src/index.css";
 }
 
 /** @type {import("eslint").Rule.RuleModule} */

@@ -125,8 +125,7 @@ export function GalleryApp() {
         </header>
 
         <main className="min-h-0 flex-1 overflow-y-auto p-6" data-testid="gallery-main">
-          {/* eslint-disable-next-line local/no-raw-text-size -- 18px has no named size yet; the ramp slice decides */}
-          <h1 className="mb-1 text-lg font-semibold">{section.title}</h1>
+          <h1 className="mb-1 text-title font-semibold">{section.title}</h1>
           {section.note && <p className="mb-5 max-w-3xl text-body text-muted-foreground">{section.note}</p>}
           <ToastProvider key={`${section.id}-${nonce}`}>{section.render()}</ToastProvider>
         </main>

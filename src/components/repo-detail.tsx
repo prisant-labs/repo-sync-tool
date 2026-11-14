@@ -497,8 +497,7 @@ function DetailBody({
         points.
       */}
       <div className="flex flex-col gap-2 px-5 pt-5 pb-3">
-        {/* eslint-disable-next-line local/no-raw-text-size -- 18px has no named size yet; the ramp slice decides */}
-        <div className="font-mono text-lg font-bold">{r.localName}</div>
+        <div className="font-mono text-title font-bold">{r.localName}</div>
         {r.description && <p className="text-body text-muted-foreground">{r.description}</p>}
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-1.5 text-cell text-muted-foreground">

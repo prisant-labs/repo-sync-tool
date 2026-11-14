@@ -16,6 +16,8 @@ export const FONT_SIZE_TOKENS = [
   "cell",
   "meta",
   "micro",
+  "heading",
+  "title",
   "label",
 ] as const;
 

@@ -38,8 +38,7 @@ export function EmptyState({
         <Icon className={cn("text-muted-foreground", compact ? "size-4" : "size-6")} />
       </div>
       <div className="flex flex-col gap-1">
-        {/* eslint-disable-next-line local/no-raw-text-size -- 16px has no named size yet; the ramp slice decides */}
-        <h3 className={cn("font-semibold", compact ? "text-body" : "text-base")}>{title}</h3>
+        <h3 className={cn("font-semibold", compact ? "text-body" : "text-heading")}>{title}</h3>
         <p className={cn("max-w-sm text-muted-foreground", compact ? "text-cell" : "text-body")}>
           {description}
         </p>

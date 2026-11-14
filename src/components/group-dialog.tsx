@@ -127,8 +127,7 @@ export function GroupDialog({
   return (
     <Dialog open={open} onClose={onClose} aria-labelledby={GROUP_DIALOG_TITLE_ID}>
       <div className="border-b border-border px-5 py-4">
-        {/* eslint-disable-next-line local/no-raw-text-size -- 16px has no named size yet; the ramp slice decides */}
-        <h2 id={GROUP_DIALOG_TITLE_ID} className="text-base font-semibold">
+        <h2 id={GROUP_DIALOG_TITLE_ID} className="text-heading font-semibold">
           {mode === "create" ? "New group" : "Edit group"}
         </h2>
         <p className="mt-0.5 text-body text-muted-foreground">

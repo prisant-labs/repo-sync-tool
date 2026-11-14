@@ -55,16 +55,4 @@ export default tseslint.config(
     plugins: { local: { rules: { "no-raw-text-size": noRawTextSize } } },
     rules: { "local/no-raw-text-size": "error" },
   },
-  {
-    // The ONE list of files exempt from `local/no-raw-text-size` because they
-    // are not migrated yet. It holds only screens; a later slice migrates them
-    // and deletes this block. Do not add a file here: migrate it.
-    files: [
-      "src/screens/activity.tsx",
-      "src/screens/dashboard.tsx",
-      "src/screens/repos.tsx",
-      "src/screens/settings.tsx",
-    ],
-    rules: { "local/no-raw-text-size": "off" },
-  },
 );
