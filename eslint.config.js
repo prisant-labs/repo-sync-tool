@@ -27,7 +27,7 @@ export default tseslint.config(
     // second checkout with its own `src/` and `tsconfig.json`. Linting from the
     // root then finds two candidate tsconfig roots and fails every file inside
     // the worktree with a parser error, while the real `src/` is fine.
-    ignores: ["dist", "src-tauri", "target", "_local", "_LOCAL", ".claude"],
+    ignores: ["dist", "dist-gallery", "src-tauri", "target", "_local", "_LOCAL", ".claude"],
   },
   {
     files: ["**/*.{ts,tsx}"],

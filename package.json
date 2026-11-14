@@ -8,6 +8,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "gallery:dev": "vite --config vite.gallery.config.ts --port 1422 --strictPort",
+    "gallery:build": "vite build --config vite.gallery.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "lint": "eslint .",
     "test": "vitest run",
@@ -44,6 +46,7 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.61.1",
     "vite": "8.0.16",
+    "vite-plugin-singlefile": "2.3.4",
     "vitest": "4.1.10"
   }
 }

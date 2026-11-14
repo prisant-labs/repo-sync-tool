@@ -8,6 +8,7 @@ src-tauri/gen/
 # Node / frontend
 **/node_modules/
 dist/
+dist-gallery/
 build/
 .vite/
 
