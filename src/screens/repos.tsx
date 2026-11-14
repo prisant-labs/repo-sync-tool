@@ -25,6 +25,7 @@ import { AsyncPanel } from "@/components/async-panel";
 import { EmptyState } from "@/components/empty-state";
 import { FilterChip } from "@/components/filter-chip";
 import { StatusBadge } from "@/components/status-badge";
+import { GroupChip } from "@/components/recipes/group-chip";
 import { IntelSignals } from "@/components/intel-signals";
 import { Drawer } from "@/components/ui/drawer";
 import { RepoDetailPanel, REPO_DETAIL_TITLE_ID } from "@/components/repo-detail";
@@ -538,7 +539,7 @@ export function ReposScreen({
           return (
             <div className="flex min-w-0 flex-nowrap gap-1 overflow-hidden">
               {gs.map((g) => (
-                <GroupChip key={g.id} group={g} />
+                <GroupChip key={g.id} variant="compact" group={g} />
               ))}
             </div>
           );
@@ -907,18 +908,6 @@ export function ReposScreen({
         }}
       />
     </PageShell>
-  );
-}
-
-function GroupChip({ group }: { group: GroupSummary }) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-micro font-medium whitespace-nowrap text-muted-foreground">
-      <span
-        className={cn("size-1.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
-        style={group.color ? { backgroundColor: group.color } : undefined}
-      />
-      {group.name}
-    </span>
   );
 }
 

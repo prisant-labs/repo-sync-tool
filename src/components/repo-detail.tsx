@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { OptionCard, RadioDot } from "@/components/recipes/option-card";
+import { GroupChip, GroupDot } from "@/components/recipes/group-chip";
 import { commands } from "@/lib/bindings";
 import type {
   ActivityRecord,
@@ -985,42 +986,6 @@ function SectionLabel({ icon: Icon, children }: { icon?: LucideIcon; children: R
   );
 }
 
-/** The small colour dot used by both group pills and the add-to-group candidates. */
-function GroupDot({ color }: { color: string | null }) {
-  return (
-    <span
-      className={cn("size-2 shrink-0 rounded-full", color === null && "bg-muted-foreground/50")}
-      style={color ? { backgroundColor: color } : undefined}
-    />
-  );
-}
-
-function GroupPill({
-  group,
-  busy,
-  onRemove,
-}: {
-  group: GroupSummary;
-  busy: boolean;
-  onRemove: () => void;
-}) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-2 text-cell font-medium">
-      <GroupDot color={group.color} />
-      {group.name}
-      <button
-        type="button"
-        aria-label={`Remove from ${group.name}`}
-        disabled={busy}
-        onClick={onRemove}
-        className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-      >
-        <X className="size-3" />
-      </button>
-    </span>
-  );
-}
-
 /**
  * Member-only group pills on the third header line (G2, ui-delivery-plan.md
  * ledger B7): only groups this repo actually belongs to render as pills, each
@@ -1062,8 +1027,9 @@ function GroupPills({
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
         {memberGroups.map((g) => (
-          <GroupPill
+          <GroupChip
             key={g.id}
+            variant="removable"
             group={g}
             busy={groupBusyId === g.id}
             onRemove={() => onToggleGroup(g, true)}
