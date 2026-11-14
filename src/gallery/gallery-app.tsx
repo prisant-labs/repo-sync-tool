@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
-import { ToastProvider } from "@/components/ui/toast";
 import { SECTIONS, GROUP_ORDER } from "@/gallery/sections";
 import { setScenario } from "@/gallery/stub-ipc";
 import type { Scenario } from "@/gallery/fixtures";
@@ -127,7 +126,7 @@ export function GalleryApp() {
         <main className="min-h-0 flex-1 overflow-y-auto p-6" data-testid="gallery-main">
           <h1 className="mb-1 text-title font-semibold">{section.title}</h1>
           {section.note && <p className="mb-5 max-w-3xl text-body text-muted-foreground">{section.note}</p>}
-          <ToastProvider key={`${section.id}-${nonce}`}>{section.render()}</ToastProvider>
+          <div key={`${section.id}-${nonce}`}>{section.render()}</div>
         </main>
       </div>
     </div>

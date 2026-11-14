@@ -1,6 +1,6 @@
 import type {
   ActivityRecord,
-  DailySummary,
+  SummaryItem,
   Diagnostics,
   GroupSummary,
   RepoDetail,
@@ -23,7 +23,7 @@ import type {
 
 export type Scenario = "populated" | "empty" | "loading";
 
-const NOW = Math.floor(Date.now() / 1000);
+export const NOW = Math.floor(Date.now() / 1000);
 const MIN = 60;
 const HOUR = 3600;
 const DAY = 86400;
@@ -32,7 +32,8 @@ const DAY = 86400;
 export const GROUP_COLOR_BLUE = "oklch(0.55 0.16 264)";
 export const GROUP_COLOR_GREEN = "oklch(0.55 0.13 150)";
 
-const base: RepoSummary = {
+/** A healthy, in-sync repository; every other fixture repo is this plus a change. */
+export const REPO_TEMPLATE: RepoSummary = {
   id: 1,
   localName: "example-repo",
   localPath: "C:\\Code\\example-repo",
@@ -63,9 +64,9 @@ const base: RepoSummary = {
 
 /** One repository per status the app can derive, plus a long-name edge case. */
 export const REPOS: RepoSummary[] = [
-  { ...base, id: 1, localName: "example-repo" },
+  { ...REPO_TEMPLATE, id: 1, localName: "example-repo" },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 2,
     localName: "widget-forge",
     localPath: "C:\\Code\\widget-forge",
@@ -76,7 +77,7 @@ export const REPOS: RepoSummary[] = [
     stars: 4,
   },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 3,
     localName: "sample-service",
     localPath: "C:\\Code\\sample-service",
@@ -86,7 +87,7 @@ export const REPOS: RepoSummary[] = [
     openPrCount: 5,
   },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 4,
     localName: "scratch-notes",
     localPath: "C:\\Code\\scratch-notes",
@@ -102,7 +103,7 @@ export const REPOS: RepoSummary[] = [
     homepage: null,
   },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 5,
     localName: "legacy-tooling",
     localPath: "C:\\Code\\legacy-tooling",
@@ -113,7 +114,7 @@ export const REPOS: RepoSummary[] = [
     behindCount: null,
   },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 6,
     localName: "archived-demo",
     localPath: "C:\\Code\\archived-demo",
@@ -122,7 +123,7 @@ export const REPOS: RepoSummary[] = [
     lastCheckedAt: NOW - 30 * DAY,
   },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 7,
     localName: "local-only-experiment",
     localPath: "C:\\Code\\local-only-experiment",
@@ -137,7 +138,7 @@ export const REPOS: RepoSummary[] = [
     forks: null,
   },
   {
-    ...base,
+    ...REPO_TEMPLATE,
     id: 8,
     localName: "a-repository-with-a-very-long-name-for-truncation",
     localPath:
@@ -154,7 +155,7 @@ export const REPOS: RepoSummary[] = [
   },
 ];
 
-function toDetail(r: RepoSummary): RepoDetail {
+export function toDetail(r: RepoSummary, checkFrequencyMin = 0): RepoDetail {
   return {
     id: r.id,
     localName: r.localName,
@@ -172,7 +173,7 @@ function toDetail(r: RepoSummary): RepoDetail {
     remoteOriginUrl: r.remoteOriginUrl,
     defaultBranch: "main",
     updateMode: r.updateMode,
-    checkFrequencyMin: 0,
+    checkFrequencyMin,
     createdAt: NOW - 30 * DAY,
     notes: null,
     activeBranch: r.activeBranch,
@@ -211,7 +212,7 @@ export const GROUPS: GroupSummary[] = [
   { id: 2, name: "personal", color: GROUP_COLOR_GREEN, repoCount: 2 },
 ];
 
-const MEMBERSHIPS: RepoGroupMembership[] = [
+export const MEMBERSHIPS: RepoGroupMembership[] = [
   { repoId: 1, groupIds: [1] },
   { repoId: 2, groupIds: [1] },
   { repoId: 3, groupIds: [1] },
@@ -219,7 +220,7 @@ const MEMBERSHIPS: RepoGroupMembership[] = [
   { repoId: 5, groupIds: [2] },
 ];
 
-const ACTIVITY: ActivityRecord[] = [
+export const ACTIVITY: ActivityRecord[] = [
   {
     id: 1,
     repoId: 1,
@@ -280,9 +281,69 @@ const ACTIVITY: ActivityRecord[] = [
     exitCode: null,
     durationMs: null,
   },
+  {
+    id: 5,
+    repoId: 1,
+    timestamp: NOW - 6 * HOUR,
+    actionType: "check",
+    status: "success",
+    reasonCode: null,
+    summary: "Up to date with origin",
+    commitRange: null,
+    rawCommand: "git fetch --prune origin",
+    rawStdout: null,
+    rawStderr: null,
+    exitCode: 0,
+    durationMs: 390,
+  },
+  {
+    id: 6,
+    repoId: 2,
+    timestamp: NOW - 8 * HOUR,
+    actionType: "update",
+    status: "failed",
+    reasonCode: "git.not_fast_forward",
+    summary: "Could not fast-forward",
+    commitRange: null,
+    rawCommand: "git pull --ff-only",
+    rawStdout: null,
+    rawStderr: "fatal: Not possible to fast-forward, aborting.",
+    exitCode: 128,
+    durationMs: 960,
+  },
+  {
+    id: 7,
+    repoId: 3,
+    timestamp: NOW - DAY,
+    actionType: "check",
+    status: "success",
+    reasonCode: null,
+    summary: "14 commits behind origin",
+    commitRange: null,
+    rawCommand: "git fetch --prune origin",
+    rawStdout: null,
+    rawStderr: null,
+    exitCode: 0,
+    durationMs: 510,
+  },
+  {
+    id: 8,
+    repoId: 5,
+    timestamp: NOW - 2 * DAY,
+    actionType: "check",
+    status: "failed",
+    reasonCode: "net.offline",
+    summary: "Could not reach the remote",
+    commitRange: null,
+    rawCommand: "git fetch --prune origin",
+    rawStdout: null,
+    rawStderr: "fatal: unable to access the remote",
+    exitCode: 128,
+    durationMs: 5002,
+  },
 ];
 
-const SETTINGS: Settings = {
+export const SETTINGS: Settings = {
   globalCheckMinutes: 360,
   quietHoursStart: null,
   quietHoursEnd: null,
@@ -298,7 +359,7 @@ const SETTINGS: Settings = {
   closeMinimizesToTray: true,
 };
 
-const DIAGNOSTICS: Diagnostics = {
+export const DIAGNOSTICS: Diagnostics = {
   appVersion: "0.9.0",
   dataDir: "C:\\Users\\example\\AppData\\Local\\RepoSync",
   dbPath: "C:\\Users\\example\\AppData\\Local\\RepoSync\\reposync.sqlite3",
@@ -327,7 +388,7 @@ const DIAGNOSTICS: Diagnostics = {
   dbRecovered: false,
 };
 
-const UPDATE_AVAILABILITY: UpdateAvailability = {
+export const UPDATE_AVAILABILITY: UpdateAvailability = {
   currentVersion: "0.9.0",
   available: false,
   newVersion: null,
@@ -335,34 +396,19 @@ const UPDATE_AVAILABILITY: UpdateAvailability = {
   error: null,
 };
 
-const DB_RECOVERY: DbRecoveryNotice = { recovered: false, backupPath: null };
+export const DB_RECOVERY: DbRecoveryNotice = { recovered: false, backupPath: null };
 
-const TODAY = new Date().toISOString().slice(0, 10);
-
-const SUMMARY_POPULATED: DailySummary = {
-  date: TODAY,
-  updatedCount: 1,
-  releasesCount: 1,
-  attentionCount: 2,
-  noChangeCount: 4,
-  updated: [{ repoId: 3, localName: "sample-service", detail: "Fast-forwarded 14 commits" }],
-  newReleases: [{ repoId: 1, localName: "example-repo", detail: "v1.4.0" }],
-  attention: [
-    { repoId: 4, localName: "scratch-notes", detail: "Uncommitted changes" },
-    { repoId: 5, localName: "legacy-tooling", detail: "Could not reach the remote" },
-  ],
-};
-
-const SUMMARY_EMPTY: DailySummary = {
-  date: TODAY,
-  updatedCount: 0,
-  releasesCount: 0,
-  attentionCount: 0,
-  noChangeCount: 0,
-  updated: [],
-  newReleases: [],
-  attention: [],
-};
+/** The day's notable events. Counts and scope are derived from these in handlers.ts. */
+export const SUMMARY_UPDATED: SummaryItem[] = [
+  { repoId: 3, localName: "sample-service", detail: "Fast-forwarded 14 commits" },
+];
+export const SUMMARY_RELEASES: SummaryItem[] = [
+  { repoId: 1, localName: "example-repo", detail: "v1.4.0" },
+];
+export const SUMMARY_ATTENTION: SummaryItem[] = [
+  { repoId: 4, localName: "scratch-notes", detail: "Uncommitted changes" },
+  { repoId: 5, localName: "legacy-tooling", detail: "Could not reach the remote" },
+];
 
 /** Candidates for the Add-repositories dialog's scan: one already tracked. */
 export const SCAN_CANDIDATES: ScanResult["discovered"] = [
@@ -386,29 +432,3 @@ export const SCAN_CANDIDATES: ScanResult["discovered"] = [
   },
 ];
 
-/**
- * Everything the stubbed commands answer with, for one scenario. `empty` gives
- * the zero form of every list so the real empty states render; `loading` uses
- * the populated data (the stub never resolves it, so it is never shown).
- */
-export function fixturesFor(scenario: Scenario) {
-  const empty = scenario === "empty";
-  return {
-    repos: empty ? [] : REPOS,
-    groups: empty ? [] : GROUPS,
-    memberships: empty ? [] : MEMBERSHIPS,
-    activity: empty ? [] : ACTIVITY,
-    settings: SETTINGS,
-    diagnostics: DIAGNOSTICS,
-    updateAvailability: UPDATE_AVAILABILITY,
-    dbRecovery: DB_RECOVERY,
-    summary: empty ? SUMMARY_EMPTY : SUMMARY_POPULATED,
-    detailFor: (id: number): RepoDetail => toDetail(REPOS.find((r) => r.id === id) ?? REPOS[0]),
-    groupsForRepo: (repoId: number): number[] =>
-      empty ? [] : (MEMBERSHIPS.find((m) => m.repoId === repoId)?.groupIds ?? []),
-    scan: (parentPath: string | null): ScanResult => ({
-      parentPath: parentPath ?? "C:\\Code",
-      discovered: SCAN_CANDIDATES,
-    }),
-  };
-}
