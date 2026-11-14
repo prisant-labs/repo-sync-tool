@@ -4,7 +4,7 @@ import "@/gallery/stub-ipc";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { GalleryApp } from "@/gallery/gallery-app";
-import "@/index.css";
+import "@/gallery/gallery.css";
 
 const rootElement = document.getElementById("root");
 

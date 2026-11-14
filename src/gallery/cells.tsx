@@ -1,4 +1,5 @@
 import type { CSSProperties, ReactNode } from "react";
+import { ToastProvider } from "@/components/ui/toast";
 
 /**
  * A labelled gallery cell. `contained` turns the body into the containing
@@ -38,7 +39,9 @@ export function Cell({
         style={style}
         className="rounded-lg border border-dashed border-border bg-background p-4"
       >
-        {children}
+        {/* Each cell has its own toast provider so the fixed toast stack lands
+            inside a contained cell instead of at the corner of the window. */}
+        <ToastProvider>{children}</ToastProvider>
       </div>
     </section>
   );
