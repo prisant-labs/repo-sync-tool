@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* The component gallery lives under src/gallery and has its own stylesheet
+   (src/gallery/gallery.css). Tailwind 4 scans every tracked file under the
+   project, so without this line the gallery-only utilities (for example
+   h-[700px]) are generated into the PRODUCTION css. */
+@source not "./gallery";
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
