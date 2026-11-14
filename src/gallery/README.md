@@ -13,11 +13,45 @@ it is never bundled into the Tauri app.
 - **Screens**: Dashboard, Repos, Activity, Settings, the repository detail drawer and
   the whole app shell, each rendered from the real screen component.
 
-The control bar switches light and dark (the `.dark` class the app uses), the
-`data-look` attribute on the gallery root, and the data state (populated, empty,
-loading). Everything switches in-page, because the built file has no server and no
+The control bar switches light and dark (the `.dark` class the app uses), the look
+(Today, Look A, Look B) and the data state (populated, empty, loading). `.dark` and
+`data-look` always sit on the same element, which is what the override blocks in
+`src/index.css` are written for. "Today" sets no `data-look` at all, exactly like the
+shipped app. Everything switches in-page, because the built file has no server and no
 query string. Drawers, dialogs and toasts stay inside their cell, because each
 overlay cell has a CSS `transform`, which contains `position: fixed`.
+
+## Comparing looks
+
+The **Compare looks** section (group "Looks") draws the same real components three times,
+one column per look, each column its own theme root. It follows the Dark switch. The
+Look selector is disabled there because the section shows all three.
+
+- **Today**: no `data-look`. The control. The shipped app renders like this column.
+- **Look A (graphite)**: today's colours with tighter type (meta weight 500, cell
+  line-height 1.4, meta line-height 1.35, micro raised to 11px). Changes no colour, so
+  most of the difference is in the type specimen at the foot of each column: no real
+  component reads the `cell`, `meta`, `label` or `micro` classes yet.
+- **Look B (slate)**: cool-tinted neutrals, a dark navigation rail in both themes,
+  stronger borders and secondary text, 6px corners, heavier weights.
+
+Measured contrast, from the token values in `src/index.css` (the test in
+`src/lib/contrast.test.ts` recomputes these and fails if a row here is stale).
+"Secondary text" is the worst of `muted-foreground` on page, card, well, popover and
+the rail's surfaces. Look B in the light theme measures the rail against its dark
+palette.
+
+| Look | Theme | Secondary text | Border on card | Card on page | Button label on accent |
+|---|---|---|---|---|---|
+| Today | light | 4.71 | 1.37 | 1.10 | 5.49 |
+| Today | dark | 5.83 | 1.32 | 1.10 | 4.98 |
+| Look A | light | 4.71 | 1.37 | 1.10 | 5.49 |
+| Look A | dark | 5.83 | 1.32 | 1.10 | 4.98 |
+| Look B | light | 7.39 | 2.00 | 1.23 | 7.24 |
+| Look B | dark | 8.09 | 1.97 | 1.19 | 5.04 |
+
+Text needs 4.5:1. Borders and surface steps are not gated; they are listed so the
+difference between the looks can be read as a number as well as seen.
 
 ## How it gets data
 

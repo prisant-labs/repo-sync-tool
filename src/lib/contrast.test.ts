@@ -7,7 +7,10 @@ import {
   contrast,
   contrastOfTranslucentInk,
   contrastOverWash,
+  parseColours,
+  parseDeclared,
   parseTokens,
+  type Colour,
   type Oklch,
 } from "@/lib/contrast";
 
@@ -65,6 +68,12 @@ type Pair = {
   inkAlpha?: number;
   /** Text unless stated: an icon, bar, dot or fill gets the 3:1 floor. */
   floor?: number;
+  /**
+   * The pair lives inside the navigation rail (a `bg-sidebar` surface). Under
+   * Look B in the light theme the rail is DARK, so these pairs are measured
+   * against the rail's palette there, not the page's.
+   */
+  rail?: boolean;
 };
 
 /**
@@ -83,7 +92,7 @@ const PAIRS: Pair[] = [
   // AC-16: `hover:bg-muted` under label text and the Move buttons' own
   // `hover:text-foreground`) both put default ink over `--muted` on hover.
   { what: "default text hovering on a muted fill (sortable headers, the Columns popover rows)", ink: "foreground", on: "muted" },
-  { what: "sidebar text", ink: "sidebar-foreground", on: "sidebar" },
+  { what: "sidebar text", ink: "sidebar-foreground", on: "sidebar", rail: true },
 
   // --- the accent ----------------------------------------------------------
   // `--primary` is tuned to sit BEHIND white text, so it is only ever a fill.
@@ -91,11 +100,12 @@ const PAIRS: Pair[] = [
   { what: "white on a primary button", ink: "primary-foreground", on: "primary" },
   { what: "accent text on the page", ink: "primary-ink", on: "background" },
   { what: "accent text on a card", ink: "primary-ink", on: "card" },
-  { what: "accent text on the sidebar", ink: "primary-ink", on: "sidebar" },
+  { what: "accent text on the sidebar", ink: "primary-ink", on: "sidebar", rail: true },
   {
     what: "the engaged group row (D-14)",
     ink: "primary-ink",
     on: "sidebar",
+    rail: true,
     wash: { token: "primary", alpha: 0.1 },
   },
   {
@@ -138,20 +148,38 @@ const PAIRS: Pair[] = [
   },
 
   // --- the sidebar set (SB3, SB4, L4) --------------------------------------
-  { what: "the add-repo button's label (L4)", ink: "background", on: "foreground" },
+  { what: "the add-repo button's label (L4)", ink: "background", on: "foreground", rail: true },
   {
     what: "the add-repo button's fill against the sidebar (L4)",
     ink: "foreground",
     on: "sidebar",
     floor: AA_NON_TEXT,
+    rail: true,
   },
   {
     what: "the attention dot against the sidebar (SB3)",
     ink: "status-dirty",
     on: "sidebar",
     floor: AA_NON_TEXT,
+    rail: true,
   },
-  { what: "the active nav item's label", ink: "foreground", on: "sidebar-accent" },
+  { what: "the active nav item's label", ink: "foreground", on: "sidebar-accent", rail: true },
+  // Secondary text in the rail: inactive nav labels, the group list's heading
+  // and counts, the version label. These were never registered, and Look B's
+  // dark rail is exactly where an unregistered `text-muted-foreground` on a
+  // sidebar surface would go wrong.
+  {
+    what: "muted text on the sidebar (nav labels, group list)",
+    ink: "muted-foreground",
+    on: "sidebar",
+    rail: true,
+  },
+  {
+    what: "muted text on the active nav fill",
+    ink: "muted-foreground",
+    on: "sidebar-accent",
+    rail: true,
+  },
   // The 2px accent bar on the active nav item. It is the ONE lever that marks
   // active without touching the neutral ramp, so it has to be visible against
   // the fill it sits on, not just against the sidebar beside it. Codex flagged
@@ -163,12 +191,14 @@ const PAIRS: Pair[] = [
     ink: "primary-ink",
     on: "sidebar-accent",
     floor: AA_NON_TEXT,
+    rail: true,
   },
   {
     what: "the active nav item's accent bar against the sidebar beside it",
     ink: "primary-ink",
     on: "sidebar",
     floor: AA_NON_TEXT,
+    rail: true,
   },
 
   // --- status inks, as TEXT on every surface they land on ------------------
@@ -276,6 +306,182 @@ describe("every shipped colour pair clears its WCAG floor", () => {
       }
     });
   }
+});
+
+/**
+ * THE LOOKS. A look is an override block in `src/index.css`, merged over the
+ * base theme it sits on, so the gate has to measure the MERGED set: a look can
+ * move one colour and silently break a pair the base solved.
+ *
+ * The sets are: today light and dark (the blocks above), and each look in
+ * light and dark. Look A overrides no colour, so its sets equal today's; they
+ * stay in the list so the day it does, the gate already covers it. Look B in
+ * the light theme also has a RAIL set: its `.bg-sidebar` surfaces re-declare
+ * the dark palette, and the pairs flagged `rail` are measured against that.
+ */
+const LOOK_SELECTORS = {
+  graphite: { light: '[data-look="graphite"]', dark: '[data-look="graphite"]' },
+  slate: { light: '[data-look="slate"]:not(.dark)', dark: '[data-look="slate"].dark' },
+} as const;
+const RAIL_SELECTOR = '[data-look="slate"]:not(.dark) .bg-sidebar';
+
+type Look = "today" | keyof typeof LOOK_SELECTORS;
+type TokenSet = Map<string, Colour>;
+
+const BASE: Record<"light" | "dark", TokenSet> = {
+  light: parseColours(CSS, ":root"),
+  dark: parseColours(CSS, ".dark"),
+};
+const merged = (...sets: TokenSet[]): TokenSet =>
+  sets.reduce((acc, s) => new Map([...acc, ...s]), new Map<string, Colour>());
+
+interface LookSet {
+  look: Look;
+  theme: "light" | "dark";
+  /** The page's palette. */
+  colours: TokenSet;
+  /** The palette inside the navigation rail. Equal to `colours` except Look B, light. */
+  rail: TokenSet;
+}
+
+const LOOK_SETS: LookSet[] = (["today", "graphite", "slate"] as const).flatMap((look) =>
+  (["light", "dark"] as const).map((theme) => {
+    const over = look === "today" ? new Map<string, Colour>() : parseColours(CSS, LOOK_SELECTORS[look][theme]);
+    const colours = merged(BASE[theme], over);
+    const rail =
+      look === "slate" && theme === "light" ? merged(colours, parseColours(CSS, RAIL_SELECTOR)) : colours;
+    return { look, theme, colours, rail };
+  }),
+);
+
+function solid(set: TokenSet, token: string, where: string): Oklch {
+  const value = set.get(token);
+  if (value === undefined) throw new Error(`--${token} is not an oklch token in ${where}`);
+  if (value.a < 1) throw new Error(`--${token} is translucent in ${where}; a pair needs an opaque colour`);
+  return value;
+}
+
+function ratioOf(pair: Pair, s: LookSet): number {
+  const set = pair.rail ? s.rail : s.colours;
+  const where = `${s.look} ${s.theme}`;
+  const ink = solid(set, pair.ink, where);
+  const surface = solid(set, pair.on, where);
+  if (pair.wash) return contrastOverWash(ink, solid(set, pair.wash.token, where), pair.wash.alpha, surface);
+  if (pair.inkAlpha !== undefined) return contrastOfTranslucentInk(ink, pair.inkAlpha, surface);
+  return contrast(ink, surface);
+}
+
+describe("every token set clears every floor: today and each look, light and dark", () => {
+  for (const s of LOOK_SETS) {
+    describe(`${s.look} ${s.theme}`, () => {
+      for (const pair of PAIRS) {
+        const floor = pair.floor ?? AA_TEXT;
+        it(`${pair.what}: ${pair.ink} on ${pair.on}`, () => {
+          const ratio = ratioOf(pair, s);
+          expect(
+            Number(ratio.toFixed(2)),
+            `${pair.what} measures ${ratio.toFixed(2)}:1 in ${s.look} ${s.theme}, under the ${floor}:1 floor`,
+          ).toBeGreaterThanOrEqual(floor);
+        });
+      }
+    });
+  }
+});
+
+describe("the look override blocks", () => {
+  for (const look of Object.keys(LOOK_SELECTORS) as (keyof typeof LOOK_SELECTORS)[]) {
+    const { light, dark } = LOOK_SELECTORS[look];
+
+    it(`${look}: the light and dark blocks override the same set of colour keys`, () => {
+      const keys = (sel: string) => [...parseColours(CSS, sel).keys()].sort();
+      // Geometry keys (a radius, a line-height) may live in one shared block;
+      // only colour is required to be stated for both themes.
+      expect(keys(light)).toEqual(keys(dark));
+    });
+
+    it(`${look}: every colour key it overrides exists in the base theme`, () => {
+      for (const sel of [light, dark]) {
+        for (const key of parseColours(CSS, sel).keys()) {
+          expect(BASE.light.has(key), `--${key} (${sel}) is not a base light token`).toBe(true);
+          expect(BASE.dark.has(key), `--${key} (${sel}) is not a base dark token`).toBe(true);
+        }
+      }
+    });
+
+    it(`${look}: no colour in a theme block is written as anything but a literal oklch`, () => {
+      // The parser sees only literals. A `var()` or a hex value in a look's
+      // colour block would never reach the gate, so it must not be there.
+      for (const sel of new Set([light, dark])) {
+        for (const [key, value] of parseDeclared(CSS, sel)) {
+          const isColourName = BASE.light.has(key) || BASE.dark.has(key);
+          if (isColourName) {
+            expect(value, `--${key} in ${sel}`).toMatch(/^oklch\(/);
+          }
+        }
+      }
+    });
+  }
+
+  it("slate: the rail re-declares the dark palette inside the light theme", () => {
+    const rail = parseColours(CSS, RAIL_SELECTOR);
+    const dark = parseColours(CSS, LOOK_SELECTORS.slate.dark);
+    expect(rail.size).toBeGreaterThan(20);
+    expect(rail).toEqual(dark);
+  });
+
+  it("slate: both themes keep the rail dark", () => {
+    for (const s of LOOK_SETS.filter((x) => x.look === "slate")) {
+      const sidebar = solid(s.rail, "sidebar", `slate ${s.theme} rail`);
+      expect(sidebar.L, `the rail in slate ${s.theme}`).toBeLessThan(0.3);
+    }
+  });
+});
+
+/**
+ * What a person comparing the looks cares about, as four numbers per set. The
+ * table in `src/gallery/README.md` is checked against these, so it cannot go
+ * stale when a value moves.
+ */
+function measure(s: LookSet) {
+  const c = s.colours;
+  const where = `${s.look} ${s.theme}`;
+  const muted = solid(c, "muted-foreground", where);
+  const secondary = Math.min(
+    ...["background", "card", "muted", "popover"].map((on) => contrast(muted, solid(c, on, where))),
+    ...["sidebar", "sidebar-accent"].map((on) =>
+      contrast(solid(s.rail, "muted-foreground", where), solid(s.rail, on, where)),
+    ),
+  );
+  const border = c.get("border")!;
+  return {
+    secondary,
+    border: contrastOfTranslucentInk(border, border.a, solid(c, "card", where)),
+    cardOnPage: contrast(solid(c, "card", where), solid(c, "background", where)),
+    button: contrast(solid(c, "primary-foreground", where), solid(c, "primary", where)),
+  };
+}
+
+const LOOK_LABEL: Record<Look, string> = { today: "Today", graphite: "Look A", slate: "Look B" };
+
+describe("the look comparison", () => {
+  it("Look B separates its surfaces and reads stronger than Today, in both themes", () => {
+    for (const theme of ["light", "dark"] as const) {
+      const today = measure(LOOK_SETS.find((s) => s.look === "today" && s.theme === theme)!);
+      const slate = measure(LOOK_SETS.find((s) => s.look === "slate" && s.theme === theme)!);
+      expect(slate.border, `border on card, ${theme}`).toBeGreaterThan(today.border);
+      expect(slate.cardOnPage, `card on page, ${theme}`).toBeGreaterThan(today.cardOnPage);
+      expect(slate.secondary, `secondary text, ${theme}`).toBeGreaterThanOrEqual(today.secondary);
+    }
+  });
+
+  it("the gallery README states the measured numbers", () => {
+    const readme = readFileSync(new URL("../gallery/README.md", import.meta.url), "utf8");
+    for (const s of LOOK_SETS) {
+      const m = measure(s);
+      const row = `| ${LOOK_LABEL[s.look]} | ${s.theme} | ${m.secondary.toFixed(2)} | ${m.border.toFixed(2)} | ${m.cardOnPage.toFixed(2)} | ${m.button.toFixed(2)} |`;
+      expect(readme, `README row for ${LOOK_LABEL[s.look]} ${s.theme}`).toContain(row);
+    }
+  });
 });
 
 describe("the measuring code itself", () => {

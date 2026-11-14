@@ -1,13 +1,10 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { ToastProvider } from "@/components/ui/toast";
-import { SECTIONS, GROUP_ORDER } from "@/gallery/sections";
+import { SECTIONS, GROUP_ORDER, COMPARE_ID } from "@/gallery/sections";
+import { LOOKS, ThemeContext, type LookId } from "@/gallery/looks";
 import { setScenario } from "@/gallery/stub-ipc";
 import type { Scenario } from "@/gallery/fixtures";
-
-/** The looks the gallery can show. Later slices add more; today there is one. */
-const LOOKS = ["today"] as const;
-type Look = (typeof LOOKS)[number];
 
 const SCENARIOS: { value: Scenario; label: string }[] = [
   { value: "populated", label: "Populated" },
@@ -27,7 +24,7 @@ const SCENARIOS: { value: Scenario; label: string }[] = [
 export function GalleryApp() {
   const [sectionId, setSectionId] = useState(SECTIONS[0].id);
   const [dark, setDark] = useState(false);
-  const [look, setLook] = useState<Look>("today");
+  const [look, setLook] = useState<LookId>("today");
   const [scenario, setScenarioState] = useState<Scenario>("populated");
   // Bumped on every scenario change so the section remounts and its data hooks
   // refetch under the new scenario.
@@ -45,11 +42,19 @@ export function GalleryApp() {
   }
 
   const section = SECTIONS.find((s) => s.id === sectionId) ?? SECTIONS[0];
+  // `data-look` and `.dark` go on the SAME element, because that is what the
+  // override blocks in `src/index.css` are written for. "Today" sets no
+  // attribute at all, exactly as the shipped app does. The compare section draws
+  // its own three roots, so the shell sets none there: a look on the shell would
+  // otherwise bleed into the "Today" column, which only inherits.
+  const shellLook =
+    section.id === COMPARE_ID ? undefined : LOOKS.find((l) => l.id === look)?.attribute;
 
   return (
+    <ThemeContext.Provider value={dark}>
     <div
-      data-look={look}
-      className="flex h-screen bg-background text-foreground"
+      data-look={shellLook}
+      className={cn("flex h-screen bg-background text-foreground", dark && "dark")}
       data-testid="gallery-root"
     >
       <nav
@@ -93,12 +98,14 @@ export function GalleryApp() {
             Look
             <select
               value={look}
-              onChange={(e) => setLook(e.target.value as Look)}
-              className="rounded-md border border-input bg-card px-2 py-1"
+              onChange={(e) => setLook(e.target.value as LookId)}
+              disabled={section.id === COMPARE_ID}
+              title={section.id === COMPARE_ID ? "Compare looks shows all three at once" : undefined}
+              className="rounded-md border border-input bg-card px-2 py-1 disabled:opacity-60"
             >
               {LOOKS.map((l) => (
-                <option key={l} value={l}>
-                  {l}
+                <option key={l.id} value={l.id}>
+                  {l.label}
                 </option>
               ))}
             </select>
@@ -131,5 +138,6 @@ export function GalleryApp() {
         </main>
       </div>
     </div>
+    </ThemeContext.Provider>
   );
 }
