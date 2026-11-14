@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Cell } from "@/gallery/cells";
 import { OptionCard, RadioDot } from "@/components/recipes/option-card";
 import { GroupChip, GroupDot } from "@/components/recipes/group-chip";
+import { SettingsField, NumberInput, TextInput, TimeInput } from "@/components/recipes/settings-fields";
+import { Switch } from "@/components/ui/switch";
 import { GROUPS } from "@/gallery/fixtures";
 import type { GroupSummary } from "@/lib/bindings";
 
@@ -45,6 +47,37 @@ export function OptionCardSection() {
         </div>
       </Cell>
     </>
+  );
+}
+
+export function SettingsFieldsSection() {
+  const [n, setN] = useState(15);
+  const [text, setText] = useState<string | null>(null);
+  const [start, setStart] = useState(22 * 60);
+  const [end, setEnd] = useState(7 * 60);
+  const [on, setOn] = useState(true);
+  return (
+    <Cell title="SettingsField with each input" note="the rows the Settings screen is built from">
+      <div className="max-w-2xl rounded-md border border-border">
+        <SettingsField label="Switch" hint="A field with a hint, holding a switch.">
+          <Switch checked={on} onCheckedChange={setOn} />
+        </SettingsField>
+        <SettingsField label="NumberInput" hint="With a suffix after the box.">
+          <NumberInput value={n} min={1} max={999} suffix="min" onChange={setN} />
+        </SettingsField>
+        <SettingsField label="NumberInput, no suffix">
+          <NumberInput value={n} min={1} onChange={setN} />
+        </SettingsField>
+        <SettingsField label="TextInput" hint="Empty means not set (null).">
+          <TextInput value={text} placeholder="not set" onChange={setText} />
+        </SettingsField>
+        <SettingsField label="Quiet window" hint="Two TimeInputs in one field, each with its own aria-label.">
+          <TimeInput value={start} aria-label="Quiet hours start" onChange={setStart} />
+          <span className="text-cell text-muted-foreground">to</span>
+          <TimeInput value={end} aria-label="Quiet hours end" onChange={setEnd} />
+        </SettingsField>
+      </div>
+    </Cell>
   );
 }
 

@@ -24,7 +24,7 @@ import {
   ShellSection,
 } from "@/gallery/demos";
 
-import { OptionCardSection, GroupChipSection } from "@/gallery/recipes-demos";
+import { OptionCardSection, GroupChipSection, SettingsFieldsSection } from "@/gallery/recipes-demos";
 
 export const GROUP_ORDER = ["Primitives", "Product components", "Recipes", "Screens"] as const;
 type GroupName = (typeof GROUP_ORDER)[number];
@@ -60,6 +60,7 @@ export const SECTIONS: Section[] = [
 
   { id: "recipes-option-card", group: "Recipes", title: "OptionCard, RadioDot", render: () => <OptionCardSection /> },
   { id: "recipes-group-chip", group: "Recipes", title: "GroupChip, GroupDot", render: () => <GroupChipSection /> },
+  { id: "recipes-settings-fields", group: "Recipes", title: "SettingsField and inputs", render: () => <SettingsFieldsSection /> },
 
   { id: "screen-dashboard", group: "Screens", title: "Dashboard", render: () => <ScreenHost screen="dashboard" /> },
   { id: "screen-repos", group: "Screens", title: "Repos", render: () => <ScreenHost screen="repos" /> },
