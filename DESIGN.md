@@ -301,7 +301,9 @@ built by something else - `StatusBadge`, `FilterChip`, the group pill); deleted 
 Functional feedback only, transform/opacity only, never layout properties. The lag bar
 fills via `scaleX`; the drawer slides via `translateX`; busy actions use `animate-spin`;
 status and surfaces cross-fade. No choreographed entrances, this is a background utility.
-A `prefers-reduced-motion` fallback is owed for each animated affordance.
+A `prefers-reduced-motion` fallback is provided globally in `src/index.css`
+(`@layer base`): under `reduce`, transitions and one-shot animations finish almost
+instantly. `animate-spin` busy indicators are exempt and keep turning.
 
 ## 7. Do's and Don'ts
 
