@@ -33,6 +33,21 @@ export function GalleryApp() {
     document.documentElement.classList.toggle("dark", dark);
   }, [dark]);
 
+  // ONE owner for the theme. `AppShell` (embedded by the "App shell" section)
+  // runs its own `useTheme`, which sets `.dark` on <html> and never cleans up, so
+  // its Settings toggle changes the page behind the gallery's back. Without this,
+  // the control bar says light while <html> is dark, and the Compare section
+  // (whose columns copy the control bar's state) mixes themes. The gallery
+  // adopts the page's class whenever it changes, so its own state, the switch,
+  // the shell root and every Compare column always agree.
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setDark(root.classList.contains("dark"));
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
   function chooseScenario(next: Scenario) {
     // The stub is outside React, so set it before the remount that re-reads it.
     setScenario(next);
