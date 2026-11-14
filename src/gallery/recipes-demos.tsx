@@ -41,7 +41,7 @@ export function OptionCardSection() {
         </div>
       </Cell>
       <Cell title="RadioDot" note="the dot alone, as the Custom interval card uses it">
-        <div className="flex items-center gap-6 text-body">
+        <div className="flex items-center gap-4 text-body">
           <span className="flex items-center gap-2"><RadioDot active={false} /> inactive</span>
           <span className="flex items-center gap-2"><RadioDot active /> active</span>
         </div>
@@ -58,7 +58,7 @@ export function SettingsFieldsSection() {
   const [on, setOn] = useState(true);
   return (
     <Cell title="SettingsField with each input" note="the rows the Settings screen is built from">
-      <div className="max-w-2xl rounded-md border border-border">
+      <div className="max-w-3xl rounded-md border border-border">
         <SettingsField label="Switch" hint="A field with a hint, holding a switch.">
           <Switch checked={on} onCheckedChange={setOn} />
         </SettingsField>
