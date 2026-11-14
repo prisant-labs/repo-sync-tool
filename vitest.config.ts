@@ -30,7 +30,8 @@ export default defineConfig({
     // probe proved it on 2026-11-02 - a spy installed in one test was still
     // stubbed in the next.
     restoreMocks: true,
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    // `tools/` holds the local ESLint rule and its RuleTester tests.
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "tools/**/*.test.ts"],
     // Fail rather than silently pass when a run matches no files. A test suite
     // that quietly matches nothing looks identical to one that passes.
     passWithNoTests: false,

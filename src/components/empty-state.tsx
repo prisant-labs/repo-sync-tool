@@ -38,8 +38,9 @@ export function EmptyState({
         <Icon className={cn("text-muted-foreground", compact ? "size-4" : "size-6")} />
       </div>
       <div className="flex flex-col gap-1">
-        <h3 className={cn("font-semibold", compact ? "text-sm" : "text-base")}>{title}</h3>
-        <p className={cn("max-w-sm text-muted-foreground", compact ? "text-xs" : "text-sm")}>
+        {/* eslint-disable-next-line local/no-raw-text-size -- 16px has no named size yet; the ramp slice decides */}
+        <h3 className={cn("font-semibold", compact ? "text-body" : "text-base")}>{title}</h3>
+        <p className={cn("max-w-sm text-muted-foreground", compact ? "text-cell" : "text-body")}>
           {description}
         </p>
       </div>
@@ -58,8 +59,8 @@ export function AllClearState({ title, description }: { title: string; descripti
     <div className="flex items-center gap-3 rounded-lg border border-status-sync/40 bg-status-sync/12 p-4">
       <CircleCheck className="size-5 shrink-0 text-status-sync" />
       <div className="min-w-0">
-        <div className="text-sm font-semibold text-status-sync">{title}</div>
-        <div className="text-xs text-foreground/80">{description}</div>
+        <div className="text-body font-semibold text-status-sync">{title}</div>
+        <div className="text-cell text-foreground/80">{description}</div>
       </div>
     </div>
   );

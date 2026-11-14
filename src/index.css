@@ -2,6 +2,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Tailwind scans every tracked file for class names. The ESLint rule tests in
+   `tools/` are full of raw sizes on purpose (`text-2xl`, `text-[13px]`), and
+   without this they compile into the shipped stylesheet as dead utilities. */
+@source not "../tools";
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

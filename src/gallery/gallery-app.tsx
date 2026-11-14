@@ -56,10 +56,10 @@ export function GalleryApp() {
         aria-label="Gallery sections"
         className="flex w-60 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-sidebar px-3 py-4"
       >
-        <div className="px-2 text-sm font-semibold">RepoSync gallery</div>
+        <div className="px-2 text-body font-semibold">RepoSync gallery</div>
         {GROUP_ORDER.map((group) => (
           <div key={group} className="flex flex-col gap-0.5">
-            <div className="px-2 pb-1 font-mono text-[11px] font-bold tracking-wider text-muted-foreground uppercase">
+            <div className="px-2 pb-1 font-mono text-meta font-bold tracking-wider text-muted-foreground uppercase">
               {group}
             </div>
             {SECTIONS.filter((s) => s.group === group).map((s) => (
@@ -70,7 +70,7 @@ export function GalleryApp() {
                 aria-current={s.id === sectionId ? "page" : undefined}
                 onClick={() => setSectionId(s.id)}
                 className={cn(
-                  "rounded-md px-2 py-1.5 text-left text-sm",
+                  "rounded-md px-2 py-1.5 text-left text-body",
                   s.id === sectionId
                     ? "bg-sidebar-accent font-semibold text-foreground"
                     : "text-muted-foreground hover:text-foreground",
@@ -84,7 +84,7 @@ export function GalleryApp() {
       </nav>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-6 py-3 text-sm">
+        <header className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border px-6 py-3 text-body">
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={dark} onChange={(e) => setDark(e.target.checked)} />
             Dark
@@ -125,8 +125,9 @@ export function GalleryApp() {
         </header>
 
         <main className="min-h-0 flex-1 overflow-y-auto p-6" data-testid="gallery-main">
+          {/* eslint-disable-next-line local/no-raw-text-size -- 18px has no named size yet; the ramp slice decides */}
           <h1 className="mb-1 text-lg font-semibold">{section.title}</h1>
-          {section.note && <p className="mb-5 max-w-3xl text-sm text-muted-foreground">{section.note}</p>}
+          {section.note && <p className="mb-5 max-w-3xl text-body text-muted-foreground">{section.note}</p>}
           <ToastProvider key={`${section.id}-${nonce}`}>{section.render()}</ToastProvider>
         </main>
       </div>

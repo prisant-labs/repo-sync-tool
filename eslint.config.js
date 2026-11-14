@@ -3,6 +3,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
+import noRawTextSize from "./tools/eslint/no-raw-text-size.js";
 
 // Note: eslint-plugin-react-hooks 7.x still ships its `recommended-latest`
 // preset with `plugins` as an array, which ESLint 10 flat config rejects.
@@ -44,4 +45,26 @@ export default tseslint.config(
     },
   },
   reactRefresh.configs.vite,
+  {
+    // Raw font sizes are an error everywhere in `src/`, so the named ramp in
+    // `src/index.css` (body, cell, meta, micro, ...) is the only way to size
+    // text. The rule lives in `tools/eslint/` with its own tests; it is
+    // registered here as a local plugin rather than adding a Tailwind ESLint
+    // dependency.
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { local: { rules: { "no-raw-text-size": noRawTextSize } } },
+    rules: { "local/no-raw-text-size": "error" },
+  },
+  {
+    // The ONE list of files exempt from `local/no-raw-text-size` because they
+    // are not migrated yet. It holds only screens; a later slice migrates them
+    // and deletes this block. Do not add a file here: migrate it.
+    files: [
+      "src/screens/activity.tsx",
+      "src/screens/dashboard.tsx",
+      "src/screens/repos.tsx",
+      "src/screens/settings.tsx",
+    ],
+    rules: { "local/no-raw-text-size": "off" },
+  },
 );

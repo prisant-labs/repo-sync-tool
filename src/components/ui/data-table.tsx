@@ -104,7 +104,7 @@ const CELL_PADDING = 12;
 /** Shared by a plain header's `<span>` and a sortable header's `<button>`, so
  *  a column becoming sortable (AC-15) changes only its interactivity. */
 const HEADER_TEXT_CLASSES =
-  "font-mono text-[11px] font-bold tracking-wider text-muted-foreground uppercase whitespace-nowrap";
+  "font-mono text-meta font-bold tracking-wider text-muted-foreground uppercase whitespace-nowrap";
 /**
  * The lab's actions column is 64px, sized for its own bespoke 28px icon
  * button plus a small decorative chevron glyph. This primitive reuses the
@@ -497,7 +497,7 @@ export function DataTable<T>({
                         key={col.id}
                         role="cell"
                         className={cn(
-                          "flex min-w-0 items-center overflow-hidden bg-card text-sm",
+                          "flex min-w-0 items-center overflow-hidden bg-card text-body",
                           i > 0 && "border-l border-border",
                           col.align === "right" && !empty ? "justify-end text-right" : "justify-start text-left",
                           col.frozen && "group-hover:bg-muted",

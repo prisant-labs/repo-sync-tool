@@ -69,7 +69,7 @@ export function FilterChip({
         // adding a border only when engaged would shift every chip to its
         // right on each toggle.
         "flex items-center gap-1.5 rounded-md border border-transparent px-2.5 py-1",
-        "font-mono text-xs font-medium transition-colors",
+        "font-mono text-cell font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
           ? "bg-primary/15 text-primary-ink"
@@ -78,7 +78,7 @@ export function FilterChip({
     >
       <span className={cn(!active && tone)}>{label}</span>
       {count !== undefined && (
-        <span className="rounded-sm bg-background px-1.5 font-mono text-[10px]">{count}</span>
+        <span className="rounded-sm bg-background px-1.5 font-mono text-micro">{count}</span>
       )}
     </button>
   );

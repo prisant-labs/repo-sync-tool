@@ -127,10 +127,11 @@ export function GroupDialog({
   return (
     <Dialog open={open} onClose={onClose} aria-labelledby={GROUP_DIALOG_TITLE_ID}>
       <div className="border-b border-border px-5 py-4">
+        {/* eslint-disable-next-line local/no-raw-text-size -- 16px has no named size yet; the ramp slice decides */}
         <h2 id={GROUP_DIALOG_TITLE_ID} className="text-base font-semibold">
           {mode === "create" ? "New group" : "Edit group"}
         </h2>
-        <p className="mt-0.5 text-sm text-muted-foreground">
+        <p className="mt-0.5 text-body text-muted-foreground">
           {mode === "create"
             ? "Name a group and pick a color to organize your repositories."
             : "Edit this group's name and color. Members stay the same."}
@@ -139,7 +140,7 @@ export function GroupDialog({
 
       <div className="flex flex-col gap-4 px-5 py-4">
         <div className="flex flex-col gap-1.5">
-          <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <label className="text-meta font-semibold uppercase tracking-wider text-muted-foreground">
             Name
           </label>
           <Input
@@ -155,7 +156,7 @@ export function GroupDialog({
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <span className="text-meta font-semibold uppercase tracking-wider text-muted-foreground">
             Color
           </span>
           <div className="flex flex-wrap gap-2">
