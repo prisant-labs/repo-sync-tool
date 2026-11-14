@@ -1,20 +1,14 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { cn, FONT_SIZE_TOKENS } from "./utils";
+import { cn, FONT_SIZE_TOKENS, themeFontSizeNames } from "./utils";
 
-// The font-size keys that `src/index.css` defines, read from the file itself so
-// that a size added to the stylesheet cannot be forgotten by `cn()`.
 function sizesDefinedInCss(): string[] {
   const css = readFileSync(
     fileURLToPath(new URL("../index.css", import.meta.url)),
     "utf8",
   );
-  const keys = new Set<string>();
-  for (const match of css.matchAll(/--text-([a-z0-9]+)\s*:/g)) {
-    keys.add(match[1]);
-  }
-  return [...keys].sort();
+  return themeFontSizeNames(css);
 }
 
 describe("cn() with the custom type sizes", () => {
@@ -47,5 +41,38 @@ describe("cn() with the custom type sizes", () => {
     expect(cn("text-foreground text-muted-foreground")).toBe(
       "text-muted-foreground",
     );
+  });
+});
+
+describe("themeFontSizeNames()", () => {
+  const base = "@theme { --text-meta: 0.6875rem; --text-page: 1.5rem; }";
+
+  it("reads the live declarations", () => {
+    expect(themeFontSizeNames(base)).toEqual(["meta", "page"]);
+  });
+
+  it("does not count a commented-out declaration", () => {
+    const css = "@theme { /* --text-meta: 0.6875rem; */ --text-page: 1.5rem; }";
+    expect(themeFontSizeNames(css)).toEqual(["page"]);
+  });
+
+  it("reports an unregistered hyphenated token", () => {
+    const css = base.replace("}", "--text-table-heading: 0.75rem; }");
+    const found = themeFontSizeNames(css);
+    expect(found).toContain("table-heading");
+    expect(found.filter((n) => !FONT_SIZE_TOKENS.includes(n as never))).toEqual([
+      "table-heading",
+    ]);
+  });
+
+  it("does not count modifier keys as sizes", () => {
+    const css =
+      "@theme { --text-meta: 1rem; --text-meta--line-height: 1.2; " +
+      "--text-meta--font-weight: 500; --text-meta--letter-spacing: 0.02em; }";
+    expect(themeFontSizeNames(css)).toEqual(["meta"]);
+  });
+
+  it("ignores declarations outside an @theme block", () => {
+    expect(themeFontSizeNames(":root { --text-meta: 1rem; }")).toEqual([]);
   });
 });
