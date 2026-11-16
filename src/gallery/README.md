@@ -90,6 +90,11 @@ not build, the script errors, or the merge base has a gallery that cannot be ins
 built or photographed. Only a base with no `gallery:build` script says "No base gallery"
 and passes.
 
+Each picture is cut to the section's own content, so the nav, the control bar and the page
+header are never in it: adding a nav entry or a switch to the gallery changes no shot.
+A shot that differs by 4 pixels or fewer is counted as noise (renderer anti-aliasing) and
+not listed.
+
 Closed-by-default specimens (the toasts, the Columns panel, the group-add control, the
 activity receipt) get extra shots named `<section>--<state>`, listed in `EXTRA_STATES` in
 `shoot.mjs`. Each asserts the specimen is visible before the picture is taken. Add an entry

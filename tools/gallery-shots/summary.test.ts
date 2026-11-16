@@ -33,6 +33,12 @@ describe("classifyShot", () => {
     expect(classifyShot(size, size, 7)).toEqual({ status: "changed", changed: 7, total: 100 });
   });
 
+  it("treats a difference at or under the noise floor as noise", () => {
+    expect(classifyShot(size, size, 1).status).toBe("noise");
+    expect(classifyShot(size, size, 4).status).toBe("noise");
+    expect(classifyShot(size, size, 5).status).toBe("changed");
+  });
+
   it("reports a size mismatch instead of a pixel count", () => {
     const result = classifyShot(size, { width: 10, height: 12 }, 99);
     expect(result.status).toBe("size-changed");
@@ -74,6 +80,13 @@ describe("buildSummary", () => {
     const md = buildSummary([row({}), row({ theme: "dark" })]);
     expect(md).toContain("No pixel differences in 2 screenshots.");
     expect(md).not.toContain("| Section |");
+  });
+
+  it("counts noise without listing it", () => {
+    const md = buildSummary([row({ status: "noise", changed: 1 }), row({ section: "x" })]);
+    expect(md).toContain("No pixel differences in 2 screenshots.");
+    expect(md).toContain("1 more differ by 4 pixels or fewer");
+    expect(md).not.toContain("| buttons |");
   });
 
   it("lists only the shots that differ and counts the rest", () => {
