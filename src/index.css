@@ -106,20 +106,45 @@
   --spacing-section: 1.25rem;
   --spacing-card: 1rem;
 
-  /* Type ramp, the six registers DESIGN.md section 3 already documents. Sizes
-     carry their line-height and weight together, because a size adopted
-     without its leading is how a "tight, dense ramp" becomes six unrelated
-     numbers. Mono vs sans stays a per-use decision: the Two-Register Rule is
+  /* Type ramp. Mono vs sans stays a per-use decision: the Two-Register Rule is
      about which PLANE the text belongs to, which a size token cannot know.
 
-     ADOPTION, checked 2026-08-28 rather than assumed. Only `--text-page` is
-     consumed by a component (`page-shell.tsx:66`). `identity`, `cell`, `meta`
-     and `label` are defined and used by nothing yet; they get adopted when the
-     row standard lands, and are defined here so that work inherits a decision
-     instead of making one. This comment previously claimed `label` was in use.
-     It was not, and the correction matters: it means changing these four
-     values is currently INVISIBLE, so a change here must be verified in the
-     built CSS rather than by looking at the app. */
+     TWO KINDS OF SIZE LIVE HERE, and the difference matters.
+
+     1. STAND-INS (`body`, `cell`, `meta`, `micro`). Each compiles to exactly
+        the declarations of the raw Tailwind class it replaces, so swapping the
+        raw class for the name changes no rendered pixel. Tailwind 4 gives
+        `text-xs` and `text-sm` a font-size AND a line-height, while an
+        arbitrary `text-[11px]` sets font-size only; each stand-in copies that
+        shape (checked against the built CSS on 2026-11-13, not assumed):
+
+          body  = text-sm      0.875rem, line-height calc(1.25 / 0.875)
+          cell  = text-xs      0.75rem,  line-height calc(1 / 0.75)
+          meta  = text-[11px]  11px, font-size only
+          micro = text-[10px]  10px, font-size only
+
+        The earlier design intent for `cell` and `meta` (line-heights 1.4 and
+        1.35, and weight 500 on meta so the 11px floor gains legibility from
+        weight instead of size) is NOT dropped. It is RETUNE VALUES, APPLIED
+        LATER BY A LOOK: a later slice re-applies it through per-look
+        overrides, once the raw classes are gone and the change can be judged
+        by eye. Bundling it into the names now would have moved pixels in the
+        same change that was meant to move none.
+
+     2. DESIGNED SIZES (`page`, `identity`, `label`). They carry their own
+        line-height and weight together, because a size adopted without its
+        leading is how a "tight, dense ramp" becomes unrelated numbers.
+
+     ADOPTION, re-checked 2026-11-13 by grep over src/. Only `--text-page` is
+     consumed by a component (`page-shell.tsx`). `identity` and `label` are
+     defined and used by NOTHING, so changing their values is INVISIBLE today
+     and a change here must be verified in the built CSS rather than by looking
+     at the app. `body`, `cell`, `meta` and `micro` are also unused until the
+     migration slice replaces the raw classes.
+
+     Every key in this ramp must also be listed in `FONT_SIZE_TOKENS` in
+     `src/lib/utils.ts`, or `cn()` mistakes the class for a colour and drops
+     it. `src/lib/utils.test.ts` fails if the two disagree. */
   --text-page: 1.5rem;
   --text-page--line-height: 1.2;
   --text-page--font-weight: 700;
@@ -128,23 +153,37 @@
   --text-identity--line-height: 1.35;
   --text-identity--font-weight: 600;
 
-  --text-cell: 0.75rem;
-  --text-cell--line-height: 1.4;
+  --text-body: 0.875rem;
+  --text-body--line-height: calc(1.25 / 0.875);
 
-  --text-meta: 0.6875rem;
-  --text-meta--line-height: 1.35;
-  /* The meta register carries 500, not 400. This is the load-bearing half of
-     the raised type floor: at 11px the weight step buys more legibility than
-     a size step does, and it costs no vertical space at all. */
-  --text-meta--font-weight: 500;
+  --text-cell: 0.75rem;
+  --text-cell--line-height: calc(1 / 0.75);
+
+  /* Font-size only, on purpose: no line-height and no weight, matching
+     `text-[11px]`. See the retune note above.
+
+     The unit is px ON PURPOSE. `text-[11px]` compiles to `font-size: 11px`,
+     which ignores the root font size; 0.6875rem would only match it at a 16px
+     root and would grow to 13.75px at a 20px root. A like-for-like migration
+     keeps px. Moving meta to rem is a VISIBLE retune, left for a later look. */
+  --text-meta: 11px;
+
+  /* TEMPORARY, for migration only. 10px is `text-[10px]`, which the app uses
+     today, and it BREAKS the documented 11px floor (DESIGN.md section 3). It
+     exists so those call sites can move to a name without changing a pixel;
+     each one is then raised to `meta` or `label` by a look, and this token is
+     deleted. Do not use it in new code. px, not rem, for the same reason as
+     `meta`: it must match `text-[10px]` at any root font size. */
+  --text-micro: 10px;
 
   /* Raised from 0.625rem (10px) on 2026-08-28. 11px is the floor: nothing in
      this app renders body text below it. 10px was chosen when `label` meant
      only all-caps column heads, where the letterforms are simple and the
      strings are short; it is too small the moment a label carries a real word.
-     Same rem value as `meta` on purpose - they differ by weight and casing,
-     not by size, which is what keeps the ramp readable as four steps rather
-     than six near-identical ones. */
+     The same SIZE as `meta` at a 16px root on purpose - they differ by weight
+     and casing, not by size, which is what keeps the ramp readable as four
+     steps rather than six near-identical ones. Unlike `meta` this stays in rem
+     and is NOT a stand-in for any px class; nothing uses it yet. */
   --text-label: 0.6875rem;
   --text-label--line-height: 1;
   --text-label--font-weight: 600;
@@ -384,5 +423,35 @@
 
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* DESIGN.md section 6: a `prefers-reduced-motion` fallback for every animated
+     affordance. DESIGN.md does not say what the fallback is, so this is the
+     conservative standard: under `reduce`, transitions and one-shot animations
+     finish almost instantly, so state still changes but nothing glides, slides
+     or sweeps.
+
+     `animate-spin` (busy spinners, which are progress indicators rather than
+     decoration) is EXEMPT and keeps turning at its normal speed. Collapsing it
+     to one iteration would freeze or flick the one signal that says "working",
+     and a slow steady rotation is not the vestibular trigger this media query
+     exists for. `!important` is deliberate: the utilities this overrides are
+     single-class selectors and must lose to a user preference. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      transition-duration: 0.01ms !important;
+      transition-delay: 0s !important;
+      scroll-behavior: auto !important;
+    }
+
+    *:not(.animate-spin),
+    *:not(.animate-spin)::before,
+    *:not(.animate-spin)::after {
+      animation-duration: 0.01ms !important;
+      animation-delay: 0s !important;
+      animation-iteration-count: 1 !important;
+    }
   }
 }
