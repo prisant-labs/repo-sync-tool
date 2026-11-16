@@ -1,4 +1,5 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useContext, type CSSProperties, type ReactNode } from "react";
+import { WINDOWS, WindowContext } from "@/gallery/window-frame";
 import { ToastProvider } from "@/components/ui/toast";
 
 /**
@@ -14,14 +15,20 @@ export function Cell({
   note,
   height,
   contained = false,
+  framed = false,
   children,
 }: {
   title: string;
   note?: string;
   height?: number;
   contained?: boolean;
+  /** A whole-screen cell: the Window control frames its body at a window size. */
+  framed?: boolean;
   children: ReactNode;
 }) {
+  const windowId = useContext(WindowContext);
+  const win = WINDOWS.find((w) => w.id === windowId) ?? WINDOWS[0];
+  const frame = framed && win.cssWidth !== null ? win : null;
   const style: CSSProperties = {};
   if (height !== undefined) style.height = height;
   if (contained) {
@@ -41,7 +48,28 @@ export function Cell({
       >
         {/* Each cell has its own toast provider so the fixed toast stack lands
             inside a contained cell instead of at the corner of the window. */}
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider>
+          {frame === null ? (
+            children
+          ) : (
+            // The frame is the window. It carries its own transform so a fixed
+            // drawer or dialog is contained by the window, not by the wider cell.
+            // Under zoom, its CSS height is the visual height divided by the zoom.
+            <div
+              data-window-frame={windowId}
+              style={{
+                width: frame.cssWidth,
+                height: height === undefined ? undefined : (height - 34) / frame.zoom,
+                zoom: frame.zoom === 1 ? undefined : frame.zoom,
+                transform: "translateZ(0)",
+                overflow: "auto",
+              }}
+              className="rounded-md border border-border bg-background"
+            >
+              {children}
+            </div>
+          )}
+        </ToastProvider>
       </div>
     </section>
   );

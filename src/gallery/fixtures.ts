@@ -21,7 +21,7 @@ import type {
  * Paths and names are invented. Nothing here comes from a real machine.
  */
 
-export type Scenario = "populated" | "empty" | "loading";
+export type Scenario = "populated" | "empty" | "loading" | "stress" | "allFailed";
 
 export const NOW = Math.floor(Date.now() / 1000);
 const MIN = 60;

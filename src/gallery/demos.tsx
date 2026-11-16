@@ -412,7 +412,7 @@ export function ScreenHost({ screen }: { screen: "dashboard" | "repos" | "activi
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
   const groups = GROUPS;
   return (
-    <Cell title={`${screen[0].toUpperCase()}${screen.slice(1)} screen`} note="the real screen component; overlays stay inside this cell" height={SCREEN_HEIGHT} contained>
+    <Cell title={`${screen[0].toUpperCase()}${screen.slice(1)} screen`} note="the real screen component; overlays stay inside this cell" height={SCREEN_HEIGHT} contained framed>
       {screen === "dashboard" && (
         <DashboardScreen onOpenRepos={noop} activeGroupId={activeGroupId} groups={groups} onLibraryChanged={noop} />
       )}
@@ -454,7 +454,7 @@ export function ScreenHost({ screen }: { screen: "dashboard" | "repos" | "activi
 export function DrawerScreen() {
   const [open, setOpen] = useState(true);
   return (
-    <Cell title="Repository detail drawer" note="RepoDetailPanel inside the wide Drawer, repo 1" height={SCREEN_HEIGHT} contained>
+    <Cell title="Repository detail drawer" note="RepoDetailPanel inside the wide Drawer, repo 1" height={SCREEN_HEIGHT} contained framed>
       <Button onClick={() => setOpen(true)}>Open drawer</Button>
       <Drawer open={open} onClose={() => setOpen(false)} size="wide" aria-labelledby={REPO_DETAIL_TITLE_ID}>
         <RepoDetailPanel id={1} onChanged={noop} onClose={() => setOpen(false)} />
@@ -465,7 +465,7 @@ export function DrawerScreen() {
 
 export function ShellSection() {
   return (
-    <Cell title="AppShell" note="the whole app: sidebar, navigation and screens" height={SCREEN_HEIGHT} contained>
+    <Cell title="AppShell" note="the whole app: sidebar, navigation and screens" height={SCREEN_HEIGHT} contained framed>
       <div className="h-[700px] overflow-hidden rounded-md border border-border"><AppShell /></div>
     </Cell>
   );

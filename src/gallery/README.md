@@ -21,12 +21,37 @@ it is never bundled into the Tauri app.
   the whole app shell, each rendered from the real screen component.
 
 The control bar switches light and dark (the `.dark` class the app uses), the look
-(Today, Look A, Look B) and the data state (populated, empty, loading). `.dark` and
+(Today, Look A, Look B), the data state (populated, empty, loading, stress, all failed)
+and the window (Natural, 1024px, 1024px at 150%). The window frames only the Screens
+cells; see "Stress cases". `.dark` and
 `data-look` always sit on the same element, which is what the override blocks in
 `src/index.css` are written for. "Today" sets no `data-look` at all, exactly like the
 shipped app. Everything switches in-page, because the built file has no server and no
 query string. Drawers, dialogs and toasts stay inside their cell, because each
 overlay cell has a CSS `transform`, which contains `position: fixed`.
+
+## Stress cases
+
+A design that only works on eight tidy repositories is not scalable, so two data
+states exist to be looked at, not to be passed.
+
+- **Stress (200)**: 200 repositories from `fixtures-stress.ts`, generated from the
+  index with no randomness, so a screenshot is stable. Names run to about 130
+  characters, local paths to about 150, branches and remote URLs are long, ahead and
+  behind reach five figures, there are 25 groups (several with sentence-length
+  names), and some repositories carry long error codes the app has not been taught.
+- **All failed**: the same 200, every one in a failed state, with ten different
+  error codes, so the "everything is wrong" screen can be judged.
+- **Window**: frames each Screens cell as a window. `1024px` is 1024 CSS pixels.
+  `1024px at 150%` reproduces Windows display scaling: a 1024 physical pixel window
+  at 150% lays out in 683 CSS pixels (1024 / 1.5) drawn 1.5x larger, done with a
+  682.67px frame and CSS `zoom: 1.5`. Each frame carries its own `transform`, so a
+  drawer or dialog stays inside the window and not inside the wider cell.
+  Limit: viewport media queries (such as the Dashboard's `md:grid-cols-4`) still read
+  the gallery page, not the frame, so a breakpoint can differ from the real window.
+
+Tests in `stress.test.tsx` pin the fixture (200 unique ids), the stub answers per
+data state, and the Window frames.
 
 ## Comparing looks
 
