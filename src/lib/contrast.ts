@@ -100,6 +100,42 @@ export function contrastOverWash(
 }
 
 /**
+ * The text of every rule block whose selector LIST contains `selector`.
+ *
+ * A selector counts when it is one comma-separated item of the list, so a
+ * rule written as `[data-look="slate"].dark,` newline
+ * `[data-look="slate"]:not(.dark) .bg-sidebar {` is found under either item.
+ * `:root` still does not match `:root:not([data-theme="light"])`, because the
+ * comparison is on whole items, never on a substring. The block body ends at
+ * the first line that is a lone `}`.
+ */
+function blockBodies(css: string, selector: string): string[] {
+  const lines = css.split(/\r?\n/);
+  const bodies: string[] = [];
+  let pending = "";
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (t.endsWith("{") && !t.startsWith("@")) {
+      const list = (pending + " " + t.slice(0, -1)).split(",").map((x) => x.trim());
+      pending = "";
+      if (!list.includes(selector)) continue;
+      const body: string[] = [];
+      let j = i + 1;
+      for (; j < lines.length && lines[j].trim() !== "}"; j++) body.push(lines[j]);
+      bodies.push(body.join("\n"));
+      i = j;
+    } else if (t.endsWith(",")) {
+      pending += " " + t;
+    } else {
+      pending = "";
+    }
+  }
+  return bodies;
+}
+
+const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/**
  * Pull every `--token: oklch(L C H)` declaration out of one CSS rule block.
  *
  * Deliberately a narrow parser rather than a CSS library: it understands the
@@ -108,31 +144,27 @@ export function contrastOverWash(
  * missing token rather than silently skipping. Alpha-carrying values
  * (`oklch(1 0 0 / 10%)`) are skipped here on purpose; a wash's alpha belongs
  * in the PAIR that uses it, where it can be composited, not in the token table.
+ * `parseColours` below is the variant that keeps them.
+ *
+ * `allowEmpty` is for a look block that overrides geometry only (Look A).
  */
-export function parseTokens(css: string, selector: string): Map<string, Oklch> {
-  // Split on the selector as a plain string rather than building a regex out
-  // of it: `:root` and `.dark` both contain regex metacharacters, and an
-  // escaping bug here would fail by finding NOTHING, which is the one failure
-  // mode a gate must not have.
-  const lines = css.split(/\r?\n/);
-
+export function parseTokens(
+  css: string,
+  selector: string,
+  opts: { allowEmpty?: boolean } = {},
+): Map<string, Oklch> {
   // The largest matching block wins. A stylesheet can open the same selector
   // more than once (`:root` again for an override, a theme layer), and the
   // one that matters is whichever actually declares the tokens - taking the
   // first match would silently read an empty block and report every token
   // missing.
   let best = new Map<string, Oklch>();
-  for (let i = 0; i < lines.length; i++) {
-    // The selector must be alone on its line before the brace, so `:root`
-    // does not also match `:root:not([data-theme="light"])`.
-    if (lines[i].trim() !== `${selector} {`) continue;
-    const body: string[] = [];
-    for (let j = i + 1; j < lines.length && lines[j].trim() !== "}"; j++) body.push(lines[j]);
-    const found = declarations(body.join("\n"));
+  for (const body of blockBodies(css, selector)) {
+    const found = declarations(body);
     if (found.size > best.size) best = found;
   }
 
-  if (best.size === 0) {
+  if (best.size === 0 && !opts.allowEmpty) {
     throw new Error(`No "${selector}" block with oklch tokens in the stylesheet`);
   }
   return best;
@@ -141,8 +173,44 @@ export function parseTokens(css: string, selector: string): Map<string, Oklch> {
 function declarations(block: string): Map<string, Oklch> {
   const tokens = new Map<string, Oklch>();
   const re = /--([\w-]+):\s*oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\)/g;
-  for (const m of block.matchAll(re)) {
+  for (const m of stripComments(block).matchAll(re)) {
     tokens.set(m[1], { L: Number(m[2]), C: Number(m[3]), H: Number(m[4]) });
   }
   return tokens;
+}
+
+/** An oklch colour with its alpha (1 when the value has none). */
+export type Colour = Oklch & { a: number };
+
+/**
+ * Every `--token: oklch(...)` in a block, alpha kept. This is what the look
+ * overrides are merged with: a look may replace a translucent base border with
+ * an opaque one, and the merge has to know the base value was translucent.
+ */
+export function parseColours(css: string, selector: string): Map<string, Colour> {
+  const out = new Map<string, Colour>();
+  const re =
+    /--([\w-]+):\s*oklch\(\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*(?:\/\s*([\d.]+)(%?)\s*)?\)/g;
+  for (const body of blockBodies(css, selector)) {
+    for (const m of stripComments(body).matchAll(re)) {
+      const raw = m[5] === undefined ? 1 : Number(m[5]) / (m[6] === "%" ? 100 : 1);
+      out.set(m[1], { L: Number(m[2]), C: Number(m[3]), H: Number(m[4]), a: raw });
+    }
+  }
+  return out;
+}
+
+/**
+ * Every custom property a block declares, colour or not, as raw text. The
+ * parity check uses it to tell COLOUR keys (which a look must override in both
+ * themes) from GEOMETRY keys (which one block may carry for both).
+ */
+export function parseDeclared(css: string, selector: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const body of blockBodies(css, selector)) {
+    for (const m of stripComments(body).matchAll(/--([\w-]+):\s*([^;]+);/g)) {
+      out.set(m[1], m[2].trim());
+    }
+  }
+  return out;
 }

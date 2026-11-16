@@ -178,6 +178,11 @@
      root and would grow to 13.75px at a 20px root. A like-for-like migration
      keeps px. Moving meta to rem is a VISIBLE retune, left for a later look. */
   --text-meta: 11px;
+  /* `inherit`, not absent: a look can only move a line-height or weight that
+     the theme defines (see LOOKS below), and `inherit` is what a class with no
+     line-height and no weight already does. Nothing renders differently. */
+  --text-meta--line-height: inherit;
+  --text-meta--font-weight: inherit;
 
   /* Exact stand-ins for Tailwind's `text-base` and `text-lg`, added so the
      last raw sizes could move to a name without changing a pixel. `heading` is
@@ -434,6 +439,143 @@
   --status-paused-ink: oklch(0.762 0.020 258);
   --status-no-upstream-tint: oklch(0.285 0.055 200);
   --status-no-upstream-ink: oklch(0.762 0.060 200);
+}
+
+/* ===========================================================================
+   LOOKS - two candidate treatments, visible ONLY where something sets a
+   `data-look` attribute. The app never does, so with no attribute every rule
+   below is inert and the app renders exactly as it did before they existed.
+   Today that means the component gallery (`src/gallery/`); a look is chosen for
+   the app by setting the attribute on the same element as the `.dark` class.
+
+   WHY THE ATTRIBUTE SITS ON THE `.dark` ELEMENT. `.dark` redeclares the theme
+   variables on whichever element carries it, so an override has to be able to
+   win on that same element, and the selectors below say which theme they are
+   for. `:not(.dark)` is required, not decoration: an unqualified light
+   override has the same specificity as the dark one and, written later, would
+   leak into dark mode. Colour values stay literal oklch because the contrast
+   gate (`src/lib/contrast.test.ts`) parses literals; a `var()` ramp underneath
+   would hide the solved pairs from it.
+
+   WHAT A LOOK CAN AND CANNOT OVERRIDE, checked against the built CSS rather
+   than assumed:
+     - Colour roles and `--radius`: yes. The `@theme inline` block compiles
+       `var(--card)` and `calc(var(--radius) - 2px)` into the utilities, and a
+       custom property resolves on the element a utility lands on.
+     - `--text-*` sizes, line-heights and weights: yes, but ONLY where the
+       utility reads them. Tailwind writes a `--text-X--line-height` or
+       `--text-X--font-weight` read into `text-X` only when the theme DEFINES
+       that key, so an override of an undefined key is silently dead. `meta`
+       therefore defines both in the theme block as `inherit`, which is exactly
+       what a font-size-only class does today, so the base renders unchanged
+       and a look can still move them.
+   =========================================================================== */
+
+/* Look A, "graphite": today's colours, tighter type. Geometry only, so there is
+   one block for both themes and nothing to keep in step. */
+[data-look="graphite"] {
+  --text-cell--line-height: 1.4;
+  --text-meta--line-height: 1.35;
+  --text-meta--font-weight: 500; /* at 11px, weight buys more than size */
+  --text-micro: 11px; /* 10px text rises to the 11px floor */
+}
+
+/* Look B, "slate": bolder. Several levers move at once so the difference is
+   plain at a glance. The geometry is shared by both themes... */
+[data-look="slate"] {
+  --radius: 0.375rem; /* 10px -> 6px corners */
+  --text-page: 1.75rem;
+  --text-page--font-weight: 750;
+  --text-identity--font-weight: 700;
+  --text-cell--line-height: 1.4;
+  --text-meta--line-height: 1.35;
+  --text-meta--font-weight: 600;
+  --text-label--font-weight: 700;
+  --text-micro: 11px;
+}
+
+/* ...and the colour is one block per theme, with the same set of colour keys in
+   each (a test enforces that). Cool-tinted neutrals, stronger borders, stronger
+   secondary text, and a DARK navigation rail in both themes. */
+[data-look="slate"]:not(.dark) {
+  --background: oklch(0.93 0.01 255); /* page: cooler and deeper */
+  --foreground: oklch(0.19 0.03 258);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.19 0.03 258);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.19 0.03 258);
+  --primary: oklch(0.46 0.21 264);
+  --primary-ink: oklch(0.42 0.21 264);
+  --secondary: oklch(0.885 0.015 255);
+  --secondary-foreground: oklch(0.19 0.03 258);
+  --muted: oklch(0.885 0.015 255); /* the well */
+  --muted-foreground: oklch(0.37 0.03 258);
+  --accent: oklch(0.885 0.015 255);
+  --accent-foreground: oklch(0.19 0.03 258);
+  --border: oklch(0.78 0.018 255);
+  --input: oklch(0.62 0.02 255); /* an input's edge must be seen */
+  --sidebar: oklch(0.12 0.02 258);
+  --sidebar-foreground: oklch(0.97 0.006 255);
+  --sidebar-accent: oklch(0.22 0.03 258);
+  --sidebar-accent-foreground: oklch(0.97 0.006 255);
+  --sidebar-border: oklch(0.3 0.03 258);
+  /* Status text, re-solved for this look's deeper well (0.885, against
+     Graphite's 0.935): on it Graphite's own values measure 4.04 to 4.12, under
+     the 4.5:1 floor. Each is darkened to 4.7:1 on the hardest of page, card
+     and well, hue and chroma unchanged so each status keeps its meaning.
+     `behind` already cleared it (5.29) and is untouched. `release` has no
+     registered pair; it moves with the rest so it does not become the odd one. */
+  --status-sync: oklch(0.463 0.12 150);
+  --status-behind: oklch(0.47 0.19 293);
+  --status-dirty: oklch(0.479 0.1 79);
+  --status-failed: oklch(0.499 0.19 27);
+  --status-paused: oklch(0.476 0.02 258);
+  --status-no-upstream: oklch(0.468 0.07 200);
+  --status-release: oklch(0.501 0.19 349);
+}
+
+/* The dark theme's block is ALSO the rail's palette: a `.bg-sidebar` surface
+   inside the light theme re-declares every colour as its dark values, so every
+   `text-foreground`, `text-muted-foreground` and `text-primary-ink` the rail
+   already uses lands on a dark surface in a light ink, with no component
+   change. The gate checks the rail's pairs against this palette. */
+[data-look="slate"].dark,
+[data-look="slate"]:not(.dark) .bg-sidebar {
+  --background: oklch(0.14 0.02 258);
+  --foreground: oklch(0.97 0.006 255);
+  --card: oklch(0.235 0.026 258);
+  --card-foreground: oklch(0.97 0.006 255);
+  --popover: oklch(0.235 0.026 258);
+  --popover-foreground: oklch(0.97 0.006 255);
+  --primary: oklch(0.54 0.19 264);
+  --primary-ink: oklch(0.76 0.13 264);
+  --secondary: oklch(0.29 0.028 258);
+  --secondary-foreground: oklch(0.97 0.006 255);
+  --muted: oklch(0.29 0.028 258);
+  --muted-foreground: oklch(0.82 0.02 255);
+  --accent: oklch(0.29 0.028 258);
+  --accent-foreground: oklch(0.97 0.006 255);
+  --border: oklch(0.42 0.03 258);
+  --input: oklch(0.56 0.03 258);
+  --sidebar: oklch(0.12 0.02 258);
+  --sidebar-foreground: oklch(0.97 0.006 255);
+  --sidebar-accent: oklch(0.22 0.03 258);
+  --sidebar-accent-foreground: oklch(0.97 0.006 255);
+  --sidebar-border: oklch(0.3 0.03 258);
+  --status-sync: oklch(0.75 0.17 152);
+  --status-behind: oklch(0.72 0.14 300);
+  --status-dirty: oklch(0.8 0.13 85);
+  --status-failed: oklch(0.7 0.18 24);
+  --status-paused: oklch(0.66 0.02 258);
+  --status-no-upstream: oklch(0.73 0.06 200);
+  --status-release: oklch(0.75 0.17 349);
+}
+
+/* The rail's own `color`, in the light theme too: text with no colour class,
+   such as the brand name, inherits the page's dark ink and would otherwise
+   print dark on the dark rail. */
+[data-look="slate"]:not(.dark) .bg-sidebar {
+  color: var(--sidebar-foreground);
 }
 
 @layer base {

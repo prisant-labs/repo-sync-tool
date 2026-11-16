@@ -23,10 +23,11 @@ import {
   DrawerScreen,
   ShellSection,
 } from "@/gallery/demos";
+import { CompareLooksSection } from "@/gallery/compare";
 
 import { OptionCardSection, GroupChipSection, SettingsFieldsSection } from "@/gallery/recipes-demos";
 
-export const GROUP_ORDER = ["Primitives", "Product components", "Recipes", "Screens"] as const;
+export const GROUP_ORDER = ["Primitives", "Product components", "Recipes", "Screens", "Looks"] as const;
 type GroupName = (typeof GROUP_ORDER)[number];
 
 export interface Section {
@@ -36,6 +37,9 @@ export interface Section {
   note?: string;
   render: () => ReactNode;
 }
+
+/** The section that draws its own look roots, so the shell must not set one. */
+export const COMPARE_ID = "compare-looks";
 
 export const SECTIONS: Section[] = [
   { id: "buttons", group: "Primitives", title: "Button", render: () => <ButtonsSection /> },
@@ -68,5 +72,12 @@ export const SECTIONS: Section[] = [
   { id: "screen-settings", group: "Screens", title: "Settings", render: () => <ScreenHost screen="settings" /> },
   { id: "screen-drawer", group: "Screens", title: "Repository detail drawer", render: () => <DrawerScreen /> },
   { id: "screen-shell", group: "Screens", title: "App shell (whole app)", render: () => <ShellSection /> },
-];
 
+  {
+    id: COMPARE_ID,
+    group: "Looks",
+    title: "Compare looks",
+    note: "The same real components three times: Today (no look), Look A (graphite) and Look B (slate). Follows the Dark switch; the Look selector does not apply here.",
+    render: () => <CompareLooksSection />,
+  },
+];
