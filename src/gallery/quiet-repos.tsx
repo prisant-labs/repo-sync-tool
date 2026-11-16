@@ -74,7 +74,7 @@ export function QuietReposSection() {
       </Cell>
       <Cell
         title="Quiet (proposal, not shipped)"
-        note="the same fixtures through the same stubbed calls, with the polish bar applied"
+        note="the same fixtures through the same stubbed calls, with the polish bar applied. Search, the status filters, sorting and Columns work; Check all, Add repos, the row buttons, the folder link and a row click do nothing here"
         height={560}
         contained
       >
@@ -165,7 +165,7 @@ function QuietRepos() {
       {
         id: "repo",
         header: "Repository",
-        width: "minmax(200px,280px)",
+        width: "minmax(180px,240px)",
         frozen: true,
         cell: (r) => {
           const paused = deriveStatus(r) === "paused";
@@ -215,7 +215,7 @@ function QuietRepos() {
       {
         id: "ahead",
         header: "Ahead",
-        width: "72px",
+        width: "64px",
         align: "right",
         headerAlign: "right",
         cell: (r) => count(r.aheadCount),
@@ -224,7 +224,7 @@ function QuietRepos() {
       {
         id: "behind",
         header: "Behind",
-        width: "72px",
+        width: "64px",
         align: "right",
         headerAlign: "right",
         cell: (r) => count(r.behindCount, "font-semibold text-status-behind"),
@@ -302,9 +302,17 @@ function QuietRepos() {
 
   const sortedLabel = sort ? columns.find((c) => c.id === sort.columnId)?.header : undefined;
 
+  // The sort note rides in the title row, not the toolbar: in the toolbar it
+  // wrapped onto a band of its own, which is the rule this proposal is for.
   const actions =
     list.length > 0 ? (
       <>
+        {sort && sortedLabel && (
+          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setSort(null)}>
+            <X />
+            Sorted by {sortedLabel}, {sort.direction === "asc" ? "ascending" : "descending"}
+          </Button>
+        )}
         <ColumnsPopover
           items={order.map((id) => ({ id, header: columns.find((c) => c.id === id)?.header ?? id, locked: id === "repo" }))}
           visibility={visibility}
@@ -361,12 +369,6 @@ function QuietRepos() {
               ),
           )}
         </div>
-        {sort && sortedLabel && (
-          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => setSort(null)}>
-            <X />
-            Sorted by {sortedLabel}, {sort.direction === "asc" ? "ascending" : "descending"}
-          </Button>
-        )}
       </div>
     ) : undefined;
 
