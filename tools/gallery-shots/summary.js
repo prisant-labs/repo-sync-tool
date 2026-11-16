@@ -15,13 +15,23 @@ export function parseShotName(fileName) {
 }
 
 /**
+ * A shot with this many changed pixels or fewer is reported as "noise", not "changed".
+ * Two builds of identical source were seen to differ by a single pixel in a few dark shots
+ * on the Linux runner (anti-aliasing at a rounded corner or a shadow edge, which the GPU-less
+ * renderer does not always place identically). Any real change to an element, even a one
+ * pixel border, is far larger than a handful of pixels, so a small floor hides the noise
+ * without hiding a change. The diff image is still written for a noisy shot.
+ */
+export const NOISE_FLOOR = 4;
+
+/**
  * Decide one shot's status from what was found on each side.
  *   base, head: `{ width, height }` for a side that has the shot, or null when it does not.
  *   changed: the number of pixels pixelmatch reported different (ignored unless sizes match).
  * Returns `{ status, changed, total }`. A size mismatch is its own status because the
  * pixels cannot be compared one-to-one, and calling it "changed pixels: 0" would hide it.
  */
-export function classifyShot(base, head, changed = 0) {
+export function classifyShot(base, head, changed = 0, noiseFloor = NOISE_FLOOR) {
   if (!base && !head) throw new Error("classifyShot needs at least one side");
   if (!base) return { status: "added", changed: 0, total: head.width * head.height };
   if (!head) return { status: "removed", changed: 0, total: base.width * base.height };
@@ -35,7 +45,8 @@ export function classifyShot(base, head, changed = 0) {
     };
   }
   const total = head.width * head.height;
-  return { status: changed > 0 ? "changed" : "same", changed, total };
+  if (changed === 0) return { status: "same", changed, total };
+  return { status: changed <= noiseFloor ? "noise" : "changed", changed, total };
 }
 
 /** Percent of pixels changed, with two decimals, or "n/a" when there is nothing to compare. */
@@ -44,7 +55,7 @@ export function formatPercent(changed, total) {
   return `${((changed / total) * 100).toFixed(2)}%`;
 }
 
-const STATUS_ORDER = { "size-changed": 0, changed: 1, added: 2, removed: 3, same: 4 };
+const STATUS_ORDER = { "size-changed": 0, changed: 1, added: 2, removed: 3, noise: 4, same: 5 };
 
 /**
  * Build the Markdown report.
@@ -55,8 +66,14 @@ const STATUS_ORDER = { "size-changed": 0, changed: 1, added: 2, removed: 3, same
  */
 export function buildSummary(results) {
   const unchanged = results.filter((r) => r.status === "same").length;
+  const noise = results.filter((r) => r.status === "noise").length;
+  const noiseNames = results.filter((r) => r.status === "noise").map((r) => `${r.section} ${r.theme}`);
+  const noiseNote =
+    noise > 0
+      ? ` ${noise} more differ by ${NOISE_FLOOR} pixels or fewer and are treated as noise (${noiseNames.join(", ")}).`
+      : "";
   const interesting = results
-    .filter((r) => r.status !== "same")
+    .filter((r) => r.status !== "same" && r.status !== "noise")
     .sort(
       (a, b) =>
         STATUS_ORDER[a.status] - STATUS_ORDER[b.status] ||
@@ -67,13 +84,13 @@ export function buildSummary(results) {
 
   const lines = ["## Gallery screenshot check", ""];
   if (interesting.length === 0) {
-    lines.push(`No pixel differences in ${results.length} screenshots.`);
+    lines.push(`No pixel differences in ${results.length} screenshots.${noiseNote}`);
     return lines.join("\n") + "\n";
   }
 
   lines.push(
     `${interesting.length} of ${results.length} screenshots differ from the base branch ` +
-      `(${unchanged} unchanged). This check reports only; it never fails a pull request on pixels.`,
+      `(${unchanged} unchanged).${noiseNote} This check reports only; it never fails a pull request on pixels.`,
     "",
     "| Section | Theme | Result | Changed pixels | Percent |",
     "|---|---|---|---|---|",
