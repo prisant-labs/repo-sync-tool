@@ -468,6 +468,16 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ### Security
 
+- **One newly published advisory is fixed, and one is recorded as an exception
+  with an expiry.** A flaw in `quinn-udp` (RUSTSEC-2026-0538) is fixed by an
+  update. That library is listed in the lockfile but is not built into RepoSync,
+  so the app was never exposed. A flaw in the bundled SQLite (RUSTSEC-2026-0459) needs a
+  database-library release that does not exist yet. RepoSync opens only its own
+  database, in your own app-data folder, so a crafted database file would have to
+  be planted there first. The exception is written down with that argument, an
+  owner, and a review date of 2027-01-15, and it is removed as soon as the fixed
+  release ships.
+
 - **Eighteen published security advisories against RepoSync's dependencies are
   closed, and none is waived.** The weekly dependency check had failed since
   2026-10-19. Most of the fixes are routine updates to the TLS libraries that
