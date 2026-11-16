@@ -2,10 +2,11 @@ import type {
   ActivityRecord,
   GroupSummary,
   RepoGroupMembership,
+  HeadState,
   RepoSummary,
   SummaryItem,
 } from "@/lib/bindings";
-import { NOW, REPO_TEMPLATE } from "@/gallery/fixtures";
+import { GROUPS, NOW, REPO_TEMPLATE, type Scenario } from "@/gallery/fixtures";
 
 /**
  * Stress fixtures: the libraries the real screens must survive, not just show.
@@ -90,6 +91,12 @@ function stressRepo(i: number, forceFailed: boolean): RepoSummary {
   const failed = forceFailed || i % 9 === 4;
   const behindHeavy = i % 11 === 2;
   const aheadHeavy = i % 13 === 5;
+  // Choose HEAD first, then derive every field that depends on it, so no repo
+  // contradicts itself. Per bindings.ts: a detached or unborn HEAD has no
+  // branch name, `unborn` and `detached` are exclusive, and with no branch
+  // there is no upstream to be ahead of or behind. `null` is "not observed".
+  const head: HeadState | null = i % 19 === 0 ? "unborn" : i % 17 === 0 ? "detached" : i % 43 === 5 ? null : "branch";
+  const onBranch = head === "branch";
   return {
     ...REPO_TEMPLATE,
     id,
@@ -97,20 +104,20 @@ function stressRepo(i: number, forceFailed: boolean): RepoSummary {
     localPath: `${root}${depth}\\${localName}`,
     remoteOriginUrl: remoteUrl(i),
     hostType,
-    aheadCount: failed ? null : aheadHeavy ? 1200 + i * 37 : i % 6 === 1 ? i % 40 : 0,
-    behindCount: failed ? null : behindHeavy ? 98765 + i : i % 7 === 3 ? 1 + (i % 300) : 0,
+    aheadCount: failed || !onBranch ? null : aheadHeavy ? 1200 + i * 37 : i % 6 === 1 ? i % 40 : 0,
+    behindCount: failed || !onBranch ? null : behindHeavy ? 98765 + i : i % 7 === 3 ? 1 + (i % 300) : 0,
     isDirty: i % 10 === 6,
-    isDetached: i % 17 === 0,
-    enabled: i % 23 !== 0,
-    autoPaused: i % 29 === 0,
-    lastCheckedAt: i % 31 === 0 ? null : NOW - ((i * 17) % 4000) * MIN,
+    isDetached: head === "detached",
+    enabled: forceFailed || i % 23 !== 0,
+    autoPaused: !forceFailed && i % 29 === 0,
+    lastCheckedAt: i % 31 === 0 && !forceFailed ? null : NOW - ((i * 17) % 4000) * MIN,
     lastErrorCode: failed ? ERROR_CODES[(forceFailed ? i : Math.floor(i / 9)) % ERROR_CODES.length] : null,
     latestReleaseTag: i % 3 === 0 ? null : `v${1 + (i % 12)}.${i % 50}.${i % 9}-release-candidate.${i}+build.2026.11.13`,
     openPrCount: i % 4 === 1 ? null : (i * 13) % 1500,
     lastLocalCommitAt: NOW - ((i * 29) % 900) * DAY,
-    activeBranch: i % 19 === 0 ? null : LONG_BRANCHES[i % LONG_BRANCHES.length],
-    headState: i % 19 === 0 ? "unborn" : i % 17 === 0 ? "detached" : "branch",
-    upstreamState: i % 19 === 0 ? null : i % 15 === 7 ? "none" : "tracking",
+    activeBranch: onBranch ? LONG_BRANCHES[i % LONG_BRANCHES.length] : null,
+    headState: head,
+    upstreamState: !onBranch ? null : i % 15 === 7 ? "none" : "tracking",
     stars: i % 5 === 2 ? null : i * 1337,
     forks: i % 5 === 2 ? null : i * 211,
     license: i % 6 === 0 ? null : "LicenseRef-Example-Proprietary-Source-Available-1.0",
@@ -147,6 +154,13 @@ export const STRESS_GROUPS: GroupSummary[] = GROUP_NAMES.map((name, i) => ({
   color: GROUP_COLORS[i % GROUP_COLORS.length],
   repoCount: STRESS_REPOS.filter((_, r) => membershipIds(r).includes(i + 1)).length,
 }));
+
+/** The group list a screen should be handed for a data state. */
+export function groupsForScenario(scenario: Scenario): GroupSummary[] {
+  if (scenario === "stress" || scenario === "allFailed") return STRESS_GROUPS;
+  if (scenario === "empty") return [];
+  return GROUPS;
+}
 
 /** Every repo in one to three groups, spread across the 25. */
 function membershipIds(index: number): number[] {

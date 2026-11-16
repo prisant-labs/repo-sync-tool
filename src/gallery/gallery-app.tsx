@@ -70,7 +70,7 @@ export function GalleryApp() {
 
   return (
     <ThemeContext.Provider value={dark}>
-    <WindowContext.Provider value={windowId}>
+    <WindowContext.Provider value={{ windowId, scenario, look }}>
     <div
       data-look={shellLook}
       className={cn("flex h-screen bg-background text-foreground", dark && "dark")}

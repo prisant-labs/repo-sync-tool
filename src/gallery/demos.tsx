@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
+import { WindowContext } from "@/gallery/window-frame";
+import { groupsForScenario } from "@/gallery/fixtures-stress";
 import { Inbox, Plus, RefreshCw, Search } from "lucide-react";
 import { Cell, Row } from "@/gallery/cells";
 import { REPOS, GROUPS, SCAN_CANDIDATES } from "@/gallery/fixtures";
@@ -407,12 +409,22 @@ const RECEIPT_TIMESTAMP = Math.floor(Date.now() / 1000) - 7200;
 
 /** Holds the state `AppShell` would own, so a screen renders standalone. */
 export function ScreenHost({ screen }: { screen: "dashboard" | "repos" | "activity" | "settings" }) {
+  return (
+    <Cell title={`${screen[0].toUpperCase()}${screen.slice(1)} screen`} note="the real screen component; overlays stay inside this cell" height={SCREEN_HEIGHT} contained frameScreen={screen}>
+      <ScreenBody screen={screen} controls />
+    </Cell>
+  );
+}
+
+/** The screen itself with its stand-in state. `controls` adds the gallery's own buttons. */
+export function ScreenBody({ screen, controls }: { screen: "dashboard" | "repos" | "activity" | "settings"; controls: boolean }) {
   const [activeGroupId, setActiveGroupId] = useState<number | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
-  const groups = GROUPS;
+  const { scenario } = useContext(WindowContext);
+  const groups = groupsForScenario(scenario);
   return (
-    <Cell title={`${screen[0].toUpperCase()}${screen.slice(1)} screen`} note="the real screen component; overlays stay inside this cell" height={SCREEN_HEIGHT} contained framed>
+    <>
       {screen === "dashboard" && (
         <DashboardScreen onOpenRepos={noop} activeGroupId={activeGroupId} groups={groups} onLibraryChanged={noop} />
       )}
@@ -437,35 +449,45 @@ export function ScreenHost({ screen }: { screen: "dashboard" | "repos" | "activi
           }}
         />
       )}
-      <div className="mt-3 flex gap-2 text-cell">
-        <button type="button" className="rounded border border-border px-2 py-1" onClick={() => setActiveGroupId(activeGroupId === null ? 1 : null)}>
-          {activeGroupId === null ? "Scope to group: work" : "Clear group scope"}
-        </button>
-        {screen === "repos" && (
-          <button type="button" className="rounded border border-border px-2 py-1" onClick={() => setAddOpen(true)}>
-            Open Add dialog
+      {controls && (
+        <div className="mt-3 flex gap-2 text-cell">
+          <button type="button" className="rounded border border-border px-2 py-1" onClick={() => setActiveGroupId(activeGroupId === null ? 1 : null)}>
+            {activeGroupId === null ? "Scope to group: work" : "Clear group scope"}
           </button>
-        )}
-      </div>
-    </Cell>
+          {screen === "repos" && (
+            <button type="button" className="rounded border border-border px-2 py-1" onClick={() => setAddOpen(true)}>
+              Open Add dialog
+            </button>
+          )}
+        </div>
+      )}
+    </>
   );
 }
 
 export function DrawerScreen() {
+  return (
+    <Cell title="Repository detail drawer" note="RepoDetailPanel inside the wide Drawer, repo 1" height={SCREEN_HEIGHT} contained frameScreen="drawer">
+      <DrawerBody />
+    </Cell>
+  );
+}
+
+export function DrawerBody() {
   const [open, setOpen] = useState(true);
   return (
-    <Cell title="Repository detail drawer" note="RepoDetailPanel inside the wide Drawer, repo 1" height={SCREEN_HEIGHT} contained framed>
+    <>
       <Button onClick={() => setOpen(true)}>Open drawer</Button>
       <Drawer open={open} onClose={() => setOpen(false)} size="wide" aria-labelledby={REPO_DETAIL_TITLE_ID}>
         <RepoDetailPanel id={1} onChanged={noop} onClose={() => setOpen(false)} />
       </Drawer>
-    </Cell>
+    </>
   );
 }
 
 export function ShellSection() {
   return (
-    <Cell title="AppShell" note="the whole app: sidebar, navigation and screens" height={SCREEN_HEIGHT} contained framed>
+    <Cell title="AppShell" note="the whole app: sidebar, navigation and screens" height={SCREEN_HEIGHT} contained frameScreen="shell">
       <div className="h-[700px] overflow-hidden rounded-md border border-border"><AppShell /></div>
     </Cell>
   );

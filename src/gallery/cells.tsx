@@ -1,5 +1,6 @@
 import { useContext, type CSSProperties, type ReactNode } from "react";
-import { WINDOWS, WindowContext } from "@/gallery/window-frame";
+import { WINDOWS, WindowContext, encodeFrameHash, type FrameScreen } from "@/gallery/window-frame";
+import { ThemeContext } from "@/gallery/looks";
 import { ToastProvider } from "@/components/ui/toast";
 
 /**
@@ -9,32 +10,44 @@ import { ToastProvider } from "@/components/ui/toast";
  *
  * Any CSS `transform` establishes that containing block. `translateZ(0)` is
  * used because it moves nothing and is the usual idiom for it.
+ *
+ * `frameScreen` marks a whole-screen cell. With the Window control at 1024px or
+ * 1024px at 150%, the cell shows an iframe of that screen instead of its children,
+ * because only an iframe has a CSS viewport of its own (see `window-frame.ts`).
  */
 export function Cell({
   title,
   note,
   height,
   contained = false,
-  framed = false,
+  frameScreen,
   children,
 }: {
   title: string;
   note?: string;
   height?: number;
   contained?: boolean;
-  /** A whole-screen cell: the Window control frames its body at a window size. */
-  framed?: boolean;
+  frameScreen?: FrameScreen;
   children: ReactNode;
 }) {
-  const windowId = useContext(WindowContext);
-  const win = WINDOWS.find((w) => w.id === windowId) ?? WINDOWS[0];
-  const frame = framed && win.cssWidth !== null ? win : null;
+  const controls = useContext(WindowContext);
+  const dark = useContext(ThemeContext);
+  const win = WINDOWS.find((w) => w.id === controls.windowId) ?? WINDOWS[0];
+  const framed = frameScreen !== undefined && win.cssWidth !== null;
   const style: CSSProperties = {};
   if (height !== undefined) style.height = height;
   if (contained) {
     style.transform = "translateZ(0)";
     style.overflow = "auto";
   }
+
+  // The iframe's CSS height is the visual height over the scale, so the scaled
+  // box ends up the same height as the cell body.
+  const visualHeight = (height ?? 760) - 34;
+  const src = framed
+    ? `${window.location.href.split("#")[0]}${encodeFrameHash({ screen: frameScreen, scenario: controls.scenario, look: controls.look, dark })}`
+    : null;
+
   return (
     <section className="mb-6" aria-label={title}>
       <div className="mb-2 flex flex-wrap items-baseline gap-x-3">
@@ -49,25 +62,31 @@ export function Cell({
         {/* Each cell has its own toast provider so the fixed toast stack lands
             inside a contained cell instead of at the corner of the window. */}
         <ToastProvider>
-          {frame === null ? (
-            children
-          ) : (
-            // The frame is the window. It carries its own transform so a fixed
-            // drawer or dialog is contained by the window, not by the wider cell.
-            // Under zoom, its CSS height is the visual height divided by the zoom.
+          {framed && src !== null ? (
             <div
-              data-window-frame={windowId}
-              style={{
-                width: frame.cssWidth,
-                height: height === undefined ? undefined : (height - 34) / frame.zoom,
-                zoom: frame.zoom === 1 ? undefined : frame.zoom,
-                transform: "translateZ(0)",
-                overflow: "auto",
-              }}
-              className="rounded-md border border-border bg-background"
+              data-window-wrapper={controls.windowId}
+              style={{ width: (win.cssWidth ?? 0) * win.scale, height: visualHeight }}
+              className="overflow-hidden rounded-md border border-border"
             >
-              {children}
+              <iframe
+                // Every control is part of the key, so a change reloads the
+                // frame instead of leaving it on the old hash.
+                key={src}
+                title={`${title} at ${win.label}`}
+                data-window-frame={controls.windowId}
+                src={src}
+                style={{
+                  width: win.cssWidth ?? undefined,
+                  height: visualHeight / win.scale,
+                  transform: win.scale === 1 ? undefined : `scale(${win.scale})`,
+                  transformOrigin: "top left",
+                  border: 0,
+                  display: "block",
+                }}
+              />
             </div>
+          ) : (
+            children
           )}
         </ToastProvider>
       </div>

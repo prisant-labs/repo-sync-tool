@@ -44,11 +44,14 @@ states exist to be looked at, not to be passed.
   error codes, so the "everything is wrong" screen can be judged.
 - **Window**: frames each Screens cell as a window. `1024px` is 1024 CSS pixels.
   `1024px at 150%` reproduces Windows display scaling: a 1024 physical pixel window
-  at 150% lays out in 683 CSS pixels (1024 / 1.5) drawn 1.5x larger, done with a
-  682.67px frame and CSS `zoom: 1.5`. Each frame carries its own `transform`, so a
-  drawer or dialog stays inside the window and not inside the wider cell.
-  Limit: viewport media queries (such as the Dashboard's `md:grid-cols-4`) still read
-  the gallery page, not the frame, so a breakpoint can differ from the real window.
+  at 150% lays out in 683 CSS pixels (1024 / 1.5) drawn 1.5x larger. Each framed
+  cell is an IFRAME of that width that loads this same built file with a location
+  hash (`#frame=repos&state=stress&look=today&dark=0`), which renders one screen
+  full-bleed. An iframe has its own CSS viewport, so the drawer's `vw` width, the
+  dialogs' `vh` height, the shell's `svh` and the Dashboard's `md:` breakpoint all
+  follow the frame and not the gallery page. The 150% frame is presented with an
+  external `transform: scale(1.5)` from the top left, in a wrapper of the scaled
+  size. A Settings theme toggle inside a frame changes that frame only.
 
 Tests in `stress.test.tsx` pin the fixture (200 unique ids), the stub answers per
 data state, and the Window frames.
