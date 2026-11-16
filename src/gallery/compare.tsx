@@ -29,7 +29,7 @@ function NavRow({ label, Icon, active }: { label: string; Icon: typeof Boxes; ac
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-sm",
+        "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-body",
         active
           ? "border-l-primary-ink bg-sidebar-accent font-semibold text-foreground"
           : "font-medium text-muted-foreground",
@@ -48,7 +48,7 @@ function Sample() {
     <div className="flex flex-col gap-4">
       <div className="overflow-hidden rounded-lg border border-border bg-sidebar">
         <div className="flex items-center gap-2.5 px-3 py-3">
-          <div className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">R</div>
+          <div className="grid size-7 place-items-center rounded-md bg-primary text-body font-bold text-primary-foreground">R</div>
           <span className="font-semibold">
             Repo<span className="text-primary-ink">Sync</span>
           </span>
@@ -119,7 +119,7 @@ export function CompareLooksSection() {
             "min-w-0 rounded-xl border border-border bg-background p-4 text-foreground",
           )}
         >
-          <div className="mb-3 font-mono text-xs font-bold tracking-wider uppercase">{look.label}</div>
+          <div className="mb-3 font-mono text-cell font-bold tracking-wider uppercase">{look.label}</div>
           <Sample />
         </div>
       ))}

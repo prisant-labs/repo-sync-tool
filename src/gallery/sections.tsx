@@ -25,7 +25,9 @@ import {
 } from "@/gallery/demos";
 import { CompareLooksSection } from "@/gallery/compare";
 
-export const GROUP_ORDER = ["Primitives", "Product components", "Screens", "Looks"] as const;
+import { OptionCardSection, GroupChipSection, SettingsFieldsSection } from "@/gallery/recipes-demos";
+
+export const GROUP_ORDER = ["Primitives", "Product components", "Recipes", "Screens", "Looks"] as const;
 type GroupName = (typeof GROUP_ORDER)[number];
 
 export interface Section {
@@ -59,6 +61,10 @@ export const SECTIONS: Section[] = [
   { id: "add-repos", group: "Product components", title: "AddReposDialog", render: () => <AddReposCell /> },
   { id: "receipt", group: "Product components", title: "ActivityReceipt", render: () => <ReceiptCell /> },
   { id: "diagnostics", group: "Product components", title: "DiagnosticsCard", render: () => <DiagnosticsSection /> },
+
+  { id: "recipes-option-card", group: "Recipes", title: "OptionCard, RadioDot", render: () => <OptionCardSection /> },
+  { id: "recipes-group-chip", group: "Recipes", title: "GroupChip, GroupDot", render: () => <GroupChipSection /> },
+  { id: "recipes-settings-fields", group: "Recipes", title: "SettingsField and inputs", render: () => <SettingsFieldsSection /> },
 
   { id: "screen-dashboard", group: "Screens", title: "Dashboard", render: () => <ScreenHost screen="dashboard" /> },
   { id: "screen-repos", group: "Screens", title: "Repos", render: () => <ScreenHost screen="repos" /> },

@@ -10,6 +10,13 @@ it is never bundled into the Tauri app.
 - **Primitives**: every component in `src/components/ui/`, in its variants and states.
 - **Product components**: the shared parts in `src/components/` (status badge, filter
   chip, lag signal, empty state, async panel, dialogs, and similar).
+- **Recipes**: the small shared components in `src/components/recipes/` that several
+  screens reuse, one section per recipe with every variant shown: `OptionCard` and
+  `RadioDot` (choice cards), `GroupChip` and `GroupDot` (group name chips, in a
+  `removable` and a `compact` variant), and `SettingsField` with `NumberInput`,
+  `TextInput` and `TimeInput`. The key-value rows in `repo-detail.tsx` and
+  `diagnostics-card.tsx` are deliberately not a recipe: they are two different
+  layouts, and the diagnostics row's own comment explains why.
 - **Screens**: Dashboard, Repos, Activity, Settings, the repository detail drawer and
   the whole app shell, each rendered from the real screen component.
 
