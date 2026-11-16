@@ -49,6 +49,113 @@ if (!galleryPath || !outDir) {
   process.exit(2);
 }
 
+// Interactive specimens that are CLOSED when a section first renders, so a plain shot of
+// the section never shows them. Each entry opens one and asserts it really is visible; the
+// result is saved as `<section>--<name>__<theme>.png`. Overlays the gallery mounts open
+// (Drawer, Dialog, GroupDialog, AddReposDialog, the activity receipt, the repo drawer) are
+// already in the plain shots and are not listed. Add an entry here when a new section has
+// a closed-by-default specimen.
+const EXTRA_STATES = [
+  {
+    section: "toast",
+    name: "open",
+    // Three toasts, one per kind. They are held on screen (see HOLD_TOAST_TIMERS) so one
+    // cannot vanish mid-shot.
+    async open(page) {
+      for (const label of ["Ok toast", "Info toast", "Error toast"]) {
+        await page.getByRole("button", { name: label, exact: true }).click();
+      }
+    },
+    async expectVisible(page) {
+      for (const text of ["Your change was saved.", "Something to know.", "Could not reach the remote."]) {
+        await page.getByText(text, { exact: true }).waitFor({ state: "visible", timeout: 3000 });
+      }
+    },
+  },
+  {
+    section: "data-table",
+    name: "open",
+    // The ColumnsPopover panel.
+    async open(page) {
+      await page.getByRole("button", { name: /^Columns/ }).click();
+    },
+    async expectVisible(page) {
+      await page.getByRole("region", { name: "Choose and reorder columns" }).waitFor({ state: "visible", timeout: 3000 });
+    },
+  },
+  {
+    section: "screen-repos",
+    name: "open",
+    // The same panel on the real Repos screen.
+    async open(page) {
+      await page.getByRole("button", { name: /^Columns/ }).click();
+    },
+    async expectVisible(page) {
+      await page.getByRole("region", { name: "Choose and reorder columns" }).waitFor({ state: "visible", timeout: 3000 });
+    },
+  },
+  {
+    section: "screen-drawer",
+    name: "add-group",
+    // The "add this repo to a group" control in the repository drawer.
+    async open(page) {
+      await page.getByRole("button", { name: "Add this repo to a group" }).click();
+    },
+    async expectVisible(page) {
+      await page
+        .getByRole("button", { name: "Add this repo to a group", expanded: true })
+        .waitFor({ state: "visible", timeout: 3000 });
+    },
+  },
+  {
+    section: "screen-activity",
+    name: "receipt",
+    // The first row's receipt drawer on the Activity screen.
+    async open(page) {
+      await page.getByRole("button", { name: "Open receipt" }).first().click();
+    },
+    async expectVisible(page) {
+      await page.locator("#activity-receipt-title").waitFor({ state: "visible", timeout: 3000 });
+    },
+  },
+];
+
+// Toasts clear themselves after 4200 ms on a real timer, which would race the screenshot.
+// This holds every 4200 ms timer instead of scheduling it, and `window.__releaseToastTimers`
+// runs the held callbacks afterwards so the stack is empty before the next section. The
+// app's own code is untouched; only this page, inside this script, sees the wrapper.
+const HOLD_TOAST_TIMERS = `
+  (() => {
+    const real = window.setTimeout.bind(window);
+    const held = [];
+    window.setTimeout = (fn, delay, ...args) => {
+      if (delay === 4200) {
+        held.push(() => fn(...args));
+        return 0;
+      }
+      return real(fn, delay, ...args);
+    };
+    window.__releaseToastTimers = () => held.splice(0).forEach((run) => run());
+  })();
+`;
+
+/** Resizes the viewport to show the whole section, settles, and saves one PNG. */
+async function capture(page, file) {
+  await page.setViewportSize({ width: VIEWPORT_WIDTH, height: START_HEIGHT });
+  await waitForSettled(page);
+  // The gallery's main pane scrolls inside a screen-high shell, so grow the
+  // viewport until the whole section is visible in one picture.
+  const extra = await page.$eval('[data-testid="gallery-main"]', (m) => m.scrollHeight - m.clientHeight);
+  if (extra > 0) {
+    await page.setViewportSize({
+      width: VIEWPORT_WIDTH,
+      height: Math.min(START_HEIGHT + extra, MAX_HEIGHT),
+    });
+    await waitForSettled(page);
+  }
+  await page.screenshot({ path: file, animations: "disabled" });
+}
+
 /** Waits until the main pane's markup is identical across several checks in a row. */
 async function waitForSettled(page) {
   await page.evaluate(() => document.fonts.ready);
@@ -82,6 +189,7 @@ async function main() {
     });
     // Freeze Date.now() / new Date() but leave timers running, so the app still renders.
     await context.clock.setFixedTime(FROZEN_TIME);
+    await context.addInitScript(HOLD_TOAST_TIMERS);
     const page = await context.newPage();
     page.on("pageerror", (error) => failures.push(`page error: ${error.message}`));
 
@@ -104,17 +212,6 @@ async function main() {
         await page.evaluate(() => document.activeElement?.blur());
         await waitForSettled(page);
 
-        // The gallery's main pane scrolls inside a screen-high shell, so grow the
-        // viewport until the whole section is visible in one picture.
-        const extra = await page.$eval('[data-testid="gallery-main"]', (m) => m.scrollHeight - m.clientHeight);
-        if (extra > 0) {
-          await page.setViewportSize({
-            width: VIEWPORT_WIDTH,
-            height: Math.min(START_HEIGHT + extra, MAX_HEIGHT),
-          });
-          await waitForSettled(page);
-        }
-
         // A section that mounts its own theme root (the app shell) could undo the switch.
         // Refuse to write a "dark" picture that is really light.
         const isDark = await page.evaluate(() => document.documentElement.classList.contains("dark"));
@@ -122,11 +219,25 @@ async function main() {
           failures.push(`${id} (${theme}): the page ended up ${isDark ? "dark" : "light"}`);
           continue;
         }
-        await page.screenshot({ path: path.join(outDir, shotName(id, theme)), animations: "disabled" });
+        await capture(page, path.join(outDir, shotName(id, theme)));
+
+        for (const extra of EXTRA_STATES.filter((e) => e.section === id)) {
+          const label = `${id}--${extra.name} (${theme})`;
+          try {
+            await extra.open(page);
+            await extra.expectVisible(page);
+            await page.mouse.move(VIEWPORT_WIDTH - 2, 2);
+            await capture(page, path.join(outDir, shotName(`${id}--${extra.name}`, theme)));
+          } catch (error) {
+            failures.push(`${label}: ${error.message.split("\n")[0]}`);
+          }
+          // Let go of any held toast timers so the stack is empty for the next section.
+          await page.evaluate(() => window.__releaseToastTimers?.());
+        }
       }
     }
     await page.getByLabel("Dark", { exact: true }).setChecked(false);
-    console.log(`wrote ${sectionIds.length * 2} screenshots to ${outDir}`);
+    console.log(`wrote ${(sectionIds.length + EXTRA_STATES.length) * 2} screenshots to ${outDir}`);
   } finally {
     await browser.close();
   }

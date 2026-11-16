@@ -85,9 +85,15 @@ light and dark (default "Today" look, populated data), compares the two sets pix
 pixel, and writes a table of the sections that changed to the job summary. The base, head
 and diff PNGs are attached as the `gallery-screenshots` artifact.
 
-The job reports and does not fail on pixel differences. It fails only if the head gallery
-does not build or the script errors. If the merge base has no `gallery:build` script, it
-says "No base gallery" and passes.
+The job reports and does not fail on pixel differences. It fails if the head gallery does
+not build, the script errors, or the merge base has a gallery that cannot be installed,
+built or photographed. Only a base with no `gallery:build` script says "No base gallery"
+and passes.
+
+Closed-by-default specimens (the toasts, the Columns panel, the group-add control, the
+activity receipt) get extra shots named `<section>--<state>`, listed in `EXTRA_STATES` in
+`shoot.mjs`. Each asserts the specimen is visible before the picture is taken. Add an entry
+there when a new section has something that starts closed.
 
 The tools are in `tools/gallery-shots/`. The script drives the gallery's own controls, so
 a new section is photographed without any change there. Output is made repeatable with a

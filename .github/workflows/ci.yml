@@ -501,7 +501,7 @@ jobs:
   #
   # It REPORTS and never fails on pixel differences: a design change is supposed to change
   # pixels, and the point is that a reviewer sees which sections moved. It DOES fail when the
-  # head gallery does not build or the screenshot script errors, because then the check is
+  # head gallery does not build, the screenshot script errors, or the base has a gallery that cannot be captured, because then the check is
   # broken, not the design.
   #
   # Its own job, not a step of `build`: it needs a Linux runner with a browser, and the
@@ -561,10 +561,11 @@ jobs:
       - name: Screenshot the head gallery
         run: node tools/gallery-shots/shoot.mjs dist-gallery/gallery.html "$RUNNER_TEMP/shots/head"
 
-      # The base side is best effort. A base that predates the gallery has nothing to
-      # compare against, and a base whose gallery cannot be built or shot says something
-      # about the base, not about this pull request. Each case is reported in the summary
-      # and the job still passes.
+      # Only a VERIFIED absence of a base gallery (no `gallery:build` script in the base's
+      # package.json) skips the comparison and passes. If the base has a gallery and it fails
+      # to install, build or be photographed, the check cannot do its job, so this step records
+      # why and the last step of the job fails. The summary and the artifact are still written
+      # first, so the failure can be diagnosed from them.
       - name: Build and screenshot the merge base
         id: base
         shell: bash
@@ -604,7 +605,7 @@ jobs:
               printf '## Gallery screenshot check\n\nNo base gallery: the merge base has no `gallery:build` script, so there is nothing to compare against.\n' >> "$GITHUB_STEP_SUMMARY"
               ;;
             *)
-              printf '## Gallery screenshot check\n\nNo comparison: the merge base gallery could not be built or screenshotted (%s). The head screenshots are in the artifact.\n' "$BASE_RESULT" >> "$GITHUB_STEP_SUMMARY"
+              printf '## Gallery screenshot check\n\nFAILED: the merge base has a gallery but it could not be built or screenshotted (%s), so there is no comparison. The head screenshots are in the artifact.\n' "$BASE_RESULT" >> "$GITHUB_STEP_SUMMARY"
               ;;
           esac
 
@@ -616,3 +617,10 @@ jobs:
           path: ${{ runner.temp }}/shots
           if-no-files-found: ignore
           retention-days: 14
+
+      # Last on purpose, after the summary and the upload. See the base step for the rule.
+      - name: Fail if the base gallery exists but could not be captured
+        if: steps.base.outputs.result != 'ok' && steps.base.outputs.result != 'no-gallery'
+        run: |
+          echo "::error::The merge base has a gallery, but its result was '${{ steps.base.outputs.result }}'."
+          exit 1
