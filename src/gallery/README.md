@@ -19,6 +19,8 @@ it is never bundled into the Tauri app.
   layouts, and the diagnostics row's own comment explains why.
 - **Screens**: Dashboard, Repos, Activity, Settings, the repository detail drawer and
   the whole app shell, each rendered from the real screen component.
+- **Proposals**: changed designs built from the real parts, never shipped. Each one is
+  labelled as a proposal in the nav and in its cells. See "Proposals" below.
 
 The control bar switches light and dark (the `.dark` class the app uses), the look
 (Today, Look A, Look B), the data state (populated, empty, loading, stress, all failed)
@@ -87,6 +89,33 @@ palette.
 
 Text needs 4.5:1. Borders and surface steps are not gated; they are listed so the
 difference between the looks can be read as a number as well as seen.
+
+## Proposals
+
+A proposal shows today's real screen and a changed version of it, one above the
+other, from the same fixtures. The changed version is composed in `src/gallery/`
+from the real primitives, so the shipped app does not change. A proposal follows
+the Dark, Look and Data switches like any other section.
+
+**Quiet Repos table** (`quiet-repos.tsx`). The Repos table with a proposed polish
+bar applied. The bar itself is a gitignored proposal for the maintainer, at
+`_local/audit/2026-11-13_fable52-plan/06_polish-bar.md` in the main checkout.
+
+- Healthy rows carry no colour and no chip. Only dirty, failed and no-upstream draw
+  a status chip. Paused is a muted word. Behind keeps its colour on the number.
+- Monospace is kept for branches, paths and versions only.
+- Column headers are sentence case in the sans face.
+- The status chip no longer repeats the Ahead and Behind counts.
+- Every row is one line at the compact 44px height.
+- The table's actions join the title row, so one toolbar band sits above the table.
+- Numbers are tabular and right-aligned, with their header over them.
+- A long path keeps its end visible and shows the full path as a tooltip.
+
+Two parts could not be composed. `DataTable` gained two opt-in props,
+`headerClassName` and a column's `headerAlign`; omitted, the table renders as
+before. `FilterChip` has no way to change its face, so the proposal overrides it
+with descendant selectors from a wrapper. Adopting the proposal would need a real
+prop on `FilterChip` instead.
 
 ## How it gets data
 
