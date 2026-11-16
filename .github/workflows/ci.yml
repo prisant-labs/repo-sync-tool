@@ -491,3 +491,136 @@ jobs:
 
       - name: pnpm audit (production dependencies)
         run: pnpm audit --prod
+
+  # ------------------------------------------------------------------------------------------
+  # Gallery screenshot check. Pull requests only.
+  #
+  # Builds the component gallery at the PR head and at the merge base, screenshots every
+  # section in light and dark with the same script, and writes a table of which sections
+  # changed pixels to the job summary. The base/head/diff PNGs go up as an artifact.
+  #
+  # It REPORTS and never fails on pixel differences: a design change is supposed to change
+  # pixels, and the point is that a reviewer sees which sections moved. It DOES fail when the
+  # head gallery does not build, the screenshot script errors, or the base has a gallery that cannot be captured, because then the check is
+  # broken, not the design.
+  #
+  # Its own job, not a step of `build`: it needs a Linux runner with a browser, and the
+  # branch-protection config names `build` legs, which must not change (see the header). So
+  # this reports a status nothing requires. Making it required is a maintainer decision.
+  #
+  # Both sides are shot by the HEAD's copy of tools/gallery-shots, in the same job on the same
+  # runner, so a font or rendering difference between runners cannot show up as a change.
+  # ------------------------------------------------------------------------------------------
+  gallery-screenshots:
+    name: gallery screenshots
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 30
+
+    steps:
+      # The PR head itself, not the synthetic merge commit the default checkout gives, so the
+      # pictures show exactly what the author pushed. Full history so the merge base exists.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Cache the downloaded browser, keyed on the Playwright version (a new version wants a
+      # new browser build). `install --with-deps` still runs after a cache hit: it downloads
+      # nothing then, but the runner needs the browser's system libraries installed each time.
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the Playwright browser
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      - name: Install the headless browser
+        run: pnpm exec playwright install --with-deps chromium-headless-shell
+
+      # A failure here fails the job: no head gallery means nothing to check.
+      - name: Build the head gallery
+        run: pnpm gallery:build
+
+      - name: Screenshot the head gallery
+        run: node tools/gallery-shots/shoot.mjs dist-gallery/gallery.html "$RUNNER_TEMP/shots/head"
+
+      # Only a VERIFIED absence of a base gallery (no `gallery:build` script in the base's
+      # package.json) skips the comparison and passes. If the base has a gallery and it fails
+      # to install, build or be photographed, the check cannot do its job, so this step records
+      # why and the last step of the job fails. The summary and the artifact are still written
+      # first, so the failure can be diagnosed from them.
+      - name: Build and screenshot the merge base
+        id: base
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base_sha="$(git merge-base "origin/$BASE_REF" HEAD)"
+          echo "Merge base: $base_sha"
+          git worktree add "$RUNNER_TEMP/base" "$base_sha"
+          cd "$RUNNER_TEMP/base"
+          if ! grep -q '"gallery:build"' package.json; then
+            echo "result=no-gallery" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! { pnpm install --frozen-lockfile && pnpm gallery:build; }; then
+            echo "result=build-failed" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Run the HEAD's script against the base's file, so both sides are shot the same way.
+          cd "$GITHUB_WORKSPACE"
+          if node tools/gallery-shots/shoot.mjs "$RUNNER_TEMP/base/dist-gallery/gallery.html" "$RUNNER_TEMP/shots/base"; then
+            echo "result=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=shoot-failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compare and write the summary
+        shell: bash
+        env:
+          BASE_RESULT: ${{ steps.base.outputs.result }}
+        run: |
+          case "$BASE_RESULT" in
+            ok)
+              node tools/gallery-shots/compare.mjs "$RUNNER_TEMP/shots/base" "$RUNNER_TEMP/shots/head" "$RUNNER_TEMP/shots/diff" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            no-gallery)
+              printf '## Gallery screenshot check\n\nNo base gallery: the merge base has no `gallery:build` script, so there is nothing to compare against.\n' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              printf '## Gallery screenshot check\n\nFAILED: the merge base has a gallery but it could not be built or screenshotted (%s), so there is no comparison. The head screenshots are in the artifact.\n' "$BASE_RESULT" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gallery-screenshots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # Last on purpose, after the summary and the upload. See the base step for the rule.
+      - name: Fail if the base gallery exists but could not be captured
+        if: steps.base.outputs.result != 'ok' && steps.base.outputs.result != 'no-gallery'
+        run: |
+          echo "::error::The merge base has a gallery, but its result was '${{ steps.base.outputs.result }}'."
+          exit 1
