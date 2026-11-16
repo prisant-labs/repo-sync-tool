@@ -1,5 +1,6 @@
 export type Theme = "light" | "dark";
-export type ShotStatus = "same" | "changed" | "size-changed" | "added" | "removed";
+export const NOISE_FLOOR: number;
+export type ShotStatus = "same" | "noise" | "changed" | "size-changed" | "added" | "removed";
 export interface Size {
   width: number;
   height: number;
@@ -19,6 +20,7 @@ export function classifyShot(
   base: Size | null,
   head: Size | null,
   changed?: number,
+  noiseFloor?: number,
 ): Omit<ShotResult, "section" | "theme">;
 export function formatPercent(changed: number, total: number): string;
 export function buildSummary(results: ShotResult[]): string;

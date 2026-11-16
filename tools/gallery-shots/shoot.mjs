@@ -66,6 +66,7 @@ const EXTRA_STATES = [
         await page.getByRole("button", { name: label, exact: true }).click();
       }
     },
+    target: (page) => page.getByText("Could not reach the remote.", { exact: true }),
     async expectVisible(page) {
       for (const text of ["Your change was saved.", "Something to know.", "Could not reach the remote."]) {
         await page.getByText(text, { exact: true }).waitFor({ state: "visible", timeout: 3000 });
@@ -79,6 +80,7 @@ const EXTRA_STATES = [
     async open(page) {
       await page.getByRole("button", { name: /^Columns/ }).click();
     },
+    target: (page) => page.getByRole("region", { name: "Choose and reorder columns" }),
     async expectVisible(page) {
       await page.getByRole("region", { name: "Choose and reorder columns" }).waitFor({ state: "visible", timeout: 3000 });
     },
@@ -90,6 +92,7 @@ const EXTRA_STATES = [
     async open(page) {
       await page.getByRole("button", { name: /^Columns/ }).click();
     },
+    target: (page) => page.getByRole("region", { name: "Choose and reorder columns" }),
     async expectVisible(page) {
       await page.getByRole("region", { name: "Choose and reorder columns" }).waitFor({ state: "visible", timeout: 3000 });
     },
@@ -101,6 +104,7 @@ const EXTRA_STATES = [
     async open(page) {
       await page.getByRole("button", { name: "Add this repo to a group" }).click();
     },
+    target: (page) => page.getByRole("button", { name: "Add this repo to a group", expanded: true }),
     async expectVisible(page) {
       await page
         .getByRole("button", { name: "Add this repo to a group", expanded: true })
@@ -114,6 +118,7 @@ const EXTRA_STATES = [
     async open(page) {
       await page.getByRole("button", { name: "Open receipt" }).first().click();
     },
+    target: (page) => page.locator("#activity-receipt-title"),
     async expectVisible(page) {
       await page.locator("#activity-receipt-title").waitFor({ state: "visible", timeout: 3000 });
     },
@@ -139,21 +144,53 @@ const HOLD_TOAST_TIMERS = `
   })();
 `;
 
-/** Resizes the viewport to show the whole section, settles, and saves one PNG. */
-async function capture(page, file) {
+// The element every picture is cut to: the section's own content, below the gallery's
+// title. The nav, the control bar and the page header are outside it on purpose. A change
+// to the gallery's own chrome (a new nav entry, a new switch) must not show up as a change
+// to every section; only a change to what the section renders should.
+const CONTENT = '[data-testid="gallery-main"] > div:last-child';
+
+/**
+ * Grows the viewport until the whole section is on screen, settles, and saves one PNG of
+ * the section's content only. `contained` is an optional locator (a toast, an open panel)
+ * that the cut is widened to include, in case it spills past the section's own box.
+ */
+async function capture(page, file, contained) {
   await page.setViewportSize({ width: VIEWPORT_WIDTH, height: START_HEIGHT });
   await waitForSettled(page);
-  // The gallery's main pane scrolls inside a screen-high shell, so grow the
-  // viewport until the whole section is visible in one picture.
-  const extra = await page.$eval('[data-testid="gallery-main"]', (m) => m.scrollHeight - m.clientHeight);
-  if (extra > 0) {
+  const overflow = await page.$eval('[data-testid="gallery-main"]', (m) => m.scrollHeight - m.clientHeight);
+  if (overflow > 0) {
+    // Rounded up to a whole 100 px, so a taller control bar (a few pixels of chrome) cannot
+    // change the viewport height a section is laid out in.
+    const grow = Math.ceil(overflow / 100) * 100;
     await page.setViewportSize({
       width: VIEWPORT_WIDTH,
-      height: Math.min(START_HEIGHT + extra, MAX_HEIGHT),
+      height: Math.min(START_HEIGHT + grow, MAX_HEIGHT),
     });
     await waitForSettled(page);
   }
-  await page.screenshot({ path: file, animations: "disabled" });
+  // The cut is the section's content box, widened to take in an opened specimen that
+  // spills past it (a popover opening below the last cell, say), so nothing opened is lost.
+  const box = await page.locator(CONTENT).boundingBox();
+  if (!box) throw new Error("the section has no content to photograph");
+  let clip = box;
+  if (contained) {
+    const inner = await contained.boundingBox();
+    if (!inner) throw new Error("the opened specimen has no box");
+    const left = Math.min(box.x, inner.x);
+    const top = Math.min(box.y, inner.y);
+    const right = Math.max(box.x + box.width, inner.x + inner.width);
+    const bottom = Math.max(box.y + box.height, inner.y + inner.height);
+    clip = { x: left, y: top, width: right - left, height: bottom - top };
+  }
+  // Whole pixels, so the picture size does not depend on a fractional layout position.
+  const x = Math.floor(clip.x);
+  const y = Math.floor(clip.y);
+  await page.screenshot({
+    path: file,
+    animations: "disabled",
+    clip: { x, y, width: Math.ceil(clip.x + clip.width) - x, height: Math.ceil(clip.y + clip.height) - y },
+  });
 }
 
 /** Waits until the main pane's markup is identical across several checks in a row. */
@@ -227,7 +264,7 @@ async function main() {
             await extra.open(page);
             await extra.expectVisible(page);
             await page.mouse.move(VIEWPORT_WIDTH - 2, 2);
-            await capture(page, path.join(outDir, shotName(`${id}--${extra.name}`, theme)));
+            await capture(page, path.join(outDir, shotName(`${id}--${extra.name}`, theme)), extra.target(page));
           } catch (error) {
             failures.push(`${label}: ${error.message.split("\n")[0]}`);
           }
