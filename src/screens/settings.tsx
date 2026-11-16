@@ -1,5 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw, RotateCcw, Save } from "lucide-react";
 import { commands } from "@/lib/bindings";
 import type { Settings, UpdateAvailability } from "@/lib/bindings";
@@ -7,15 +6,13 @@ import { IpcError, unwrap } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { FieldLabelContext } from "@/components/ui/field-label";
 import { AsyncPanel } from "@/components/async-panel";
 import { DiagnosticsCard } from "@/components/diagnostics-card";
 import { PageShell } from "@/components/page-shell";
 import { useSettings } from "@/hooks/queries";
 import { useAppVersion } from "@/hooks/use-app-version";
-import { hhMmToMinutes, minutesToHhMm } from "@/lib/time";
+import { SettingsField, NumberInput, TextInput, TimeInput } from "@/components/recipes/settings-fields";
 import { useToast } from "@/hooks/use-toast";
 
 /**
@@ -292,12 +289,12 @@ export function SettingsScreen({ dark, onToggleTheme }: { dark: boolean; onToggl
             <CardTitle>Appearance</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
-            <Field
+            <SettingsField
               label="Dark theme"
               hint="Applies immediately. Not saved yet - RepoSync starts in light theme each launch."
             >
               <Switch checked={dark} onCheckedChange={() => onToggleTheme()} />
-            </Field>
+            </SettingsField>
           </CardContent>
         </Card>
       </section>
@@ -384,14 +381,14 @@ function SettingsForm({
           <CardTitle>Schedule</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Field label="Global cadence" hint="Minutes between automatic checks.">
+          <SettingsField label="Global cadence" hint="Minutes between automatic checks.">
             <NumberInput
               value={draft.globalCheckMinutes}
               min={1}
               onChange={(v) => set("globalCheckMinutes", v)}
               suffix="min"
             />
-          </Field>
+          </SettingsField>
           {/*
             The hint used to say only "Pause scheduled checks during a daily
             window", which describes half of what the setting does. The same
@@ -412,7 +409,7 @@ function SettingsForm({
             ends, so "silence" means postponed here, not lost, and the hint says
             which one it means.
           */}
-          <Field
+          <SettingsField
             label="Quiet hours"
             hint="Pause scheduled checks and silence notifications during a daily window (local clock). When the window ends, paused checks resume and any notifications held back during it arrive then."
           >
@@ -425,9 +422,9 @@ function SettingsForm({
                 set("quietHoursEnd", on ? 7 * 60 : null);
               }}
             />
-          </Field>
+          </SettingsField>
           {quietOn && (
-            <Field label="Quiet window" hint="From start time to end time, your local clock.">
+            <SettingsField label="Quiet window" hint="From start time to end time, your local clock.">
               <TimeInput
                 aria-label="Quiet window start"
                 value={draft.quietHoursStart ?? 0}
@@ -439,7 +436,7 @@ function SettingsForm({
                 value={draft.quietHoursEnd ?? 0}
                 onChange={(v) => set("quietHoursEnd", v)}
               />
-            </Field>
+            </SettingsField>
           )}
         </CardContent>
       </Card>
@@ -451,18 +448,18 @@ function SettingsForm({
           <CardTitle>Notifications</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Field label="Notify on new release" hint="A tray notification when an upstream release appears.">
+          <SettingsField label="Notify on new release" hint="A tray notification when an upstream release appears.">
             <Switch
               checked={draft.notifyOnRelease}
               onCheckedChange={(v) => set("notifyOnRelease", v)}
             />
-          </Field>
-          <Field label="Notify on failure" hint="A tray notification when a check or update fails.">
+          </SettingsField>
+          <SettingsField label="Notify on failure" hint="A tray notification when a check or update fails.">
             <Switch
               checked={draft.notifyOnFailure}
               onCheckedChange={(v) => set("notifyOnFailure", v)}
             />
-          </Field>
+          </SettingsField>
         </CardContent>
       </Card>
       </section>
@@ -473,13 +470,13 @@ function SettingsForm({
           <CardTitle>System</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <Field label="Launch on login" hint="Start RepoSync automatically when you sign in.">
+          <SettingsField label="Launch on login" hint="Start RepoSync automatically when you sign in.">
             <Switch
               checked={draft.autostart}
               onCheckedChange={(v) => set("autostart", v)}
             />
-          </Field>
-          <Field
+          </SettingsField>
+          <SettingsField
             label="Close button minimizes to tray"
             hint="When off, the close (X) button quits RepoSync instead of hiding it to the tray."
           >
@@ -487,24 +484,24 @@ function SettingsForm({
               checked={draft.closeMinimizesToTray}
               onCheckedChange={(v) => set("closeMinimizesToTray", v)}
             />
-          </Field>
-          <Field label="Activity retention" hint="Days of activity history to keep.">
+          </SettingsField>
+          <SettingsField label="Activity retention" hint="Days of activity history to keep.">
             <NumberInput
               value={draft.activityRetentionD}
               min={1}
               onChange={(v) => set("activityRetentionD", v)}
               suffix="days"
             />
-          </Field>
-          <Field label="Git executable" hint="Leave blank to use the git on your PATH.">
+          </SettingsField>
+          <SettingsField label="Git executable" hint="Leave blank to use the git on your PATH.">
             <TextInput value={draft.gitExecutablePath} onChange={(v) => set("gitExecutablePath", v)} placeholder="auto" />
-          </Field>
-          <Field label="Editor command" hint="Used by Open in editor.">
+          </SettingsField>
+          <SettingsField label="Editor command" hint="Used by Open in editor.">
             <TextInput value={draft.editorCommand} onChange={(v) => set("editorCommand", v)} placeholder="code" />
-          </Field>
-          <Field label="Terminal command" hint="Used by Open in terminal.">
+          </SettingsField>
+          <SettingsField label="Terminal command" hint="Used by Open in terminal.">
             <TextInput value={draft.terminalCommand} onChange={(v) => set("terminalCommand", v)} placeholder="default" />
-          </Field>
+          </SettingsField>
         </CardContent>
       </Card>
       </section>
@@ -538,7 +535,7 @@ function SettingsForm({
             the whole app, not per repo. Keeping that visible is the reason the
             row stays instead of being hidden until BL-V11-02 (keyring PAT).
           */}
-          <Field
+          <SettingsField
             label="GitHub token"
             hint="RepoSync reads GitHub without signing in. GitHub allows 60 requests an hour that way, shared across all your repos."
           >
@@ -557,7 +554,7 @@ function SettingsForm({
               */}
               {draft.githubTokenPresent ? "present" : "not supported yet"}
             </span>
-          </Field>
+          </SettingsField>
         </CardContent>
       </Card>
       </section>
@@ -660,15 +657,15 @@ function UpdatesCard({
         <CardTitle>Updates</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
-        <Field label="RepoSync version" hint="The version you are running now.">
+        <SettingsField label="RepoSync version" hint="The version you are running now.">
           <span className="font-mono text-cell font-semibold text-foreground">{version ?? "unknown"}</span>
-        </Field>
-        <Field
+        </SettingsField>
+        <SettingsField
           label="Check for updates on launch"
           hint="RepoSync looks for a new version when it starts. You always confirm before anything installs - nothing updates silently."
         >
           <Switch checked={autoUpdateCheck} onCheckedChange={onToggle} />
-        </Field>
+        </SettingsField>
         <div className="flex flex-col gap-3 border-t border-border px-4 py-3">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
@@ -777,115 +774,10 @@ function AboutCard() {
         <CardTitle>About</CardTitle>
       </CardHeader>
       <CardContent className="p-0">
-        <Field label="RepoSync version" hint="The version you are running now.">
+        <SettingsField label="RepoSync version" hint="The version you are running now.">
           <span className="font-mono text-cell font-semibold text-foreground">{version ?? "unknown"}</span>
-        </Field>
+        </SettingsField>
       </CardContent>
     </Card>
   );
 }
-
-// Owns the accessible-name association for whatever control it wraps
-// (BL-NI-90). The label text carries a generated id and every descendant
-// control reads it through `FieldLabelContext`, so a control placed in a
-// `Field` is named without its call site doing anything - see
-// `ui/field-label.tsx` for why the association is `aria-labelledby` rather
-// than a `<label htmlFor>`.
-//
-// The hint is deliberately NOT part of the name. It is a sentence of
-// explanation, and gluing it to the name would make a screen reader read the
-// whole paragraph before saying on or off.
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  const labelId = useId();
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3 last:border-b-0">
-      <div className="min-w-0">
-        <div id={labelId} className="text-body font-medium">
-          {label}
-        </div>
-        {hint && <div className="text-cell text-muted-foreground">{hint}</div>}
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <FieldLabelContext.Provider value={labelId}>{children}</FieldLabelContext.Provider>
-      </div>
-    </div>
-  );
-}
-
-function NumberInput({
-  value,
-  min,
-  max,
-  suffix,
-  onChange,
-}: {
-  value: number;
-  min?: number;
-  max?: number;
-  suffix?: string;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <Input
-        type="number"
-        className="w-20 text-right"
-        value={value}
-        min={min}
-        max={max}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      {suffix && <span className="text-cell text-muted-foreground">{suffix}</span>}
-    </div>
-  );
-}
-
-function TextInput({
-  value,
-  placeholder,
-  onChange,
-}: {
-  value: string | null;
-  placeholder?: string;
-  onChange: (value: string | null) => void;
-}) {
-  return (
-    <Input
-      className="w-48"
-      value={value ?? ""}
-      placeholder={placeholder}
-      spellCheck={false}
-      onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}
-    />
-  );
-}
-
-/** A native time picker bound to a minute-of-day integer (0..1439). */
-// `aria-label` is REQUIRED here, unlike on `Switch` and `Input` where an
-// enclosing `Field` supplies the name. Two TimeInputs share one `Field`
-// ("Quiet window"), and a `Field` hands the SAME label id to every control
-// inside it, so inheriting would name both endpoints identically and leave a
-// screen-reader user unable to tell start from end - they could invert their
-// own quiet hours. Caught by the Codex adversarial review of this change; the
-// automatic naming was right for the twelve single-control fields and wrong
-// for the one field with two.
-function TimeInput({
-  value,
-  onChange,
-  "aria-label": ariaLabel,
-}: {
-  value: number;
-  onChange: (value: number) => void;
-  "aria-label": string;
-}) {
-  return (
-    <Input
-      type="time"
-      className="w-32"
-      aria-label={ariaLabel}
-      value={minutesToHhMm(value)}
-      onChange={(e) => onChange(hhMmToMinutes(e.target.value))}
-    />
-  );
-}
-

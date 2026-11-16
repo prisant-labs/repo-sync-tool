@@ -28,6 +28,8 @@ import {
   XCircle,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { OptionCard, RadioDot } from "@/components/recipes/option-card";
+import { GroupChip, GroupDot } from "@/components/recipes/group-chip";
 import { commands } from "@/lib/bindings";
 import type {
   ActivityRecord,
@@ -750,11 +752,13 @@ function DetailBody({
               <SectionLabel icon={SlidersHorizontal}>Update policy</SectionLabel>
               <div className="flex flex-col gap-1.5">
                 {POLICY_OPTIONS.map((opt) => (
-                  <PolicyOption
+                  <OptionCard
                     key={opt.mode}
-                    opt={opt}
-                    current={r.updateMode}
-                    disabled={isBusy}
+                    label={opt.label}
+                    description={opt.blurb}
+                    active={opt.mode === r.updateMode}
+                    disabled={isBusy || opt.disabled}
+                    dimmed={opt.disabled}
                     onSelect={() =>
                       run(
                         "policy",
@@ -982,42 +986,6 @@ function SectionLabel({ icon: Icon, children }: { icon?: LucideIcon; children: R
   );
 }
 
-/** The small colour dot used by both group pills and the add-to-group candidates. */
-function GroupDot({ color }: { color: string | null }) {
-  return (
-    <span
-      className={cn("size-2 shrink-0 rounded-full", color === null && "bg-muted-foreground/50")}
-      style={color ? { backgroundColor: color } : undefined}
-    />
-  );
-}
-
-function GroupPill({
-  group,
-  busy,
-  onRemove,
-}: {
-  group: GroupSummary;
-  busy: boolean;
-  onRemove: () => void;
-}) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-2 text-cell font-medium">
-      <GroupDot color={group.color} />
-      {group.name}
-      <button
-        type="button"
-        aria-label={`Remove from ${group.name}`}
-        disabled={busy}
-        onClick={onRemove}
-        className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
-      >
-        <X className="size-3" />
-      </button>
-    </span>
-  );
-}
-
 /**
  * Member-only group pills on the third header line (G2, ui-delivery-plan.md
  * ledger B7): only groups this repo actually belongs to render as pills, each
@@ -1059,8 +1027,9 @@ function GroupPills({
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
         {memberGroups.map((g) => (
-          <GroupPill
+          <GroupChip
             key={g.id}
+            variant="removable"
             group={g}
             busy={groupBusyId === g.id}
             onRemove={() => onToggleGroup(g, true)}
@@ -1131,27 +1100,19 @@ function CadenceSection({
     <section>
       <SectionLabel icon={Clock}>Check cadence</SectionLabel>
       <div className="flex flex-col gap-1.5">
-        <button
-          type="button"
-          disabled={isBusy || isInherit}
-          onClick={() =>
+        <OptionCard
+          label="Inherit global"
+          description={
+            globalMinutes !== null
+              ? `Follows the global cadence (every ${globalMinutes} min). Changing the global setting re-cadences this repo.`
+              : "Follows the global cadence. Changing the global setting re-cadences this repo."
+          }
+          active={isInherit}
+          disabled={isBusy}
+          onSelect={() =>
             run("cadence", () => unwrap(commands.repoSetCadence(r.id, 0)), "Cadence set to inherit global")
           }
-          className={cn(
-            "flex items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed",
-            isInherit ? "border-primary bg-primary/10" : "border-border hover:bg-muted",
-          )}
-        >
-          <CadenceRadio active={isInherit} />
-          <span className="min-w-0">
-            <span className="block text-body font-medium">Inherit global</span>
-            <span className="block text-cell text-muted-foreground">
-              {globalMinutes !== null
-                ? `Follows the global cadence (every ${globalMinutes} min). Changing the global setting re-cadences this repo.`
-                : "Follows the global cadence. Changing the global setting re-cadences this repo."}
-            </span>
-          </span>
-        </button>
+        />
 
         <div
           className={cn(
@@ -1160,7 +1121,7 @@ function CadenceSection({
           )}
         >
           <div className="flex items-start gap-3">
-            <CadenceRadio active={!isInherit} />
+            <RadioDot active={!isInherit} />
             <span className="min-w-0">
               <span className="block text-body font-medium">Custom interval</span>
               <span className="block text-cell text-muted-foreground">
@@ -1199,20 +1160,6 @@ function CadenceSection({
         Effective cadence: {effective !== null ? `every ${effective} min` : "loading..."}
       </p>
     </section>
-  );
-}
-
-/** The small filled/empty radio dot used by the cadence option cards. */
-function CadenceRadio({ active }: { active: boolean }) {
-  return (
-    <span
-      className={cn(
-        "mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border",
-        active ? "border-primary" : "border-muted-foreground/40",
-      )}
-    >
-      {active && <span className="size-2 rounded-full bg-primary" />}
-    </span>
   );
 }
 
@@ -1267,45 +1214,6 @@ function OpenButton({
     <Button variant="secondary" size="sm" disabled={disabled} title={title} onClick={onClick}>
       <Icon /> {label}
     </Button>
-  );
-}
-
-function PolicyOption({
-  opt,
-  current,
-  disabled,
-  onSelect,
-}: {
-  opt: (typeof POLICY_OPTIONS)[number];
-  current: string;
-  disabled: boolean;
-  onSelect: () => void;
-}) {
-  const active = opt.mode === current;
-  return (
-    <button
-      type="button"
-      disabled={disabled || opt.disabled || active}
-      onClick={onSelect}
-      className={cn(
-        "flex items-start gap-3 rounded-md border px-3 py-2 text-left transition-colors disabled:cursor-not-allowed",
-        active ? "border-primary bg-primary/10" : "border-border hover:bg-muted",
-        opt.disabled && "opacity-50",
-      )}
-    >
-      <span
-        className={cn(
-          "mt-0.5 grid size-4 shrink-0 place-items-center rounded-full border",
-          active ? "border-primary" : "border-muted-foreground/40",
-        )}
-      >
-        {active && <span className="size-2 rounded-full bg-primary" />}
-      </span>
-      <span className="min-w-0">
-        <span className="block text-body font-medium">{opt.label}</span>
-        <span className="block text-cell text-muted-foreground">{opt.blurb}</span>
-      </span>
-    </button>
   );
 }
 
