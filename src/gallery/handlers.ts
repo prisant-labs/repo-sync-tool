@@ -8,6 +8,16 @@ import type {
   Settings,
 } from "@/lib/bindings";
 import {
+  ALL_FAILED_ACTIVITY,
+  ALL_FAILED_REPOS,
+  ALL_FAILED_SUMMARY,
+  STRESS_ACTIVITY,
+  STRESS_GROUPS,
+  STRESS_MEMBERSHIPS,
+  STRESS_REPOS,
+  STRESS_SUMMARY,
+} from "@/gallery/fixtures-stress";
+import {
   ACTIVITY,
   DB_RECOVERY,
   DIAGNOSTICS,
@@ -163,13 +173,24 @@ type MutableGroup = { id: number; name: string; color: string | null };
  */
 export function createWorld(scenario: Scenario) {
   const empty = scenario === "empty";
-  const repos: RepoSummary[] = empty ? [] : REPOS.map((r) => ({ ...r }));
-  const groups: MutableGroup[] = empty ? [] : GROUPS.map((g) => ({ id: g.id, name: g.name, color: g.color }));
-  const members = new Map<number, number[]>(empty ? [] : MEMBERSHIPS.map((m) => [m.repoId, [...m.groupIds]]));
+  const stress = scenario === "stress" || scenario === "allFailed";
+  const failedAll = scenario === "allFailed";
+  const sourceRepos = empty ? [] : failedAll ? ALL_FAILED_REPOS : stress ? STRESS_REPOS : REPOS;
+  const sourceGroups = empty ? [] : stress ? STRESS_GROUPS : GROUPS;
+  const sourceMembers = empty ? [] : stress ? STRESS_MEMBERSHIPS : MEMBERSHIPS;
+  const sourceActivity = empty ? [] : failedAll ? ALL_FAILED_ACTIVITY : stress ? STRESS_ACTIVITY : ACTIVITY;
+  const summary = failedAll
+    ? ALL_FAILED_SUMMARY
+    : stress
+      ? STRESS_SUMMARY
+      : { updated: SUMMARY_UPDATED, newReleases: SUMMARY_RELEASES, attention: SUMMARY_ATTENTION };
+  const repos: RepoSummary[] = sourceRepos.map((r) => ({ ...r }));
+  const groups: MutableGroup[] = sourceGroups.map((g) => ({ id: g.id, name: g.name, color: g.color }));
+  const members = new Map<number, number[]>(sourceMembers.map((m) => [m.repoId, [...m.groupIds]]));
   const cadence = new Map<number, number>();
   let settings: Settings = { ...SETTINGS };
-  const activity: ActivityRecord[] = empty ? [] : ACTIVITY.map((a) => ({ ...a }));
-  return { repos, groups, members, cadence, activity, getSettings: () => settings, setSettings: (s: Settings) => (settings = s) };
+  const activity: ActivityRecord[] = sourceActivity.map((a) => ({ ...a }));
+  return { repos, groups, members, cadence, activity, summary, getSettings: () => settings, setSettings: (s: Settings) => (settings = s) };
 }
 
 export type World = ReturnType<typeof createWorld>;
@@ -317,9 +338,9 @@ export function createHandlers(world: World): Handlers {
     summaryToday: (groupId) => {
       const scoped = (item: { repoId: number }) =>
         repos.some((r) => r.id === item.repoId) && (groupId === null || inGroup(item.repoId, groupId));
-      const updated = SUMMARY_UPDATED.filter(scoped);
-      const newReleases = SUMMARY_RELEASES.filter(scoped);
-      const attention = SUMMARY_ATTENTION.filter(scoped);
+      const updated = world.summary.updated.filter(scoped);
+      const newReleases = world.summary.newReleases.filter(scoped);
+      const attention = world.summary.attention.filter(scoped);
       const touched = new Set([...updated, ...attention].map((i) => i.repoId));
       return {
         date: new Date(NOW * 1000).toISOString().slice(0, 10),

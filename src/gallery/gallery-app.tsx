@@ -4,11 +4,14 @@ import { SECTIONS, GROUP_ORDER, COMPARE_ID } from "@/gallery/sections";
 import { LOOKS, ThemeContext, type LookId } from "@/gallery/looks";
 import { setScenario } from "@/gallery/stub-ipc";
 import type { Scenario } from "@/gallery/fixtures";
+import { WINDOWS, WindowContext, type WindowId } from "@/gallery/window-frame";
 
 const SCENARIOS: { value: Scenario; label: string }[] = [
   { value: "populated", label: "Populated" },
   { value: "empty", label: "Empty" },
   { value: "loading", label: "Loading" },
+  { value: "stress", label: "Stress (200)" },
+  { value: "allFailed", label: "All failed" },
 ];
 
 /**
@@ -27,6 +30,7 @@ export function GalleryApp() {
   const [scenario, setScenarioState] = useState<Scenario>("populated");
   // Bumped on every scenario change so the section remounts and its data hooks
   // refetch under the new scenario.
+  const [windowId, setWindowId] = useState<WindowId>("natural");
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -66,6 +70,7 @@ export function GalleryApp() {
 
   return (
     <ThemeContext.Provider value={dark}>
+    <WindowContext.Provider value={{ windowId, scenario, look }}>
     <div
       data-look={shellLook}
       className={cn("flex h-screen bg-background text-foreground", dark && "dark")}
@@ -143,6 +148,25 @@ export function GalleryApp() {
               </button>
             ))}
           </div>
+          <div className="flex items-center gap-2" role="group" aria-label="Window">
+            <span className="text-muted-foreground">Window</span>
+            {WINDOWS.map((w) => (
+              <button
+                key={w.id}
+                type="button"
+                aria-pressed={windowId === w.id}
+                onClick={() => setWindowId(w.id)}
+                className={cn(
+                  "rounded-md border px-2.5 py-1",
+                  windowId === w.id
+                    ? "border-primary bg-primary/10 font-semibold text-primary-ink"
+                    : "border-border text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
         </header>
 
         <main className="min-h-0 flex-1 overflow-y-auto p-6" data-testid="gallery-main">
@@ -152,6 +176,7 @@ export function GalleryApp() {
         </main>
       </div>
     </div>
+    </WindowContext.Provider>
     </ThemeContext.Provider>
   );
 }

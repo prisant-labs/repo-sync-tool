@@ -23,12 +23,40 @@ it is never bundled into the Tauri app.
   labelled as a proposal in the nav and in its cells. See "Proposals" below.
 
 The control bar switches light and dark (the `.dark` class the app uses), the look
-(Today, Look A, Look B) and the data state (populated, empty, loading). `.dark` and
+(Today, Look A, Look B), the data state (populated, empty, loading, stress, all failed)
+and the window (Natural, 1024px, 1024px at 150%). The window frames only the Screens
+cells; see "Stress cases". `.dark` and
 `data-look` always sit on the same element, which is what the override blocks in
 `src/index.css` are written for. "Today" sets no `data-look` at all, exactly like the
 shipped app. Everything switches in-page, because the built file has no server and no
 query string. Drawers, dialogs and toasts stay inside their cell, because each
 overlay cell has a CSS `transform`, which contains `position: fixed`.
+
+## Stress cases
+
+A design that only works on eight tidy repositories is not scalable, so two data
+states exist to be looked at, not to be passed.
+
+- **Stress (200)**: 200 repositories from `fixtures-stress.ts`, generated from the
+  index with no randomness, so a screenshot is stable. Names run to about 130
+  characters, local paths to about 150, branches and remote URLs are long, ahead and
+  behind reach five figures, there are 25 groups (several with sentence-length
+  names), and some repositories carry long error codes the app has not been taught.
+- **All failed**: the same 200, every one in a failed state, with ten different
+  error codes, so the "everything is wrong" screen can be judged.
+- **Window**: frames each Screens cell as a window. `1024px` is 1024 CSS pixels.
+  `1024px at 150%` reproduces Windows display scaling: a 1024 physical pixel window
+  at 150% lays out in 683 CSS pixels (1024 / 1.5) drawn 1.5x larger. Each framed
+  cell is an IFRAME of that width that loads this same built file with a location
+  hash (`#frame=repos&state=stress&look=today&dark=0`), which renders one screen
+  full-bleed. An iframe has its own CSS viewport, so the drawer's `vw` width, the
+  dialogs' `vh` height, the shell's `svh` and the Dashboard's `md:` breakpoint all
+  follow the frame and not the gallery page. The 150% frame is presented with an
+  external `transform: scale(1.5)` from the top left, in a wrapper of the scaled
+  size. A Settings theme toggle inside a frame changes that frame only.
+
+Tests in `stress.test.tsx` pin the fixture (200 unique ids), the stub answers per
+data state, and the Window frames.
 
 ## Comparing looks
 
