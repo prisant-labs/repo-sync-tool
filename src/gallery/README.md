@@ -77,6 +77,39 @@ pnpm gallery:dev     # dev server on port 1422 (never 1420, which Tauri owns); o
 Double-click `dist-gallery/gallery.html` to open the build. `dist-gallery/` is
 gitignored.
 
+## Screenshot check
+
+Every pull request runs the `gallery screenshots` job in `.github/workflows/ci.yml`. It
+builds the gallery at the PR head and at the merge base, photographs every section in
+light and dark (default "Today" look, populated data), compares the two sets pixel by
+pixel, and writes a table of the sections that changed to the job summary. The base, head
+and diff PNGs are attached as the `gallery-screenshots` artifact.
+
+The job reports and does not fail on pixel differences. It fails only if the head gallery
+does not build or the script errors. If the merge base has no `gallery:build` script, it
+says "No base gallery" and passes.
+
+The tools are in `tools/gallery-shots/`. The script drives the gallery's own controls, so
+a new section is photographed without any change there. Output is made repeatable with a
+fixed 1440 pixel viewport, a frozen clock, no animations and a wait for fonts.
+
+To run it locally, with the base and head each built into their own copy of the gallery:
+
+```sh
+pnpm exec playwright install chromium-headless-shell   # once
+pnpm gallery:build
+cp dist-gallery/gallery.html /tmp/base.html            # keep the "before" build
+# ...make your change, then:
+pnpm gallery:build
+node tools/gallery-shots/shoot.mjs /tmp/base.html /tmp/shots/base
+node tools/gallery-shots/shoot.mjs dist-gallery/gallery.html /tmp/shots/head
+node tools/gallery-shots/compare.mjs /tmp/shots/base /tmp/shots/head /tmp/shots/diff
+```
+
+Shooting the same build twice must report zero changed pixels. Screenshots taken on
+Windows and on the CI's Linux runner differ in font rendering, so compare only runs from
+the same machine.
+
 ## The rule
 
 **Every new shared component, and every new variant or state of an existing one,
