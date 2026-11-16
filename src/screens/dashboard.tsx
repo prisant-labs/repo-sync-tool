@@ -228,7 +228,7 @@ export function DashboardScreen({
             return (
               <div className="flex flex-col gap-3">
                 {activeGroupId !== null && (
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <div className="flex items-center gap-1.5 text-cell font-medium text-muted-foreground">
                     {activeGroup ? (
                       <>
                         <span
@@ -305,7 +305,7 @@ export function DashboardScreen({
                 <Card>
                   <CardHeader>
                     <CardTitle>Needs attention</CardTitle>
-                    <button onClick={onOpenRepos} className="ml-auto text-xs font-medium text-primary-ink">
+                    <button onClick={onOpenRepos} className="ml-auto text-cell font-medium text-primary-ink">
                       Open Repos
                     </button>
                   </CardHeader>
@@ -390,11 +390,12 @@ function Tile({
           "cursor-pointer transition-colors hover:border-muted-foreground/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
       )}
     >
-      <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      <div className="text-meta font-semibold uppercase tracking-wider text-muted-foreground">{label}</div>
+      {/* eslint-disable-next-line local/no-raw-text-size -- 30px stat value has no named size yet; dashboard.test.tsx also selects it by this class */}
       <div className={cn("mt-1.5 font-mono text-3xl font-bold tracking-tight", alert && "text-status-failed")}>
         {value}
       </div>
-      <div className="mt-1.5 text-xs text-muted-foreground">{hint}</div>
+      <div className="mt-1.5 text-cell text-muted-foreground">{hint}</div>
     </Wrapper>
   );
 }
@@ -572,7 +573,7 @@ function attentionReasons(repo: RepoSummary | undefined, fallbackDetail: string 
 
 function ReasonPill({ icon: Icon, label, tone, title }: Reason) {
   return (
-    <span className={cn("inline-flex items-center gap-1 text-xs font-medium", tone)} title={title}>
+    <span className={cn("inline-flex items-center gap-1 text-cell font-medium", tone)} title={title}>
       <Icon aria-hidden className="size-3 shrink-0" />
       {label}
     </span>
@@ -604,7 +605,7 @@ function AttentionRow({
       >
         <Icon className={cn("mt-0.5 size-4 shrink-0", STATUS_STYLE[status].text)} />
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-sm font-semibold">{item.localName}</div>
+          <div className="truncate font-mono text-body font-semibold">{item.localName}</div>
           {reasons.length > 0 && (
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
               {/*

@@ -48,8 +48,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             >
               <Icon className={cn("mt-0.5 size-4 shrink-0", TONE[t.kind])} />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold">{t.title}</div>
-                {t.message && <div className="mt-0.5 text-xs text-muted-foreground">{t.message}</div>}
+                <div className="text-body font-semibold">{t.title}</div>
+                {t.message && <div className="mt-0.5 text-cell text-muted-foreground">{t.message}</div>}
               </div>
               <button
                 onClick={() => dismiss(t.id)}

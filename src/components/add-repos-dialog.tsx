@@ -128,10 +128,10 @@ export function AddReposDialog({
   return (
     <Dialog open={open} onClose={close} aria-labelledby={ADD_REPOS_DIALOG_TITLE_ID}>
       <div className="border-b border-border px-5 py-4">
-        <h2 id={ADD_REPOS_DIALOG_TITLE_ID} className="text-base font-semibold">
+        <h2 id={ADD_REPOS_DIALOG_TITLE_ID} className="text-heading font-semibold">
           Add repositories
         </h2>
-        <p className="mt-0.5 text-sm text-muted-foreground">
+        <p className="mt-0.5 text-body text-muted-foreground">
           Browse for a folder or type a path, then scan it for git repositories or add a single repository directly.
         </p>
       </div>
@@ -158,7 +158,7 @@ export function AddReposDialog({
         {candidates !== null && (
           <div className="max-h-72 overflow-auto rounded-md border border-border">
             {candidates.length === 0 ? (
-              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+              <div className="px-3 py-6 text-center text-body text-muted-foreground">
                 No git repositories found in that folder.
               </div>
             ) : (
@@ -180,11 +180,11 @@ export function AddReposDialog({
                       className="size-4 accent-primary"
                     />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-mono text-sm font-medium">{c.localName}</div>
-                      <div className="truncate font-mono text-[11px] text-muted-foreground">{c.localPath}</div>
+                      <div className="truncate font-mono text-body font-medium">{c.localName}</div>
+                      <div className="truncate font-mono text-meta text-muted-foreground">{c.localPath}</div>
                     </div>
                     {c.alreadyTracked && (
-                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-micro font-semibold uppercase text-muted-foreground">
                         tracked
                       </span>
                     )}

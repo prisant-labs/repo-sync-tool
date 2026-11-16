@@ -131,7 +131,7 @@ function NavButton({
       onClick={onClick}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-sm transition-colors",
+        "flex items-center gap-3 rounded-md border-l-2 border-transparent px-2.5 py-2 text-body transition-colors",
         active
           ? "border-l-primary-ink bg-sidebar-accent font-semibold text-foreground"
           : "font-medium text-muted-foreground hover:bg-muted/40 hover:text-foreground",
@@ -157,7 +157,7 @@ function NavButton({
           <span
             aria-hidden
             className={cn(
-              "shrink-0 rounded-full px-1.5 font-mono text-[10px] tabular-nums",
+              "shrink-0 rounded-full px-1.5 font-mono text-micro tabular-nums",
               active ? "bg-background text-foreground" : "bg-muted text-muted-foreground",
             )}
           >
@@ -352,13 +352,13 @@ export function AppShell() {
     <div className="grid h-svh grid-cols-[232px_1fr] bg-background text-foreground">
       <aside className="flex min-h-0 flex-col border-r border-border bg-sidebar">
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <div className="grid size-7 place-items-center rounded-md bg-primary text-sm font-bold text-primary-foreground">
+          <div className="grid size-7 place-items-center rounded-md bg-primary text-body font-bold text-primary-foreground">
             R
           </div>
           <span className="font-semibold">
             Repo<span className="text-primary-ink">Sync</span>
           </span>
-          <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+          <span className="ml-auto font-mono text-meta text-muted-foreground">
             {appVersion ?? "..."}
           </span>
         </div>
@@ -375,7 +375,7 @@ export function AppShell() {
             data-testid="sidebar-update-notice"
             className="mx-2.5 mb-2 flex items-center gap-2 rounded-md border-l-2 border-l-primary-ink bg-muted px-2.5 py-2"
           >
-            <span className="text-xs font-medium text-foreground">
+            <span className="text-cell font-medium text-foreground">
               Update available: v{availableUpdate.newVersion}
             </span>
           </div>
@@ -434,7 +434,7 @@ export function AppShell() {
           <button
             type="button"
             onClick={requestAddRepos}
-            className="flex w-full items-center gap-3 rounded-md bg-foreground px-2.5 py-2 text-left text-sm font-semibold text-background transition-colors hover:bg-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex w-full items-center gap-3 rounded-md bg-foreground px-2.5 py-2 text-left text-body font-semibold text-background transition-colors hover:bg-foreground/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Plus className="size-[17px] shrink-0" />
             Add repositories
@@ -491,10 +491,10 @@ export function AppShell() {
           <div className="flex items-start gap-3 border-b border-l-2 border-border border-l-status-dirty bg-muted px-6 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-dirty" />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-foreground">
+              <p className="text-body font-medium text-foreground">
                 Database was reset after a failed migration
               </p>
-              <p className="mt-0.5 text-xs text-foreground/90">
+              <p className="mt-0.5 text-cell text-foreground/90">
                 RepoSync could not migrate your existing database, so it started a fresh one.
                 {recovery.data.backupPath ? (
                   <>

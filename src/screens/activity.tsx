@@ -119,7 +119,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
         width: "96px",
         icon: Clock,
         cell: (row) => (
-          <span className="font-mono text-xs whitespace-nowrap text-muted-foreground">
+          <span className="font-mono text-cell whitespace-nowrap text-muted-foreground">
             {relativeTime(row.timestamp)}
           </span>
         ),
@@ -135,7 +135,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
           // silently blank cell, the same honesty convention the Branch and
           // Ahead/Behind columns already use in `repos.tsx`.
           const name = repoNames.get(row.repoId);
-          return name === undefined ? null : <span className="truncate text-sm">{name}</span>;
+          return name === undefined ? null : <span className="truncate text-body">{name}</span>;
         },
       },
       {
@@ -143,7 +143,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
         header: "Action",
         width: "96px",
         cell: (row) => (
-          <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
+          <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-meta font-semibold">
             {row.actionType}
           </span>
         ),
@@ -169,7 +169,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
           // `null` renders the primitive's muted dash. A record with no
           // duration is not a zero-length operation.
           return text === null ? null : (
-            <span className="font-mono text-xs tabular-nums text-muted-foreground">{text}</span>
+            <span className="font-mono text-cell tabular-nums text-muted-foreground">{text}</span>
           );
         },
       },
@@ -179,7 +179,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
         width: "minmax(240px,520px)",
         cell: (row) =>
           row.summary === null ? null : (
-            <span className="truncate text-sm text-foreground/90">{row.summary}</span>
+            <span className="truncate text-body text-foreground/90">{row.summary}</span>
           ),
       },
     ],
@@ -210,7 +210,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
           >
             <span
               id="activity-filter-action-label"
-              className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
+              className="mr-1 font-mono text-meta font-semibold uppercase tracking-wider text-foreground/70"
             >
               Actions:
             </span>
@@ -231,7 +231,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
           >
             <span
               id="activity-filter-outcome-label"
-              className="mr-1 font-mono text-[11px] font-semibold uppercase tracking-wider text-foreground/70"
+              className="mr-1 font-mono text-meta font-semibold uppercase tracking-wider text-foreground/70"
             >
               Outcome:
             </span>
@@ -333,7 +333,7 @@ export function ActivityScreen({ activeGroupId }: { activeGroupId: number | null
         confident-but-unfounded claim it exists to prevent.
       */}
       {paginate(activity.data ?? []).hasMore && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-cell text-muted-foreground">
           Showing the {ACTIVITY_PAGE_LIMIT} most recent matching entries. There are older ones;
           they are kept and are in the log, but are not listed here yet.
         </p>
@@ -390,7 +390,7 @@ function OutcomeChip({ status }: { status: string }) {
   return (
     <span
       className={cn(
-        "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
+        "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-meta font-semibold",
         bad ? "bg-status-failed/10 text-status-failed" : "bg-status-sync/10 text-status-sync",
       )}
     >

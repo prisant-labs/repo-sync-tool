@@ -365,7 +365,7 @@ export function RepoDetailPanel({
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 border-b border-border px-5 py-4">
         <GitBranch className="size-4 shrink-0 text-muted-foreground" />
-        <span id={REPO_DETAIL_TITLE_ID} className="truncate font-mono text-sm font-semibold">
+        <span id={REPO_DETAIL_TITLE_ID} className="truncate font-mono text-body font-semibold">
           {detail.data?.localName ?? "Repository"}
         </span>
         <Button variant="ghost" size="icon" className="ml-auto" onClick={onClose} aria-label="Close">
@@ -497,17 +497,17 @@ function DetailBody({
         points.
       */}
       <div className="flex flex-col gap-2 px-5 pt-5 pb-3">
-        <div className="font-mono text-lg font-bold">{r.localName}</div>
-        {r.description && <p className="text-sm text-muted-foreground">{r.description}</p>}
+        <div className="font-mono text-title font-bold">{r.localName}</div>
+        {r.description && <p className="text-body text-muted-foreground">{r.description}</p>}
         <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-cell text-muted-foreground">
             <FolderOpen className="size-3.5 shrink-0" />
             <span className="min-w-0 truncate font-mono" title={r.localPath}>
               {r.localPath}
             </span>
           </div>
           {r.remoteOriginUrl && (
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center gap-1.5 text-cell text-muted-foreground">
               <Globe className="size-3.5 shrink-0" />
               <span className="min-w-0 truncate font-mono" title={r.remoteOriginUrl}>
                 {r.remoteOriginUrl}
@@ -518,7 +518,7 @@ function DetailBody({
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={status} count={badgeCount} />
           {r.isArchived && (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted-foreground">
+            <span className="rounded bg-muted px-1.5 py-0.5 text-micro font-semibold uppercase text-muted-foreground">
               archived
             </span>
           )}
@@ -698,9 +698,9 @@ function DetailBody({
                 <SectionLabel icon={Package}>Latest release</SectionLabel>
                 <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2">
                   <Package className="size-4 shrink-0 text-status-release" />
-                  <span className="font-mono text-sm font-semibold">{r.latestReleaseTag}</span>
+                  <span className="font-mono text-body font-semibold">{r.latestReleaseTag}</span>
                   {r.latestReleaseAt !== null && (
-                    <span className="ml-auto text-xs text-muted-foreground">{relativeTime(r.latestReleaseAt)}</span>
+                    <span className="ml-auto text-cell text-muted-foreground">{relativeTime(r.latestReleaseAt)}</span>
                   )}
                 </div>
               </section>
@@ -813,10 +813,10 @@ function Focal({
   if (status === "behind") {
     return (
       <>
-        <div className={cn("text-sm font-bold", style.text)}>
+        <div className={cn("text-body font-bold", style.text)}>
           {r.behindCount ?? 0} {r.behindCount === 1 ? "commit" : "commits"} behind origin
         </div>
-        <p className="mt-0.5 text-xs text-foreground/80">
+        <p className="mt-0.5 text-cell text-foreground/80">
           Fast-forward pulls only new commits; it never rewrites history and stops if the merge would not
           be clean.
         </p>
@@ -839,7 +839,7 @@ function Focal({
             {modeLabel(r.updateMode)} now
           </Button>
         ) : (
-          <p className="mt-3 text-xs text-muted-foreground">
+          <p className="mt-3 text-cell text-muted-foreground">
             This repository is set to <b>{modeLabel(r.updateMode)}</b>, so RepoSync will not pull
             these commits for you. Change it in the Settings tab, or pull in your own tools.
           </p>
@@ -851,8 +851,8 @@ function Focal({
   if (status === "dirty") {
     return (
       <>
-        <div className={cn("text-sm font-bold", style.text)}>Uncommitted local changes</div>
-        <p className="mt-0.5 text-xs text-foreground/80">
+        <div className={cn("text-body font-bold", style.text)}>Uncommitted local changes</div>
+        <p className="mt-0.5 text-cell text-foreground/80">
           RepoSync will not pull over a dirty working tree. Commit, stash, or discard your changes, then
           check again.
         </p>
@@ -863,8 +863,8 @@ function Focal({
   if (status === "failed") {
     return (
       <>
-        <div className={cn("text-sm font-bold", style.text)}>Last check failed</div>
-        <p className="mt-0.5 font-mono text-xs text-foreground/80">{r.lastErrorCode ?? "unknown error"}</p>
+        <div className={cn("text-body font-bold", style.text)}>Last check failed</div>
+        <p className="mt-0.5 font-mono text-cell text-foreground/80">{r.lastErrorCode ?? "unknown error"}</p>
         <Button
           className="mt-3"
           variant="outline"
@@ -889,10 +889,10 @@ function Focal({
   if (status === "paused") {
     return (
       <>
-        <div className={cn("text-sm font-bold", style.text)}>
+        <div className={cn("text-body font-bold", style.text)}>
           {r.autoPaused ? "Auto-paused after repeated failures" : "Watching paused"}
         </div>
-        <p className="mt-0.5 text-xs text-foreground/80">
+        <p className="mt-0.5 text-cell text-foreground/80">
           This repo is not being checked on a schedule. Resume to fold it back into the rotation.
         </p>
         <Button
@@ -909,10 +909,10 @@ function Focal({
 
   return (
     <>
-      <div className={cn("text-sm font-bold", style.text)}>
+      <div className={cn("text-body font-bold", style.text)}>
         {status === "ahead" ? `${r.aheadCount ?? 0} ahead of origin, clean` : "Up to date with origin"}
       </div>
-      <p className="mt-0.5 text-xs text-foreground/80">
+      <p className="mt-0.5 text-cell text-foreground/80">
         {status === "ahead"
           ? "You have local commits not yet pushed. RepoSync leaves pushing to you."
           : "Nothing to do. RepoSync keeps watching on schedule."}
@@ -975,7 +975,7 @@ function SyncStateSection({ r }: { r: RepoDetailData }) {
 
 function SectionLabel({ icon: Icon, children }: { icon?: LucideIcon; children: ReactNode }) {
   return (
-    <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="mb-1.5 flex items-center gap-1.5 text-meta font-semibold uppercase tracking-wider text-muted-foreground">
       {Icon && <Icon aria-hidden className="size-3.5 shrink-0" />}
       {children}
     </div>
@@ -1002,7 +1002,7 @@ function GroupPill({
   onRemove: () => void;
 }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-2 text-xs font-medium">
+    <span className="inline-flex items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-2 text-cell font-medium">
       <GroupDot color={group.color} />
       {group.name}
       <button
@@ -1046,7 +1046,7 @@ function GroupPills({
 
   if (groups.length === 0) {
     return (
-      <p className="text-xs text-muted-foreground">
+      <p className="text-cell text-muted-foreground">
         No groups yet. Create one from the sidebar to organize this repo.
       </p>
     );
@@ -1072,7 +1072,7 @@ function GroupPills({
             aria-expanded={addOpen}
             aria-label="Add this repo to a group"
             onClick={() => setAddOpen((v) => !v)}
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted"
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-2 py-0.5 text-cell font-medium text-muted-foreground hover:bg-muted"
           >
             <Plus className="size-3" /> Add
           </button>
@@ -1086,7 +1086,7 @@ function GroupPills({
               type="button"
               disabled={groupBusyId === g.id}
               onClick={() => onToggleGroup(g, false)}
-              className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
+              className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-cell font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
             >
               <GroupDot color={g.color} /> {g.name}
             </button>
@@ -1144,8 +1144,8 @@ function CadenceSection({
         >
           <CadenceRadio active={isInherit} />
           <span className="min-w-0">
-            <span className="block text-sm font-medium">Inherit global</span>
-            <span className="block text-xs text-muted-foreground">
+            <span className="block text-body font-medium">Inherit global</span>
+            <span className="block text-cell text-muted-foreground">
               {globalMinutes !== null
                 ? `Follows the global cadence (every ${globalMinutes} min). Changing the global setting re-cadences this repo.`
                 : "Follows the global cadence. Changing the global setting re-cadences this repo."}
@@ -1162,8 +1162,8 @@ function CadenceSection({
           <div className="flex items-start gap-3">
             <CadenceRadio active={!isInherit} />
             <span className="min-w-0">
-              <span className="block text-sm font-medium">Custom interval</span>
-              <span className="block text-xs text-muted-foreground">
+              <span className="block text-body font-medium">Custom interval</span>
+              <span className="block text-cell text-muted-foreground">
                 Override the global default for just this repo.
               </span>
             </span>
@@ -1176,7 +1176,7 @@ function CadenceSection({
               value={draft}
               onChange={(e) => setDraft(Number(e.target.value))}
             />
-            <span className="text-xs text-muted-foreground">min</span>
+            <span className="text-cell text-muted-foreground">min</span>
             <Button
               size="sm"
               variant="outline"
@@ -1195,7 +1195,7 @@ function CadenceSection({
           </div>
         </div>
       </div>
-      <p className="mt-2 text-xs text-foreground/80">
+      <p className="mt-2 text-cell text-foreground/80">
         Effective cadence: {effective !== null ? `every ${effective} min` : "loading..."}
       </p>
     </section>
@@ -1238,11 +1238,11 @@ function KvRow({
 }) {
   return (
     <div className="flex items-start gap-3 border-b border-border px-3 py-2 last:border-b-0">
-      <dt className="flex w-32 shrink-0 items-center gap-1.5 pt-px text-xs text-muted-foreground">
+      <dt className="flex w-32 shrink-0 items-center gap-1.5 pt-px text-cell text-muted-foreground">
         {Icon && <Icon aria-hidden className="size-3.5 shrink-0" />}
         {label}
       </dt>
-      <dd className={cn("min-w-0 flex-1 text-left text-xs", mono && "font-mono", breakAll && "break-all")}>
+      <dd className={cn("min-w-0 flex-1 text-left text-cell", mono && "font-mono", breakAll && "break-all")}>
         {value}
       </dd>
     </div>
@@ -1302,8 +1302,8 @@ function PolicyOption({
         {active && <span className="size-2 rounded-full bg-primary" />}
       </span>
       <span className="min-w-0">
-        <span className="block text-sm font-medium">{opt.label}</span>
-        <span className="block text-xs text-muted-foreground">{opt.blurb}</span>
+        <span className="block text-body font-medium">{opt.label}</span>
+        <span className="block text-cell text-muted-foreground">{opt.blurb}</span>
       </span>
     </button>
   );
@@ -1353,7 +1353,7 @@ function ActivitySection({
                 ))}
               </div>
               {hasMore && (
-                <p className="mt-2 text-xs text-muted-foreground">
+                <p className="mt-2 text-cell text-muted-foreground">
                   Showing the {ACTIVITY_PAGE_LIMIT} most recent entries. There are older ones; they are
                   kept and are in the log, but are not listed here yet.
                 </p>
@@ -1406,15 +1406,15 @@ function ActivityRow({ row, onClick }: { row: ActivityRecord; onClick: () => voi
       aria-haspopup="dialog"
       className="flex w-full items-center gap-3 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-muted"
     >
-      <span className="w-16 shrink-0 font-mono text-xs whitespace-nowrap text-muted-foreground">
+      <span className="w-16 shrink-0 font-mono text-cell whitespace-nowrap text-muted-foreground">
         {relativeTime(row.timestamp)}
       </span>
-      <span className="inline-flex w-fit shrink-0 rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
+      <span className="inline-flex w-fit shrink-0 rounded-md bg-muted px-2 py-0.5 font-mono text-meta font-semibold">
         {row.actionType}
       </span>
       <span
         className={cn(
-          "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
+          "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-meta font-semibold",
           // The design system's OPAQUE tint under its solved ink, not a 10%
           // wash of the raw status colour. The wash let the row's
           // `hover:bg-muted` through, and because the wash is the ink's own
@@ -1430,7 +1430,7 @@ function ActivityRow({ row, onClick }: { row: ActivityRecord; onClick: () => voi
         <Icon aria-hidden className="size-3" />
         {row.status}
       </span>
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground/90">{row.summary ?? "-"}</span>
+      <span className="min-w-0 flex-1 truncate text-body text-foreground/90">{row.summary ?? "-"}</span>
       <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
     </button>
   );
@@ -1485,14 +1485,14 @@ function RemoveSection({
     <section>
       <SectionLabel icon={Ban}>Remove</SectionLabel>
       <div className="rounded-md border border-border px-3 py-2.5">
-        <p className="text-xs text-foreground/80">
+        <p className="text-cell text-foreground/80">
           Stops tracking <span className="font-semibold">{name}</span> and deletes its RepoSync
           data: check history, group assignments, notes, and its policy and cadence settings. The
           folder and its git repo on disk are not touched.
         </p>
         {confirming ? (
           <div className="mt-2.5 flex flex-wrap items-center gap-2">
-            <span role="alert" className="text-xs font-medium text-status-failed">
+            <span role="alert" className="text-cell font-medium text-status-failed">
               Remove {name}? This cannot be undone.
             </span>
             <Button

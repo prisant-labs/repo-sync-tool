@@ -411,8 +411,8 @@ export function ReposScreen({
         frozen: true,
         cell: (r) => (
           <div className="min-w-0 py-2">
-            <div className="truncate font-mono text-sm font-semibold">{r.localName}</div>
-            <div className="truncate font-mono text-[11px] text-muted-foreground">{r.hostType}</div>
+            <div className="truncate font-mono text-body font-semibold">{r.localName}</div>
+            <div className="truncate font-mono text-meta text-muted-foreground">{r.hostType}</div>
             <IntelSignals
               latestReleaseTag={r.latestReleaseTag}
               openPrCount={r.openPrCount}
@@ -503,7 +503,7 @@ export function ReposScreen({
         width: "64px",
         align: "right",
         icon: ArrowUp,
-        cell: (r) => ((r.aheadCount ?? 0) > 0 ? <span className="font-mono text-xs tabular-nums">{r.aheadCount}</span> : null),
+        cell: (r) => ((r.aheadCount ?? 0) > 0 ? <span className="font-mono text-cell tabular-nums">{r.aheadCount}</span> : null),
         // The RAW nullable count, not the `?? 0` the cell renders with: a
         // repo that has never been inspected (`null`) is a different, less
         // known thing than a repo inspected and found to be exactly even
@@ -518,7 +518,7 @@ export function ReposScreen({
         align: "right",
         icon: ArrowDown,
         cell: (r) =>
-          (r.behindCount ?? 0) > 0 ? <span className="font-mono text-xs tabular-nums">{r.behindCount}</span> : null,
+          (r.behindCount ?? 0) > 0 ? <span className="font-mono text-cell tabular-nums">{r.behindCount}</span> : null,
         sortValue: (r) => r.behindCount,
       },
       {
@@ -587,7 +587,7 @@ export function ReposScreen({
             // nothing in the styling marked the boundary (Codex adversarial
             // review, finding 1, 2026-09-14). Full-width makes the whole
             // Folder cell do the one thing its column header names.
-            className="inline-flex w-full min-w-0 items-center gap-1.5 truncate rounded-sm text-left font-mono text-[11px] font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="inline-flex w-full min-w-0 items-center gap-1.5 truncate rounded-sm text-left font-mono text-meta font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Folder aria-hidden className="size-3 shrink-0 opacity-70" />
             <span className="truncate">{r.localPath}</span>
@@ -600,7 +600,7 @@ export function ReposScreen({
         header: "Checked",
         width: "96px",
         icon: Clock,
-        cell: (r) => <span className="font-mono text-xs text-muted-foreground">{relativeTime(r.lastCheckedAt)}</span>,
+        cell: (r) => <span className="font-mono text-cell text-muted-foreground">{relativeTime(r.lastCheckedAt)}</span>,
         // The raw epoch seconds, not the rendered relative string ("not yet
         // run" sort-wise has nothing to do with the English word "ago").
         // `null` ("never checked") sorts last in both directions.
@@ -615,7 +615,7 @@ export function ReposScreen({
         // `null` (never refreshed / non-GitHub) is the dash; a real `0` is
         // GitHub's actual answer and renders as "0" - see the doc comment
         // above the column list for why this differs from Ahead/Behind.
-        cell: (r) => (r.stars === null ? null : <span className="font-mono text-xs tabular-nums">{r.stars}</span>),
+        cell: (r) => (r.stars === null ? null : <span className="font-mono text-cell tabular-nums">{r.stars}</span>),
         // The unknown-sorts-last rule matters most HERE: `stars` is the
         // acceptance criterion's own example of a value that must never
         // read as zero just because an ascending sort put it at the bottom.
@@ -627,7 +627,7 @@ export function ReposScreen({
         width: "76px",
         align: "right",
         icon: GitFork,
-        cell: (r) => (r.forks === null ? null : <span className="font-mono text-xs tabular-nums">{r.forks}</span>),
+        cell: (r) => (r.forks === null ? null : <span className="font-mono text-cell tabular-nums">{r.forks}</span>),
         sortValue: (r) => r.forks,
       },
     ],
@@ -831,7 +831,7 @@ export function ReposScreen({
             }
 
             return filtered.length === 0 ? (
-              <div className="rounded-xl border border-border bg-card py-16 text-center text-sm text-muted-foreground shadow-sm">
+              <div className="rounded-xl border border-border bg-card py-16 text-center text-body text-muted-foreground shadow-sm">
                 No repositories match this filter.
               </div>
             ) : (
@@ -912,7 +912,7 @@ export function ReposScreen({
 
 function GroupChip({ group }: { group: GroupSummary }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium whitespace-nowrap text-muted-foreground">
+    <span className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-0.5 text-micro font-medium whitespace-nowrap text-muted-foreground">
       <span
         className={cn("size-1.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
         style={group.color ? { backgroundColor: group.color } : undefined}
@@ -941,16 +941,16 @@ function SortChip({
   onClear: () => void;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-sm">
+    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-body">
       <span className="text-muted-foreground">Sorted by</span>
       <span className="font-semibold">{columnLabel}</span>
-      <span className="font-mono text-xs text-muted-foreground">
+      <span className="font-mono text-cell text-muted-foreground">
         {direction === "asc" ? "ascending" : "descending"}
       </span>
       <Button
         variant="ghost"
         size="sm"
-        className="h-6 gap-1 px-1.5 text-xs"
+        className="h-6 gap-1 px-1.5 text-cell"
         onClick={onClear}
         aria-label="Clear sort"
       >
@@ -994,20 +994,20 @@ function GroupFilterControl({
   onClear: () => void;
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-sm">
+    <div className="flex items-center gap-2 rounded-full border border-border bg-muted/40 py-1 pr-1.5 pl-3 text-body">
       <span className="text-muted-foreground">Filtered to</span>
       <span
         className={cn("size-2.5 shrink-0 rounded-full", group.color === null && "bg-muted-foreground/50")}
         style={group.color ? { backgroundColor: group.color } : undefined}
       />
       <span className="font-semibold">{group.name}</span>
-      <span className="font-mono text-xs text-muted-foreground">
+      <span className="font-mono text-cell text-muted-foreground">
         {count === null ? "…" : `${count} ${count === 1 ? "repo" : "repos"}`}
       </span>
       <Button
         variant="ghost"
         size="sm"
-        className="h-6 gap-1 px-1.5 text-xs"
+        className="h-6 gap-1 px-1.5 text-cell"
         onClick={onClear}
         aria-label={`Clear ${group.name} filter`}
       >
