@@ -164,7 +164,7 @@ export function TabList({
             // which already focuses the tab it selects.
             onFocus={() => setValue(t.value)}
             className={cn(
-              "-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+              "-mb-px border-b-2 px-3 py-2 text-body font-medium transition-colors",
               active
                 ? "border-primary text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground",
@@ -192,7 +192,7 @@ export function TabList({
                     `repo-detail.test.tsx`. */}
                 <span
                   aria-hidden
-                  className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground"
+                  className="ml-1.5 rounded-full bg-muted px-1.5 py-0.5 font-mono text-micro tabular-nums text-muted-foreground"
                 >
                   {t.badge.display}
                 </span>

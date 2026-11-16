@@ -49,7 +49,7 @@ export function ButtonsSection() {
         <div className="flex flex-col gap-3">
           {variants.map((v) => (
             <Row key={v}>
-              <span className="w-20 font-mono text-xs text-muted-foreground">{v}</span>
+              <span className="w-20 font-mono text-cell text-muted-foreground">{v}</span>
               <Button variant={v}>Label</Button>
               <Button variant={v} size="sm">Small</Button>
               <Button variant={v} size="icon" aria-label="Refresh"><RefreshCw /></Button>
@@ -101,7 +101,7 @@ export function FormSection() {
       >
         <FieldLabelContext.Provider value="gallery-field-label">
           <div className="flex max-w-sm flex-col gap-1.5">
-            <div id="gallery-field-label" className="text-sm font-medium">Editor command</div>
+            <div id="gallery-field-label" className="text-body font-medium">Editor command</div>
             <Input defaultValue="code" />
           </div>
         </FieldLabelContext.Provider>
@@ -123,9 +123,9 @@ export function TabsSection() {
             { value: "three", label: "Settings" },
           ]}
         />
-        <TabPanel value="one" className="pt-3 text-sm">Overview panel</TabPanel>
-        <TabPanel value="two" className="pt-3 text-sm">Activity panel</TabPanel>
-        <TabPanel value="three" className="pt-3 text-sm">Settings panel</TabPanel>
+        <TabPanel value="one" className="pt-3 text-body">Overview panel</TabPanel>
+        <TabPanel value="two" className="pt-3 text-body">Activity panel</TabPanel>
+        <TabPanel value="three" className="pt-3 text-body">Settings panel</TabPanel>
       </Tabs>
     </Cell>
   );
@@ -184,7 +184,7 @@ export function DrawerCell() {
     <Cell title="Drawer, default and wide" note="contained in this cell" height={420} contained>
       <Button onClick={() => setOpen(true)}>Open drawer</Button>
       <Drawer open={open} onClose={() => setOpen(false)} aria-label="Example drawer">
-        <div className="p-5 text-sm">Drawer body. Press Escape or click the scrim to close.</div>
+        <div className="p-5 text-body">Drawer body. Press Escape or click the scrim to close.</div>
       </Drawer>
     </Cell>
   );
@@ -196,7 +196,7 @@ export function DialogCell() {
     <Cell title="Dialog" note="contained in this cell" height={320} contained>
       <Button onClick={() => setOpen(true)}>Open dialog</Button>
       <Dialog open={open} onClose={() => setOpen(false)} aria-label="Example dialog">
-        <Card className="w-80 p-5 text-sm">
+        <Card className="w-80 p-5 text-body">
           A dialog body.
           <div className="mt-4"><Button onClick={() => setOpen(false)}>Close</Button></div>
         </Card>
@@ -300,7 +300,7 @@ export function AsyncPanelSection() {
   const plainError: AsyncState<string[]> = { data: null, loading: false, error: new Error("Network down") };
   const emptyData: AsyncState<string[]> = { data: [], error: null, loading: false };
   const withData: AsyncState<string[]> = { data: ["alpha", "beta"], error: null, loading: false };
-  const render = (d: string[]) => <ul className="text-sm">{d.map((x) => <li key={x}>{x}</li>)}</ul>;
+  const render = (d: string[]) => <ul className="text-body">{d.map((x) => <li key={x}>{x}</li>)}</ul>;
   return (
     <>
       <Cell title="Loading"><AsyncPanel state={loading}>{render}</AsyncPanel></Cell>
@@ -317,12 +317,12 @@ export function PageShellSection() {
     <>
       <Cell title="PageShell, wide, with actions and toolbar" height={300} contained>
         <PageShell title="Page title" actions={<Button variant="outline" size="sm"><RefreshCw /> Refresh</Button>} toolbar={<Input aria-label="Search" placeholder="Search" className="max-w-xs" />}>
-          <Card className="p-4 text-sm">Page content</Card>
+          <Card className="p-4 text-body">Page content</Card>
         </PageShell>
       </Cell>
       <Cell title="PageShell, narrow" height={240} contained>
         <PageShell title="Narrow page" width="narrow">
-          <Card className="p-4 text-sm">Capped measure, left aligned.</Card>
+          <Card className="p-4 text-body">Capped measure, left aligned.</Card>
         </PageShell>
       </Cell>
     </>
@@ -357,7 +357,7 @@ export function AddReposCell() {
   return (
     <Cell title="AddReposDialog" note="Scan answers with fixture candidates: one already tracked" height={560} contained>
       <AddReposDialog open onClose={noop} onAdded={noop} />
-      <p className="text-xs text-muted-foreground">{SCAN_CANDIDATES.length} candidates come back from a scan.</p>
+      <p className="text-cell text-muted-foreground">{SCAN_CANDIDATES.length} candidates come back from a scan.</p>
     </Cell>
   );
 }
@@ -387,7 +387,7 @@ export function DiagnosticsSection() {
 export function StatusOverviewSection() {
   return (
     <Cell title="Every fixture repository, with derived status and lag label" note="deriveStatus and lagLabel from lib/status.ts">
-      <div className="grid gap-2 text-sm">
+      <div className="grid gap-2 text-body">
         {REPOS.map((r) => (
           <div key={r.id} className="flex items-center gap-3">
             <StatusBadge status={deriveStatus(r)} />
@@ -437,7 +437,7 @@ export function ScreenHost({ screen }: { screen: "dashboard" | "repos" | "activi
           }}
         />
       )}
-      <div className="mt-3 flex gap-2 text-xs">
+      <div className="mt-3 flex gap-2 text-cell">
         <button type="button" className="rounded border border-border px-2 py-1" onClick={() => setActiveGroupId(activeGroupId === null ? 1 : null)}>
           {activeGroupId === null ? "Scope to group: work" : "Clear group scope"}
         </button>

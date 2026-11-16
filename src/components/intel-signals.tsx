@@ -28,7 +28,7 @@ export function IntelSignals({
     <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1", className)}>
       {hasRelease && (
         <span
-          className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-status-release"
+          className="inline-flex items-center gap-1 font-mono text-meta font-medium text-status-release"
           title={`Latest release ${latestReleaseTag}`}
         >
           <Package className="size-3 shrink-0" />
@@ -37,7 +37,7 @@ export function IntelSignals({
       )}
       {hasPrs && (
         <span
-          className="inline-flex items-center gap-1 font-mono text-[11px] font-medium text-status-release"
+          className="inline-flex items-center gap-1 font-mono text-meta font-medium text-status-release"
           title={`${openPrCount} open pull request${openPrCount === 1 ? "" : "s"}`}
         >
           <GitPullRequest className="size-3 shrink-0" />

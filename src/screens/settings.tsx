@@ -239,7 +239,7 @@ function SettingsSectionNav({ activeId, sectionIds }: { activeId: string; sectio
                 href={`#${section.id}`}
                 aria-current={current ? "location" : undefined}
                 className={cn(
-                  "text-sm transition-colors",
+                  "text-body transition-colors",
                   current
                     ? "font-semibold text-foreground"
                     : "font-medium text-muted-foreground hover:text-foreground",
@@ -433,7 +433,7 @@ function SettingsForm({
                 value={draft.quietHoursStart ?? 0}
                 onChange={(v) => set("quietHoursStart", v)}
               />
-              <span className="text-xs text-muted-foreground">to</span>
+              <span className="text-cell text-muted-foreground">to</span>
               <TimeInput
                 aria-label="Quiet window end"
                 value={draft.quietHoursEnd ?? 0}
@@ -545,8 +545,8 @@ function SettingsForm({
             <span
               className={
                 draft.githubTokenPresent
-                  ? "font-mono text-xs font-semibold text-status-sync"
-                  : "font-mono text-xs text-foreground/70"
+                  ? "font-mono text-cell font-semibold text-status-sync"
+                  : "font-mono text-cell text-foreground/70"
               }
             >
               {/*
@@ -575,7 +575,7 @@ function SettingsForm({
       <AboutSection sectionRef={sectionRef} edgeRef={edgeRef} />
 
       <div className="sticky bottom-0 flex items-center gap-2 border-t border-border bg-background/80 py-3 backdrop-blur">
-        <span className="text-xs text-muted-foreground">
+        <span className="text-cell text-muted-foreground">
           {dirty ? "Unsaved changes" : "All changes saved"}
         </span>
         <div className="ml-auto flex gap-2">
@@ -661,7 +661,7 @@ function UpdatesCard({
       </CardHeader>
       <CardContent className="p-0">
         <Field label="RepoSync version" hint="The version you are running now.">
-          <span className="font-mono text-xs font-semibold text-foreground">{version ?? "unknown"}</span>
+          <span className="font-mono text-cell font-semibold text-foreground">{version ?? "unknown"}</span>
         </Field>
         <Field
           label="Check for updates on launch"
@@ -672,8 +672,8 @@ function UpdatesCard({
         <div className="flex flex-col gap-3 border-t border-border px-4 py-3">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <div className="text-sm font-medium">Check for updates</div>
-              <div className="text-xs text-muted-foreground">Look for a newer version right now.</div>
+              <div className="text-body font-medium">Check for updates</div>
+              <div className="text-cell text-muted-foreground">Look for a newer version right now.</div>
             </div>
             <Button variant="secondary" size="sm" disabled={checking} onClick={() => void check()}>
               {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
@@ -703,7 +703,7 @@ function UpdateOutcome({
   // updater) is reported gently off `error != null`, not as an alarm.
   if (result.error) {
     return (
-      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm text-foreground">
+      <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-body text-foreground">
         Could not reach the update server. RepoSync is still working on your current version; it will
         try again later.
       </div>
@@ -713,16 +713,16 @@ function UpdateOutcome({
   if (result.available && result.newVersion) {
     return (
       <div className="flex flex-col gap-2 rounded-md border border-border bg-muted/40 px-3 py-2">
-        <div className="text-sm font-medium text-foreground">
+        <div className="text-body font-medium text-foreground">
           Version {result.newVersion} is available.
         </div>
-        {result.notes && <div className="text-xs text-muted-foreground">{result.notes}</div>}
+        {result.notes && <div className="text-cell text-muted-foreground">{result.notes}</div>}
         <div className="flex items-center gap-2">
           <Button size="sm" disabled={installing} onClick={onInstall}>
             {installing ? <Loader2 className="animate-spin" /> : null}
             {installing ? "Installing..." : "Install and restart"}
           </Button>
-          <span className="text-xs text-muted-foreground">
+          <span className="text-cell text-muted-foreground">
             RepoSync will verify, install, and relaunch.
           </span>
         </div>
@@ -731,7 +731,7 @@ function UpdateOutcome({
   }
 
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm font-medium text-status-sync">
+    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-body font-medium text-status-sync">
       You are on the latest version.
     </div>
   );
@@ -778,7 +778,7 @@ function AboutCard() {
       </CardHeader>
       <CardContent className="p-0">
         <Field label="RepoSync version" hint="The version you are running now.">
-          <span className="font-mono text-xs font-semibold text-foreground">{version ?? "unknown"}</span>
+          <span className="font-mono text-cell font-semibold text-foreground">{version ?? "unknown"}</span>
         </Field>
       </CardContent>
     </Card>
@@ -800,10 +800,10 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   return (
     <div className="flex items-center justify-between gap-4 border-b border-border px-4 py-3 last:border-b-0">
       <div className="min-w-0">
-        <div id={labelId} className="text-sm font-medium">
+        <div id={labelId} className="text-body font-medium">
           {label}
         </div>
-        {hint && <div className="text-xs text-muted-foreground">{hint}</div>}
+        {hint && <div className="text-cell text-muted-foreground">{hint}</div>}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <FieldLabelContext.Provider value={labelId}>{children}</FieldLabelContext.Provider>
@@ -835,7 +835,7 @@ function NumberInput({
         max={max}
         onChange={(e) => onChange(Number(e.target.value))}
       />
-      {suffix && <span className="text-xs text-muted-foreground">{suffix}</span>}
+      {suffix && <span className="text-cell text-muted-foreground">{suffix}</span>}
     </div>
   );
 }

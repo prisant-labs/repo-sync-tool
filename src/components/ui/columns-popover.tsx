@@ -159,7 +159,7 @@ export function ColumnsPopover({
                     aria-hidden
                     className={cn("size-3.5 shrink-0 text-muted-foreground", col.locked && "opacity-30")}
                   />
-                  <label className="flex min-w-0 flex-1 items-center gap-2 text-sm">
+                  <label className="flex min-w-0 flex-1 items-center gap-2 text-body">
                     <input
                       type="checkbox"
                       checked={checked}
@@ -170,7 +170,7 @@ export function ColumnsPopover({
                     <span className="truncate">{col.header}</span>
                   </label>
                   {col.locked ? (
-                    <span id={lockedNoteId} className="shrink-0 text-[11px] text-muted-foreground">
+                    <span id={lockedNoteId} className="shrink-0 text-meta text-muted-foreground">
                       Always shown
                     </span>
                   ) : (

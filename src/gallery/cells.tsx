@@ -31,8 +31,8 @@ export function Cell({
   return (
     <section className="mb-6" aria-label={title}>
       <div className="mb-2 flex flex-wrap items-baseline gap-x-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        {note && <span className="text-xs text-muted-foreground">{note}</span>}
+        <h2 className="text-body font-semibold">{title}</h2>
+        {note && <span className="text-cell text-muted-foreground">{note}</span>}
       </div>
       <div
         data-cell={title}

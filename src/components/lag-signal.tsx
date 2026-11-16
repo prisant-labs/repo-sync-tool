@@ -29,7 +29,7 @@ export function LagSignal({
           style={{ transform: `scaleX(${clamped})` }}
         />
       </div>
-      <div className="mt-1.5 font-mono text-[11px] text-muted-foreground">{label}</div>
+      <div className="mt-1.5 font-mono text-meta text-muted-foreground">{label}</div>
     </div>
   );
 }

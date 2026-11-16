@@ -3,6 +3,7 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
+import noRawTextSize from "./tools/eslint/no-raw-text-size.js";
 
 // Note: eslint-plugin-react-hooks 7.x still ships its `recommended-latest`
 // preset with `plugins` as an array, which ESLint 10 flat config rejects.
@@ -44,4 +45,14 @@ export default tseslint.config(
     },
   },
   reactRefresh.configs.vite,
+  {
+    // Raw font sizes are an error everywhere in `src/`, so the named ramp in
+    // `src/index.css` (body, cell, meta, micro, ...) is the only way to size
+    // text. The rule lives in `tools/eslint/` with its own tests; it is
+    // registered here as a local plugin rather than adding a Tailwind ESLint
+    // dependency.
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { local: { rules: { "no-raw-text-size": noRawTextSize } } },
+    rules: { "local/no-raw-text-size": "error" },
+  },
 );

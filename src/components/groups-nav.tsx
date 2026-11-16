@@ -81,7 +81,7 @@ export function GroupsNav({
     // longer supplies those either.
     <div className="flex min-h-0 flex-1 flex-col pt-1">
       <div className="flex items-center gap-2 px-2 pb-1.5">
-        <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+        <span className="text-micro font-bold uppercase tracking-wider text-muted-foreground">
           Groups
         </span>
         <button
@@ -97,7 +97,7 @@ export function GroupsNav({
 
       <div className="flex min-h-0 flex-col gap-0.5 overflow-auto px-2.5">
         {groups.length === 0 ? (
-          <p className="px-1 py-1 text-xs text-muted-foreground">
+          <p className="px-1 py-1 text-cell text-muted-foreground">
             No groups yet. Create one to organize your repos.
           </p>
         ) : (
@@ -107,7 +107,7 @@ export function GroupsNav({
               onClick={() => onSelectGroup(null)}
               aria-pressed={activeGroupId === null}
               className={cn(
-                "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors",
+                "flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-body font-medium transition-colors",
                 activeGroupId === null
                   ? "bg-primary/10 text-primary-ink"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
@@ -173,7 +173,7 @@ function GroupRow({
   return (
     <div
       className={cn(
-        "group/row relative flex items-center rounded-md text-sm font-medium transition-colors",
+        "group/row relative flex items-center rounded-md text-body font-medium transition-colors",
         active ? "bg-primary/10 text-primary-ink" : "text-muted-foreground hover:bg-muted",
       )}
     >
@@ -198,7 +198,7 @@ function GroupRow({
 
       {confirming ? (
         <span className="flex items-center gap-1 pr-1.5">
-          <span className="text-[11px] text-muted-foreground">Delete?</span>
+          <span className="text-meta text-muted-foreground">Delete?</span>
           <RowIcon
             label="Confirm delete"
             onClick={onConfirmDelete}
@@ -215,7 +215,7 @@ function GroupRow({
         <span className="flex items-center pr-2.5">
           <span
             className={cn(
-              "font-mono text-[11px] tabular-nums transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
+              "font-mono text-meta tabular-nums transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
               active ? "text-primary-ink" : "text-muted-foreground",
             )}
           >

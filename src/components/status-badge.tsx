@@ -39,7 +39,7 @@ export function StatusBadge({
     <span
       className={cn(
         "inline-flex w-fit justify-self-start items-center gap-1.5 rounded-md",
-        "px-[0.5em] pt-[0.2em] pb-[0.25em] font-mono text-xs font-semibold whitespace-nowrap",
+        "px-[0.5em] pt-[0.2em] pb-[0.25em] font-mono text-cell font-semibold whitespace-nowrap",
         style.chip,
         className,
       )}

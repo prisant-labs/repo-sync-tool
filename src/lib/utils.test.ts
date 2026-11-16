@@ -30,8 +30,11 @@ describe("cn() with the custom type sizes", () => {
   }
 
   it("still lets a later size replace an earlier size", () => {
+    // This test is ABOUT raw sizes merging with named ones, so it must name them.
+    /* eslint-disable local/no-raw-text-size */
     expect(cn("text-xs text-meta")).toBe("text-meta");
     expect(cn("text-meta text-sm")).toBe("text-sm");
+    /* eslint-enable local/no-raw-text-size */
   });
 
   it("still lets a later colour replace an earlier colour", () => {

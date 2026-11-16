@@ -59,15 +59,15 @@ export function ActivityReceipt({
       <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] font-semibold">
+            <span className="inline-flex w-fit rounded-md bg-muted px-2 py-0.5 font-mono text-meta font-semibold">
               {record.actionType}
             </span>
             <StatusChip status={record.status} />
           </div>
-          <h3 id={ACTIVITY_RECEIPT_TITLE_ID} className="mt-1.5 truncate text-base font-semibold">
+          <h3 id={ACTIVITY_RECEIPT_TITLE_ID} className="mt-1.5 truncate text-heading font-semibold">
             {repoName ?? "Unknown repo"}
           </h3>
-          <p className="text-xs text-foreground/70">
+          <p className="text-cell text-foreground/70">
             {absoluteTime(record.timestamp)} - {relativeTime(record.timestamp)}
           </p>
         </div>
@@ -78,7 +78,7 @@ export function ActivityReceipt({
 
       <div className="flex-1 overflow-y-auto">
         {record.summary && (
-          <p className="border-b border-border px-5 py-3 text-sm text-foreground">
+          <p className="border-b border-border px-5 py-3 text-body text-foreground">
             {record.summary}
           </p>
         )}
@@ -115,7 +115,7 @@ export function ActivityReceipt({
         overclaim, because the user acts on it immediately and irreversibly.
       */}
       <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
-        <p className="text-xs text-foreground/80">
+        <p className="text-cell text-foreground/80">
           Before sharing: credentials embedded in URLs are removed and common token formats are
           stripped where recognized, but this includes the repository&apos;s full local path and any
           secret in an unfamiliar format.
@@ -140,17 +140,17 @@ export function ActivityReceipt({
 function Stream({ label, value, tone }: { label: string; value: string | null; tone?: "bad" }) {
   return (
     <section className="border-b border-border px-5 py-3">
-      <h4 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-foreground/70">
+      <h4 className="mb-1.5 text-cell font-semibold uppercase tracking-wide text-foreground/70">
         {label}
       </h4>
       {value === null ? (
-        <p className="text-xs italic text-foreground/70">not captured for this action</p>
+        <p className="text-cell italic text-foreground/70">not captured for this action</p>
       ) : value === "" ? (
-        <p className="text-xs italic text-foreground/70">empty (git printed nothing)</p>
+        <p className="text-cell italic text-foreground/70">empty (git printed nothing)</p>
       ) : (
         <pre
           className={cn(
-            "max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-muted/50 p-2.5 font-mono text-[11px] leading-relaxed",
+            "max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border border-border bg-muted/50 p-2.5 font-mono text-meta leading-relaxed",
             tone === "bad" ? "text-status-failed" : "text-foreground/90",
           )}
         >
@@ -174,11 +174,11 @@ function Fact({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="text-xs text-foreground/70">{label}</dt>
+      <dt className="text-cell text-foreground/70">{label}</dt>
       <dd
         className={cn(
-          "truncate text-sm",
-          mono && "font-mono text-xs",
+          "truncate text-body",
+          mono && "font-mono text-cell",
           tone === "bad" ? "font-semibold text-status-failed" : "text-foreground",
         )}
       >
@@ -211,7 +211,7 @@ function StatusChip({ status }: { status: string }) {
   return (
     <span
       className={cn(
-        "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-semibold",
+        "inline-flex w-fit shrink-0 items-center gap-1 rounded-md px-2 py-0.5 font-mono text-meta font-semibold",
         bad ? "bg-status-failed/10 text-status-failed" : "bg-status-sync/10 text-status-sync",
       )}
     >

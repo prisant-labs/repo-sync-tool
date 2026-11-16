@@ -47,7 +47,7 @@ export function DiagnosticsCard() {
       <CardHeader className="justify-between">
         <div>
           <CardTitle>Diagnostics</CardTitle>
-          <p className="text-xs text-foreground/70">
+          <p className="text-cell text-foreground/70">
             Where RepoSync keeps its files, and what it has been doing.
           </p>
         </div>
@@ -209,7 +209,7 @@ function DiagnosticsBody({ d }: { d: Diagnostics }) {
       </Row>
 
       <div className="flex items-center justify-between gap-4 px-4 py-3">
-        <p className="text-xs text-foreground/70">
+        <p className="text-cell text-foreground/70">
           Copying includes the folder paths above, which contain your Windows account name.
         </p>
         <Button variant="secondary" size="sm" onClick={() => void copyDetails()}>
@@ -321,7 +321,7 @@ function Warnings({ d }: { d: Diagnostics }) {
       {items.map((text) => (
         <div key={text} className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-status-failed" aria-hidden />
-          <p className="text-sm text-foreground">{text}</p>
+          <p className="text-body text-foreground">{text}</p>
         </div>
       ))}
     </div>
@@ -373,8 +373,8 @@ function Row({
       <div className="flex w-52 shrink-0 items-start gap-1.5 pt-px">
         {Icon && <Icon aria-hidden className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />}
         <div className="min-w-0">
-          <div className="text-sm font-medium">{label}</div>
-          {hint && <div className="text-xs text-foreground/70">{hint}</div>}
+          <div className="text-body font-medium">{label}</div>
+          {hint && <div className="text-cell text-foreground/70">{hint}</div>}
         </div>
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-3 pt-px">
@@ -393,7 +393,7 @@ function Row({
 function PathRow({ value }: { value: string }) {
   return (
     <div className="border-b border-border bg-muted/40 px-4 py-2">
-      <code className="block break-all font-mono text-[11px] text-foreground/90">{value}</code>
+      <code className="block break-all font-mono text-meta text-foreground/90">{value}</code>
     </div>
   );
 }
@@ -403,8 +403,8 @@ function Mono({ children, tone }: { children: ReactNode; tone?: "warn" }) {
     <span
       className={
         tone === "warn"
-          ? "font-mono text-xs font-semibold text-status-failed"
-          : "font-mono text-xs font-semibold text-foreground"
+          ? "font-mono text-cell font-semibold text-status-failed"
+          : "font-mono text-cell font-semibold text-foreground"
       }
     >
       {children}
