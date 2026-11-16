@@ -24,10 +24,16 @@ import {
   ShellSection,
 } from "@/gallery/demos";
 import { CompareLooksSection } from "@/gallery/compare";
+import { QuietReposSection } from "@/gallery/quiet-repos";
 
 import { OptionCardSection, GroupChipSection, SettingsFieldsSection } from "@/gallery/recipes-demos";
 
-export const GROUP_ORDER = ["Primitives", "Product components", "Recipes", "Screens", "Looks"] as const;
+/**
+ * "Proposals" comes last on purpose: everything above it is what ships (or a
+ * look candidate on top of what ships); a proposal is a changed design drawn
+ * from the real parts, and the group name says so in the nav.
+ */
+export const GROUP_ORDER = ["Primitives", "Product components", "Recipes", "Screens", "Looks", "Proposals"] as const;
 type GroupName = (typeof GROUP_ORDER)[number];
 
 export interface Section {
@@ -79,5 +85,13 @@ export const SECTIONS: Section[] = [
     title: "Compare looks",
     note: "The same real components three times: Today (no look), Look A (graphite) and Look B (slate). Follows the Dark switch; the Look selector does not apply here.",
     render: () => <CompareLooksSection />,
+  },
+
+  {
+    id: "proposal-quiet-repos",
+    group: "Proposals",
+    title: "Quiet Repos table (proposal)",
+    note: "A proposal, not shipped. Today's real Repos screen above, and the same table with the polish bar applied below: no colour on healthy rows, monospace only for branches, paths and versions, sentence-case headers, one fact in one place, even rows, one toolbar band. Follows the Dark, Look and Data switches.",
+    render: () => <QuietReposSection />,
   },
 ];
