@@ -172,9 +172,12 @@ function QuietRepos() {
           const prs = r.openPrCount ?? 0;
           return (
             <div className="flex min-w-0 items-baseline gap-2" title={`${r.localName} (${r.hostType})`}>
-              <span className={cn("truncate text-identity", paused && "text-muted-foreground")}>{r.localName}</span>
+              {/* The name keeps at least 8rem: under stress data a long release
+                  tag used to take the whole cell and hide the name. The tag is
+                  what gives way now, truncated, with the full tag on hover. */}
+              <span className={cn("min-w-32 truncate text-identity", paused && "text-muted-foreground")}>{r.localName}</span>
               {r.latestReleaseTag && (
-                <span className="shrink-0 font-mono text-meta text-muted-foreground" title={`Latest release ${r.latestReleaseTag}`}>
+                <span className="min-w-0 truncate font-mono text-meta text-muted-foreground" title={`Latest release ${r.latestReleaseTag}`}>
                   {r.latestReleaseTag}
                 </span>
               )}
