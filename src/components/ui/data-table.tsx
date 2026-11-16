@@ -128,6 +128,13 @@ export interface DataTableColumn<T> {
   width: string;
   /** Content alignment. Headers stay left; only the cell value follows this. */
   align?: DataTableAlign;
+  /**
+   * Opt-in header alignment. Omitted (every shipped caller): the header sits
+   * left, as the ratified rule above says. The gallery's quiet Repos proposal
+   * passes "right" so a number's header sits over its numbers; whether the
+   * app adopts that is FB-04 (Ahead and Behind alignment), still open.
+   */
+  headerAlign?: DataTableAlign;
   /** The sticky, frozen-on-scroll column. At most one; must be first. */
   frozen?: boolean;
   /**
@@ -230,6 +237,13 @@ export interface DataTableProps<T> {
    * column a caller freezes, not re-implemented per screen.
    */
   columnVisibility?: Record<string, boolean>;
+  /**
+   * Opt-in classes merged (through `cn()`) after the header text's own, for
+   * both a plain and a sortable header. Omitted (every shipped caller), the
+   * header renders exactly as before. The gallery's quiet Repos proposal uses
+   * it for sentence-case sans headers; it is a proposal, not a decision.
+   */
+  headerClassName?: string;
 }
 
 export function DataTable<T>({
@@ -247,6 +261,7 @@ export function DataTable<T>({
   onSortChange,
   columnOrder,
   columnVisibility,
+  headerClassName,
 }: DataTableProps<T>) {
   const rowHeight = ROW_HEIGHT[density];
   const clickable = onRowClick !== undefined;
@@ -393,6 +408,7 @@ export function DataTable<T>({
                       "flex min-w-0 items-center overflow-hidden bg-muted",
                       i > 0 && "border-l border-border",
                       col.frozen && "z-[4]",
+                      col.headerAlign === "right" && "justify-end",
                     )}
                     style={{
                       padding: sortable ? 0 : `0 ${CELL_PADDING}px`,
@@ -421,6 +437,8 @@ export function DataTable<T>({
                         className={cn(
                           HEADER_TEXT_CLASSES,
                           "relative flex h-full w-full items-center text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                          col.headerAlign === "right" && "justify-end text-right",
+                          headerClassName,
                         )}
                         style={{ padding: `0 ${CELL_PADDING}px` }}
                         onClick={() => {
@@ -453,7 +471,7 @@ export function DataTable<T>({
                           ))}
                       </button>
                     ) : (
-                      <span className={HEADER_TEXT_CLASSES}>{col.header}</span>
+                      <span className={cn(HEADER_TEXT_CLASSES, headerClassName)}>{col.header}</span>
                     )}
                   </div>
                 );
