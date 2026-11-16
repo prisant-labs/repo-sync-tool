@@ -1,0 +1,10 @@
+/* The gallery stylesheet: the app stylesheet plus the gallery's own sources.
+
+   `index.css` says `@source not "./gallery"` so the production build never
+   carries gallery-only utilities. That exclusion also applies when this file
+   imports `index.css`, and a plain `@source "./"` does NOT override it
+   (verified against Tailwind 4.3.1: the gallery's own utilities vanished). A
+   file glob does override it, because the exclusion removes the directory from
+   automatic detection while an explicit glob is registered separately. */
+@import "../index.css";
+@source "./**/*.{ts,tsx}";
