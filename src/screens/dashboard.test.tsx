@@ -370,6 +370,19 @@ describe("Needs attention rows", () => {
     expect(screen.getByText("No dirty or failed repositories.")).toBeDefined();
   });
 
+  it("gives a long repository name a tooltip with the full name (BL-NI-118)", async () => {
+    const name = "an-extremely-long-repository-name-that-cannot-possibly-fit-in-the-row";
+    renderScreen(
+      [repo({ id: 1, localName: name, isDirty: true })],
+      summary({
+        attentionCount: 1,
+        attention: [summaryItem({ repoId: 1, localName: name, detail: "uncommitted changes" })],
+      }),
+    );
+    await screen.findByText(name);
+    expect(screen.getByTitle(name).textContent).toBe(name);
+  });
+
   it("structures a row's reasons under local and remote icons, not a single joined string", async () => {
     renderScreen(
       [
