@@ -65,6 +65,13 @@ describe("GroupsNav", () => {
     expect(screen.getByRole("button", { name: "New group" })).toBeDefined();
   });
 
+  it("gives a long group name a tooltip with the full name (BL-NI-118)", () => {
+    const longName = "a-group-with-an-extremely-long-name-that-cannot-fit-in-the-sidebar";
+    renderNav([{ id: 9, name: longName, color: null, repoCount: 42 }]);
+    expect(screen.getByTitle(longName).textContent).toBe(longName);
+    expect(screen.getByText("42")).toBeDefined();
+  });
+
   it("New group opens GroupDialog in create mode", async () => {
     renderNav(GROUPS);
     const user = userEvent.setup();
