@@ -1,5 +1,5 @@
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   AA_NON_TEXT,
@@ -75,6 +75,21 @@ type Pair = {
    */
   rail?: boolean;
 };
+
+/**
+ * Every `text-<token>/<alpha>` the app uses (alpha as a fraction). Found by
+ * grep on 2026-11-17: `text-foreground/70`, `/80`, `/90` across the activity
+ * receipt, Activity screen, diagnostics card, empty state, settings, repo
+ * detail and the app-shell recovery banner. The guard test near the end of this
+ * file keeps this list in step with `src/`.
+ */
+const SEE_THROUGH_INKS = [
+  { token: "foreground", alpha: 0.7 },
+  { token: "foreground", alpha: 0.8 },
+  { token: "foreground", alpha: 0.9 },
+] as const;
+/** Every app surface plain text can sit on outside the navigation rail. */
+const SEE_THROUGH_SURFACES = ["background", "card", "muted", "popover"] as const;
 
 /**
  * Every pair that ships, with where it lives. Keep the `where` accurate: it is
@@ -256,6 +271,23 @@ const PAIRS: Pair[] = [
       floor: AA_NON_TEXT,
     },
   ]),
+
+  // --- see-through text (BL-NI-121a) ----------------------------------------
+  // `text-<token>/<alpha>` fades the INK toward whatever is behind it. The
+  // opaque token passing says nothing about the faded one, so each
+  // (token, alpha) the app uses is registered here, composited over the
+  // surface by `contrastOfTranslucentInk` in gamma-encoded sRGB (as CSS does).
+  // Where the surface is not obvious from the markup, it is registered against
+  // every plausible app surface. A guard test below fails when `src/` uses a
+  // (token, alpha) this list does not hold.
+  ...SEE_THROUGH_INKS.flatMap(({ token, alpha }) =>
+    SEE_THROUGH_SURFACES.map((on) => ({
+      what: `see-through text, ${token} at ${Math.round(alpha * 100)}%`,
+      ink: token,
+      on,
+      inkAlpha: alpha,
+    })),
+  ),
 
   // --- status chips: the ink/tint pairs StatusBadge actually paints --------
   ...(
@@ -481,6 +513,55 @@ describe("the look comparison", () => {
       const row = `| ${LOOK_LABEL[s.look]} | ${s.theme} | ${m.secondary.toFixed(2)} | ${m.border.toFixed(2)} | ${m.cardOnPage.toFixed(2)} | ${m.button.toFixed(2)} |`;
       expect(readme, `README row for ${LOOK_LABEL[s.look]} ${s.theme}`).toContain(row);
     }
+  });
+});
+
+/**
+ * THE GUARD (BL-NI-121a). Scans source for every `text-<token>/<alpha>` class
+ * and fails if its (token, alpha) is not in `SEE_THROUGH_INKS`, so a new
+ * see-through text cannot ship unchecked. Test files and `lib/contrast.ts` are
+ * skipped because they mention such classes in prose. `text-<size>/<leading>`
+ * shorthand (`text-sm/6`) is not a colour, so only names that are not Tailwind
+ * font sizes count.
+ */
+describe("see-through text is registered", () => {
+  const SRC = new URL("../", import.meta.url);
+  const NOT_COLOURS = new Set(["xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl", "6xl", "7xl", "8xl", "9xl"]);
+
+  function sourceFiles(): string[] {
+    return (readdirSync(SRC, { recursive: true }) as string[])
+      .map((p) => p.replaceAll("\\", "/"))
+      .filter((p) => /\.(tsx?|css|html)$/.test(p))
+      .filter((p) => !/\.test\.tsx?$/.test(p) && p !== "lib/contrast.ts");
+  }
+
+  function found(): Map<string, string[]> {
+    const uses = new Map<string, string[]>();
+    for (const file of sourceFiles()) {
+      const text = readFileSync(new URL(file, SRC), "utf8");
+      for (const m of text.matchAll(/(?<![\w-])text-([a-z][a-z0-9-]*)\/(\d+)(?![\w.])/g)) {
+        if (NOT_COLOURS.has(m[1])) continue;
+        const key = `${m[1]}/${m[2]}`;
+        uses.set(key, [...(uses.get(key) ?? []), file]);
+      }
+    }
+    return uses;
+  }
+
+  it("finds the classes it is meant to guard", () => {
+    // A scan that silently found nothing would pass the guard below.
+    expect(found().has("foreground/70")).toBe(true);
+  });
+
+  it("every see-through text class in src/ has a registered pair", () => {
+    const registered = new Set(
+      SEE_THROUGH_INKS.map((i) => `${i.token}/${Math.round(i.alpha * 100)}`),
+    );
+    const missing = [...found()].filter(([key]) => !registered.has(key));
+    expect(
+      missing.map(([key, files]) => `text-${key} in ${[...new Set(files)].join(", ")}`),
+      "register each (token, alpha) in SEE_THROUGH_INKS so it is measured",
+    ).toEqual([]);
   });
 });
 
