@@ -4,6 +4,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@/gallery/stub-ipc";
 import { GalleryApp } from "@/gallery/gallery-app";
+import { STRESS_GROUPS } from "@/gallery/fixtures-stress";
 
 /**
  * The quiet Repos proposal. These pin what the proposal MEANS, not how it is
@@ -16,9 +17,10 @@ afterEach(() => {
   document.documentElement.classList.remove("dark");
 });
 
-async function openSection() {
+async function openSection(dataState?: string) {
   const user = userEvent.setup();
   render(<GalleryApp />);
+  if (dataState) await user.click(screen.getByRole("button", { name: dataState }));
   await user.click(screen.getByRole("button", { name: "Quiet Repos table (proposal)" }));
   const today = await screen.findByRole("table", { name: "Tracked repositories" });
   const quiet = await screen.findByRole("table", { name: "Tracked repositories, quiet proposal" });
@@ -59,5 +61,13 @@ describe("quiet Repos proposal", () => {
     for (const label of ["All", "Behind", "Dirty", "Failed", "Paused", "No upstream", "Ahead", "In sync"]) {
       expect(within(filters).getByRole("button", { name: new RegExp(`^${label}`) }), label).toBeTruthy();
     }
+  });
+
+  it("hands both tables the groups of the chosen data state, so a stress-only group name renders in each", async () => {
+    // A name that exists only in the stress groups, never in the populated fixture.
+    const longName = STRESS_GROUPS.find((g) => g.name.startsWith("archive-of-things"))!.name;
+    const { today, quiet } = await openSection("Stress (200)");
+    expect(within(today).getAllByText(longName).length).toBeGreaterThan(0);
+    expect(within(quiet).getAllByText(longName).length).toBeGreaterThan(0);
   });
 });
