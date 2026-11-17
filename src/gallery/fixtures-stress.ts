@@ -5,6 +5,7 @@ import type {
   HeadState,
   RepoSummary,
   SummaryItem,
+  UpstreamState,
 } from "@/lib/bindings";
 import { GROUPS, NOW, REPO_TEMPLATE, type Scenario } from "@/gallery/fixtures";
 
@@ -81,6 +82,11 @@ function remoteUrl(i: number): string | null {
   return `https://${base}/${org}/${name}.git?ref=refs/heads/${LONG_BRANCHES[i % LONG_BRANCHES.length].replace(/\//g, "%2F")}`;
 }
 
+/** Builds one full dataset from scratch. Exported so a test can build two and compare them. */
+export function buildStressRepos(forceFailed: boolean): RepoSummary[] {
+  return Array.from({ length: STRESS_REPO_COUNT }, (_, i) => stressRepo(i, forceFailed));
+}
+
 function stressRepo(i: number, forceFailed: boolean): RepoSummary {
   const id = i + 1;
   const long = i % 4 === 0;
@@ -97,6 +103,10 @@ function stressRepo(i: number, forceFailed: boolean): RepoSummary {
   // there is no upstream to be ahead of or behind. `null` is "not observed".
   const head: HeadState | null = i % 19 === 0 ? "unborn" : i % 17 === 0 ? "detached" : i % 43 === 5 ? null : "branch";
   const onBranch = head === "branch";
+  // The upstream comes before the counts: per bindings.ts, ahead and behind are only
+  // meaningful for a branch that tracks an upstream, so they are null otherwise.
+  const upstreamState: UpstreamState | null = !onBranch ? null : i % 15 === 7 ? "none" : "tracking";
+  const tracking = upstreamState === "tracking";
   return {
     ...REPO_TEMPLATE,
     id,
@@ -104,8 +114,8 @@ function stressRepo(i: number, forceFailed: boolean): RepoSummary {
     localPath: `${root}${depth}\\${localName}`,
     remoteOriginUrl: remoteUrl(i),
     hostType,
-    aheadCount: failed || !onBranch ? null : aheadHeavy ? 1200 + i * 37 : i % 6 === 1 ? i % 40 : 0,
-    behindCount: failed || !onBranch ? null : behindHeavy ? 98765 + i : i % 7 === 3 ? 1 + (i % 300) : 0,
+    aheadCount: failed || !tracking ? null : aheadHeavy ? 1200 + i * 37 : i % 6 === 1 ? i % 40 : 0,
+    behindCount: failed || !tracking ? null : behindHeavy ? 98765 + i : i % 7 === 3 ? 1 + (i % 300) : 0,
     isDirty: i % 10 === 6,
     isDetached: head === "detached",
     enabled: forceFailed || i % 23 !== 0,
@@ -117,7 +127,7 @@ function stressRepo(i: number, forceFailed: boolean): RepoSummary {
     lastLocalCommitAt: NOW - ((i * 29) % 900) * DAY,
     activeBranch: onBranch ? LONG_BRANCHES[i % LONG_BRANCHES.length] : null,
     headState: head,
-    upstreamState: !onBranch ? null : i % 15 === 7 ? "none" : "tracking",
+    upstreamState,
     stars: i % 5 === 2 ? null : i * 1337,
     forks: i % 5 === 2 ? null : i * 211,
     license: i % 6 === 0 ? null : "LicenseRef-Example-Proprietary-Source-Available-1.0",
@@ -128,10 +138,10 @@ function stressRepo(i: number, forceFailed: boolean): RepoSummary {
 }
 
 /** 200 repositories that exercise every column and chip at its worst. */
-export const STRESS_REPOS: RepoSummary[] = Array.from({ length: STRESS_REPO_COUNT }, (_, i) => stressRepo(i, false));
+export const STRESS_REPOS: RepoSummary[] = buildStressRepos(false);
 
 /** The same 200, every one of them failed, with the full range of error text. */
-export const ALL_FAILED_REPOS: RepoSummary[] = Array.from({ length: STRESS_REPO_COUNT }, (_, i) => stressRepo(i, true));
+export const ALL_FAILED_REPOS: RepoSummary[] = buildStressRepos(true);
 
 const GROUP_NAMES = [
   "work", "personal", "clients",

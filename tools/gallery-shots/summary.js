@@ -21,32 +21,40 @@ export function parseShotName(fileName) {
  * renderer does not always place identically). Any real change to an element, even a one
  * pixel border, is far larger than a handful of pixels, so a small floor hides the noise
  * without hiding a change. The diff image is still written for a noisy shot.
+ *
+ * The floor applies to the RAW count (pixelmatch threshold 0), not the perceptual one
+ * (threshold 0.1). A uniform palette change is invisible to the perceptual count but touches
+ * every pixel in the raw count, so the raw count is the one that must clear the floor.
+ * See BL-TW-06 in docs/backlog.md.
  */
 export const NOISE_FLOOR = 4;
 
 /**
  * Decide one shot's status from what was found on each side.
  *   base, head: `{ width, height }` for a side that has the shot, or null when it does not.
- *   changed: the number of pixels pixelmatch reported different (ignored unless sizes match).
- * Returns `{ status, changed, total }`. A size mismatch is its own status because the
+ *   changed: the RAW number of pixels that differ at all (threshold 0); ignored unless sizes match.
+ *   perceptual: the number that differ at pixelmatch's perceptual threshold (0.1). Defaults to
+ *     `changed`. It is reported, but it never decides the status.
+ * Returns `{ status, changed, perceptual, total }`. A size mismatch is its own status because the
  * pixels cannot be compared one-to-one, and calling it "changed pixels: 0" would hide it.
  */
-export function classifyShot(base, head, changed = 0, noiseFloor = NOISE_FLOOR) {
+export function classifyShot(base, head, changed = 0, noiseFloor = NOISE_FLOOR, perceptual = changed) {
   if (!base && !head) throw new Error("classifyShot needs at least one side");
-  if (!base) return { status: "added", changed: 0, total: head.width * head.height };
-  if (!head) return { status: "removed", changed: 0, total: base.width * base.height };
+  if (!base) return { status: "added", changed: 0, perceptual: 0, total: head.width * head.height };
+  if (!head) return { status: "removed", changed: 0, perceptual: 0, total: base.width * base.height };
   if (base.width !== head.width || base.height !== head.height) {
     return {
       status: "size-changed",
       changed: 0,
+      perceptual: 0,
       total: head.width * head.height,
       baseSize: `${base.width}x${base.height}`,
       headSize: `${head.width}x${head.height}`,
     };
   }
   const total = head.width * head.height;
-  if (changed === 0) return { status: "same", changed, total };
-  return { status: changed <= noiseFloor ? "noise" : "changed", changed, total };
+  if (changed === 0) return { status: "same", changed, perceptual, total };
+  return { status: changed <= noiseFloor ? "noise" : "changed", changed, perceptual, total };
 }
 
 /** Percent of pixels changed, with two decimals, or "n/a" when there is nothing to compare. */
@@ -59,7 +67,7 @@ const STATUS_ORDER = { "size-changed": 0, changed: 1, added: 2, removed: 3, nois
 
 /**
  * Build the Markdown report.
- *   results: `[{ section, theme, status, changed, total, baseSize?, headSize? }]`
+ *   results: `[{ section, theme, status, changed, perceptual?, total, baseSize?, headSize? }]`
  * Unchanged shots are counted but not listed, so a pull request that changes one section
  * produces a short table instead of a hundred rows. Rows with differences come first,
  * the biggest change first within each kind.
@@ -102,6 +110,9 @@ export function buildSummary(results) {
     if (r.status === "changed") {
       result = "changed";
       pixels = String(r.changed);
+      if (r.perceptual !== undefined && r.perceptual !== r.changed) {
+        pixels += ` (${r.perceptual} perceptual)`;
+      }
       percent = formatPercent(r.changed, r.total);
     } else if (r.status === "size-changed") {
       result = `size changed (${r.baseSize} to ${r.headSize})`;

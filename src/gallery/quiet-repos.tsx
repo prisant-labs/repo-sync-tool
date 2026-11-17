@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { ChevronRight, FolderGit2, PauseCircle, Plus, RefreshCw, Search, X } from "lucide-react";
 import { Cell } from "@/gallery/cells";
-import { GROUPS } from "@/gallery/fixtures";
+import { groupsForScenario } from "@/gallery/fixtures-stress";
+import { WindowContext } from "@/gallery/window-frame";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DataTable, type DataTableColumn, type DataTableSort } from "@/components/ui/data-table";
@@ -63,6 +64,10 @@ const COLUMN_ORDER = ["repo", "status", "branch", "ahead", "behind", "groups", "
 
 /** The section: today's real screen, then the quiet proposal, stacked. */
 export function QuietReposSection() {
+  // Both tables get the groups of the chosen data state: under Stress or All failed the
+  // memberships span 25 groups, and the fixed populated list would silently drop 23 of them.
+  const { scenario } = useContext(WindowContext);
+  const groups = useMemo(() => groupsForScenario(scenario), [scenario]);
   return (
     <>
       <Cell
@@ -71,7 +76,7 @@ export function QuietReposSection() {
         height={560}
         contained
       >
-        <TodayRepos />
+        <TodayRepos groups={groups} />
       </Cell>
       <Cell
         title="Quiet (proposal, not shipped)"
@@ -79,18 +84,18 @@ export function QuietReposSection() {
         height={560}
         contained
       >
-        <QuietRepos />
+        <QuietRepos groups={groups} />
       </Cell>
     </>
   );
 }
 
-function TodayRepos() {
+function TodayRepos({ groups }: { groups: GroupSummary[] }) {
   const [addOpen, setAddOpen] = useState(false);
   return (
     <ReposScreen
       activeGroupId={null}
-      groups={GROUPS}
+      groups={groups}
       onClearGroup={noop}
       onGroupsChanged={noop}
       addOpen={addOpen}
@@ -137,7 +142,7 @@ function branchReason(r: RepoSummary): string | null {
   return null;
 }
 
-function QuietRepos() {
+function QuietRepos({ groups }: { groups: GroupSummary[] }) {
   const repos = useRepoList(ALL_FILTER);
   const memberships = useRepoGroupMemberships();
   const [query, setQuery] = useState("");
@@ -147,7 +152,7 @@ function QuietRepos() {
   const [order, setOrder] = useState(COLUMN_ORDER);
 
   const list = useMemo(() => repos.data ?? [], [repos.data]);
-  const groupById = useMemo(() => new Map<number, GroupSummary>(GROUPS.map((g) => [g.id, g])), []);
+  const groupById = useMemo(() => new Map<number, GroupSummary>(groups.map((g) => [g.id, g])), [groups]);
 
   const named = useMemo(() => {
     const q = query.trim().toLowerCase();

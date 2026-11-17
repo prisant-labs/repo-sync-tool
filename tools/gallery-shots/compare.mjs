@@ -12,9 +12,12 @@ import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
 import { buildSummary, classifyShot, parseShotName } from "./summary.js";
 
-// pixelmatch's default threshold (0.1) ignores sub-visible colour noise from anti-aliasing.
-// Identical builds still differ by exactly zero pixels; this only keeps real changes honest.
-const MATCH_OPTIONS = { threshold: 0.1 };
+// Two counts per shot. The RAW count (threshold 0) sees every colour difference, so a
+// whole-surface palette change (all #ffffff vs all #ebebeb) is caught. The PERCEPTUAL count
+// (pixelmatch's default threshold 0.1) ignores sub-visible differences and is reported
+// beside the raw count when the two disagree. Classification uses the raw count.
+const RAW_OPTIONS = { threshold: 0 };
+const PERCEPTUAL_OPTIONS = { threshold: 0.1 };
 
 const [baseDir, headDir, diffDir] = process.argv.slice(2);
 if (!baseDir || !headDir || !diffDir) {
@@ -46,9 +49,11 @@ async function main() {
     const head = headShots.has(name) ? await readPng(headDir, name) : null;
 
     let changed = 0;
+    let perceptual = 0;
     if (base && head && base.width === head.width && base.height === head.height) {
       const diff = new PNG({ width: head.width, height: head.height });
-      changed = pixelmatch(base.data, head.data, diff.data, head.width, head.height, MATCH_OPTIONS);
+      changed = pixelmatch(base.data, head.data, diff.data, head.width, head.height, RAW_OPTIONS);
+      perceptual = pixelmatch(base.data, head.data, null, head.width, head.height, PERCEPTUAL_OPTIONS);
       if (changed > 0) await writeFile(path.join(diffDir, name), PNG.sync.write(diff));
     }
     results.push({
@@ -58,6 +63,8 @@ async function main() {
         base && { width: base.width, height: base.height },
         head && { width: head.width, height: head.height },
         changed,
+        undefined,
+        perceptual,
       ),
     });
   }
