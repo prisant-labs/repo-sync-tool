@@ -310,8 +310,21 @@ describe("ReposScreen table", () => {
     renderScreen([repo({ localPath: "E:\\Projects\\repo-a" })]);
     await screen.findByText("repo-a");
 
-    const folderCell = screen.getByTitle("Open in File Explorer");
+    const folderCell = screen.getByTitle("Open in File Explorer: E:\\Projects\\repo-a");
     expect(folderCell.textContent).toBe("E:\\Projects\\repo-a");
+  });
+
+  // BL-NI-118: long text must stay readable in full somewhere.
+  it("puts the full repository name, branch and folder path in tooltips (BL-NI-118)", async () => {
+    const name = "an-extremely-long-repository-name-that-cannot-possibly-fit-in-the-column";
+    const branch = "feature/a-very-long-branch-name-with-many-segments-and-an-issue-number-12345";
+    const path = "E:\\Projects\\some\\deeply\\nested\\folder\\" + name;
+    renderScreen([repo({ localName: name, activeBranch: branch, headState: "branch", localPath: path })]);
+    await screen.findByText(name);
+
+    expect(screen.getByTitle(name).textContent).toBe(name);
+    expect(screen.getByTitle(branch).textContent).toBe(branch);
+    expect(screen.getByTitle(`Open in File Explorer: ${path}`)).toBeDefined();
   });
 
   it("renders Ahead/Behind values with an icon, and a dash with no icon when zero", async () => {

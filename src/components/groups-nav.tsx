@@ -193,7 +193,9 @@ function GroupRow({
           )}
           style={group.color ? { backgroundColor: group.color } : undefined}
         />
-        <span className="truncate">{group.name}</span>
+        <span className="min-w-0 truncate" title={group.name}>
+          {group.name}
+        </span>
       </button>
 
       {confirming ? (
@@ -212,7 +214,7 @@ function GroupRow({
           </RowIcon>
         </span>
       ) : (
-        <span className="flex items-center pr-2.5">
+        <span className="flex shrink-0 items-center pr-2.5">
           <span
             className={cn(
               "font-mono text-meta tabular-nums transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
