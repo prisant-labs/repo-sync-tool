@@ -562,7 +562,8 @@ jobs:
         run: node tools/gallery-shots/shoot.mjs dist-gallery/gallery.html "$RUNNER_TEMP/shots/head"
 
       # Only a VERIFIED absence of a base gallery (no `gallery:build` script in the base's
-      # package.json) skips the comparison and passes. If the base has a gallery and it fails
+      # package.json), or a merge base that is the head commit itself (`no-comparison`, so
+      # there is nothing to compare), skips the comparison and passes. If the base has a gallery and it fails
       # to install, build or be photographed, the check cannot do its job, so this step records
       # why and the last step of the job fails. The summary and the artifact are still written
       # first, so the failure can be diagnosed from them.
@@ -570,10 +571,21 @@ jobs:
         id: base
         shell: bash
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          base_sha="$(git merge-base "origin/$BASE_REF" HEAD)"
+          # The base commit GitHub recorded when this run started, not the moving tip of the
+          # target branch. After the target branch already contains this PR (a re-run after
+          # merge), `merge-base origin/<branch> HEAD` is HEAD itself and the job would compare
+          # HEAD with HEAD and report "no changes".
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$BASE_SHA"
+          fi
+          base_sha="$(git merge-base "$BASE_SHA" HEAD)"
           echo "Merge base: $base_sha"
+          if [ "$base_sha" = "$(git rev-parse HEAD)" ]; then
+            echo "result=no-comparison" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git worktree add "$RUNNER_TEMP/base" "$base_sha"
           cd "$RUNNER_TEMP/base"
           if ! grep -q '"gallery:build"' package.json; then
@@ -601,6 +613,9 @@ jobs:
             ok)
               node tools/gallery-shots/compare.mjs "$RUNNER_TEMP/shots/base" "$RUNNER_TEMP/shots/head" "$RUNNER_TEMP/shots/diff" >> "$GITHUB_STEP_SUMMARY"
               ;;
+            no-comparison)
+              printf '## Gallery screenshot check\n\nNo comparison possible: the merge base is the head commit itself (the target branch already contains this commit), so there is nothing to compare. This is not a "no changes" result.\n' >> "$GITHUB_STEP_SUMMARY"
+              ;;
             no-gallery)
               printf '## Gallery screenshot check\n\nNo base gallery: the merge base has no `gallery:build` script, so there is nothing to compare against.\n' >> "$GITHUB_STEP_SUMMARY"
               ;;
@@ -620,7 +635,7 @@ jobs:
 
       # Last on purpose, after the summary and the upload. See the base step for the rule.
       - name: Fail if the base gallery exists but could not be captured
-        if: steps.base.outputs.result != 'ok' && steps.base.outputs.result != 'no-gallery'
+        if: steps.base.outputs.result != 'ok' && steps.base.outputs.result != 'no-gallery' && steps.base.outputs.result != 'no-comparison'
         run: |
           echo "::error::The merge base has a gallery, but its result was '${{ steps.base.outputs.result }}'."
           exit 1
