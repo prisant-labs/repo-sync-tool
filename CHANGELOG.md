@@ -247,6 +247,13 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ### Fixed
 
+- **The release build can produce signed updates again.** A note written into
+  one of the build's settings files as an extra field made the release build
+  stop before it built anything, once the update-signing key was in place.
+  Normal builds never read that file, so nothing caught it until the first
+  test run of the release. The notes now live in the build documentation, and
+  a test checks every settings file on every change.
+
 - **A repository whose upstream branch was deleted no longer reads "In sync".**
   RepoSync has always known the difference between a repository tracking a live
   upstream, one with no upstream at all, and one whose upstream was deleted from
