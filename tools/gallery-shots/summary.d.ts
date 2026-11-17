@@ -9,7 +9,10 @@ export interface ShotResult {
   section: string;
   theme: Theme;
   status: ShotStatus;
+  /** Raw count (pixelmatch threshold 0). Decides the status. */
   changed: number;
+  /** Perceptual count (threshold 0.1). Reported beside `changed` when they differ. */
+  perceptual?: number;
   total: number;
   baseSize?: string;
   headSize?: string;
@@ -21,6 +24,7 @@ export function classifyShot(
   head: Size | null,
   changed?: number,
   noiseFloor?: number,
+  perceptual?: number,
 ): Omit<ShotResult, "section" | "theme">;
 export function formatPercent(changed: number, total: number): string;
 export function buildSummary(results: ShotResult[]): string;

@@ -26,17 +26,30 @@ describe("classifyShot", () => {
   const size = { width: 10, height: 10 };
 
   it("reports identical shots as same", () => {
-    expect(classifyShot(size, size, 0)).toEqual({ status: "same", changed: 0, total: 100 });
+    expect(classifyShot(size, size, 0)).toEqual({ status: "same", changed: 0, perceptual: 0, total: 100 });
   });
 
   it("reports differing pixels as changed", () => {
-    expect(classifyShot(size, size, 7)).toEqual({ status: "changed", changed: 7, total: 100 });
+    expect(classifyShot(size, size, 7)).toEqual({ status: "changed", changed: 7, perceptual: 7, total: 100 });
   });
 
   it("treats a difference at or under the noise floor as noise", () => {
     expect(classifyShot(size, size, 1).status).toBe("noise");
     expect(classifyShot(size, size, 4).status).toBe("noise");
     expect(classifyShot(size, size, 5).status).toBe("changed");
+  });
+
+  it("flags a uniform palette change that the perceptual count cannot see", () => {
+    // All #ffffff vs all #ebebeb: 0 perceptual differences, every pixel differs raw.
+    const result = classifyShot(size, size, 100, undefined, 0);
+    expect(result.status).toBe("changed");
+    expect(result.changed).toBe(100);
+    expect(result.perceptual).toBe(0);
+  });
+
+  it("applies the noise floor to the raw count", () => {
+    expect(classifyShot(size, size, 3, undefined, 0).status).toBe("noise");
+    expect(classifyShot(size, size, 5, undefined, 0).status).toBe("changed");
   });
 
   it("reports a size mismatch instead of a pixel count", () => {
@@ -87,6 +100,15 @@ describe("buildSummary", () => {
     expect(md).toContain("No pixel differences in 2 screenshots.");
     expect(md).toContain("1 more differ by 4 pixels or fewer");
     expect(md).not.toContain("| buttons |");
+  });
+
+  it("shows the perceptual count only when it differs from the raw count", () => {
+    const md = buildSummary([
+      row({ section: "palette", status: "changed", changed: 1000, perceptual: 0 }),
+      row({ section: "same-count", status: "changed", changed: 50, perceptual: 50 }),
+    ]);
+    expect(md).toContain("| palette | light | changed | 1000 (0 perceptual) | 100.00% |");
+    expect(md).toContain("| same-count | light | changed | 50 | 5.00% |");
   });
 
   it("lists only the shots that differ and counts the rest", () => {
