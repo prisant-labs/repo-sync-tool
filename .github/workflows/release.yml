@@ -424,8 +424,20 @@ jobs:
       #
       # Same `dist` profile and same computed args as the real cut, so this proves the build
       # the release would actually perform rather than a cheaper stand-in.
+      #
+      # The signing key reaches this step when the secret exists, exactly as it reaches the
+      # real cut below. The compute step turns updater artifacts on whenever the secret
+      # exists, and Tauri then refuses to bundle without the private key ("A public key has
+      # been found, but no private key"). Until 2026-11-17 this step did not pass it, so every
+      # dry run with the secret failed at bundling (run 44135903413). Passing it also lets the
+      # dry run prove that the key and its password actually sign: the report step below
+      # lists the `.sig` files. The exposure is the same as the tag path: both run this
+      # repository's build code at a ref that only a writer can push or dispatch.
       - name: Build and bundle (DRY RUN, publishes nothing)
         if: github.event_name == 'workflow_dispatch'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build ${{ steps.updater.outputs.args }}
 
       - name: Report what the dry run produced
