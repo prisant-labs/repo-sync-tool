@@ -27,8 +27,9 @@ describe("stress fixtures", () => {
   });
 
   it("is index-based, so two builds of the same index agree", () => {
-    // A second module instance would rebuild everything from scratch.
-    expect(stress.STRESS_REPOS[137]).toEqual(STRESS_REPOS[137]);
+    // Two independently generated datasets must agree on every repository.
+    expect(stress.buildStressRepos(false)).toEqual(STRESS_REPOS);
+    expect(stress.buildStressRepos(true)).toEqual(ALL_FAILED_REPOS);
     expect(STRESS_REPOS[0].localName).toBe(STRESS_REPOS[0].localName);
     expect(new Set(STRESS_REPOS.map((r) => r.localName)).size).toBe(200);
   });
@@ -140,6 +141,15 @@ describe("fixture invariants", () => {
         // No branch means no upstream, so nothing to count ahead or behind.
         if (r.headState !== "branch") {
           expect(r.upstreamState, r.localName).toBeNull();
+          expect(r.aheadCount, r.localName).toBeNull();
+          expect(r.behindCount, r.localName).toBeNull();
+        }
+      }
+    });
+
+    it(`shows ahead and behind counts only for a repository that tracks an upstream (${name})`, () => {
+      for (const r of repos) {
+        if (r.upstreamState !== "tracking") {
           expect(r.aheadCount, r.localName).toBeNull();
           expect(r.behindCount, r.localName).toBeNull();
         }
