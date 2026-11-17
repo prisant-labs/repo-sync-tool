@@ -468,6 +468,11 @@ specs, plans, hygiene gates) lives in `docs/internal/release-plans/`.
 
 ### Security
 
+- **A newly published flaw in the compression library is fixed.** RepoSync
+  reads Git data through a library that uses zlib, and versions of its zlib
+  wrapper before 1.1.33 could overflow a memory buffer (RUSTSEC-2026-0544).
+  It is updated to 1.1.33.
+
 - **One newly published advisory is fixed, and one is recorded as an exception
   with an expiry.** A flaw in `quinn-udp` (RUSTSEC-2026-0538) is fixed by an
   update. That library is listed in the lockfile but is not built into RepoSync,
