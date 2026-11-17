@@ -69,5 +69,8 @@ describe("quiet Repos proposal", () => {
     const { today, quiet } = await openSection("Stress (200)");
     expect(within(today).getAllByText(longName).length).toBeGreaterThan(0);
     expect(within(quiet).getAllByText(longName).length).toBeGreaterThan(0);
-  });
+    // Two 200-row tables in jsdom: under a second locally, but past the 5 s default on the
+    // Windows CI runner (PR #127's first run timed out). The generous limit fails a real hang
+    // without failing a slow runner.
+  }, 30_000);
 });
