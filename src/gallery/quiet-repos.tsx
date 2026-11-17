@@ -16,6 +16,7 @@ import { ReposScreen } from "@/screens/repos";
 import { useRepoGroupMemberships, useRepoList } from "@/hooks/queries";
 import { deriveStatus, relativeTime, STATUS_ORDER, STATUS_STYLE, type RepoStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
+import { countTitle, formatCount } from "@/lib/format-count";
 import type { GroupSummary, RepoSummary } from "@/lib/bindings";
 
 /**
@@ -118,10 +119,14 @@ function QuietStatus({ status }: { status: RepoStatus }) {
 }
 
 /** A count that is blank at a known zero and a dash when unknown. */
-function count(value: number | null, className?: string) {
+function count(value: number | null, className?: string, direction: "ahead" | "behind" = "behind") {
   if (value === null) return null;
   if (value === 0) return "";
-  return <span className={cn("text-cell tabular-nums", className)}>{value}</span>;
+  return (
+    <span className={cn("text-cell tabular-nums", className)} title={countTitle(value, direction)}>
+      {formatCount(value)}
+    </span>
+  );
 }
 
 /** Why a branch cell is empty, in today's words (repos.tsx, RR6). */
@@ -221,7 +226,7 @@ function QuietRepos() {
         width: "64px",
         align: "right",
         headerAlign: "right",
-        cell: (r) => count(r.aheadCount),
+        cell: (r) => count(r.aheadCount, undefined, "ahead"),
         sortValue: (r) => r.aheadCount,
       },
       {

@@ -42,6 +42,7 @@ import {
   STATUS_STYLE,
   type RepoStatus,
 } from "@/lib/status";
+import { countTitle, formatCount } from "@/lib/format-count";
 import { cn } from "@/lib/utils";
 
 const ALL_FILTER = { enabledOnly: null, hostType: null, query: null };
@@ -504,7 +505,12 @@ export function ReposScreen({
         width: "64px",
         align: "right",
         icon: ArrowUp,
-        cell: (r) => ((r.aheadCount ?? 0) > 0 ? <span className="font-mono text-cell tabular-nums">{r.aheadCount}</span> : null),
+        cell: (r) =>
+          (r.aheadCount ?? 0) > 0 ? (
+            <span className="font-mono text-cell tabular-nums" title={countTitle(r.aheadCount ?? 0, "ahead")}>
+              {formatCount(r.aheadCount ?? 0)}
+            </span>
+          ) : null,
         // The RAW nullable count, not the `?? 0` the cell renders with: a
         // repo that has never been inspected (`null`) is a different, less
         // known thing than a repo inspected and found to be exactly even
@@ -519,7 +525,11 @@ export function ReposScreen({
         align: "right",
         icon: ArrowDown,
         cell: (r) =>
-          (r.behindCount ?? 0) > 0 ? <span className="font-mono text-cell tabular-nums">{r.behindCount}</span> : null,
+          (r.behindCount ?? 0) > 0 ? (
+            <span className="font-mono text-cell tabular-nums" title={countTitle(r.behindCount ?? 0, "behind")}>
+              {formatCount(r.behindCount ?? 0)}
+            </span>
+          ) : null,
         sortValue: (r) => r.behindCount,
       },
       {

@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { countTitle, formatCount } from "@/lib/format-count";
 import { STATUS_ICON, STATUS_STYLE, type RepoStatus } from "@/lib/status";
 
 /**
@@ -30,13 +31,15 @@ export function StatusBadge({
 }) {
   const style = STATUS_STYLE[status];
   const Icon = STATUS_ICON[status];
-  const label =
-    (status === "behind" || status === "ahead") && count != null && count > 0
-      ? `${count} ${style.label.toLowerCase()}`
-      : style.label;
+  const hasCount = (status === "behind" || status === "ahead") && count != null && count > 0;
+  const label = hasCount ? `${formatCount(count)} ${style.label.toLowerCase()}` : style.label;
+  // A very large count is abbreviated to fit the chip; the title keeps the
+  // exact figure reachable (BL-NI-120).
+  const title = hasCount ? countTitle(count, status) : undefined;
 
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex w-fit justify-self-start items-center gap-1.5 rounded-md",
         "px-[0.5em] pt-[0.2em] pb-[0.25em] font-mono text-cell font-semibold whitespace-nowrap",
