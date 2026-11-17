@@ -155,3 +155,31 @@ cargo test -p reposync --lib -- updates::tests::production_tauri_conf_has_no_tes
 The overlay files (`tauri.updater-e2e.conf.json`, `tauri.updater-prod.conf.json`) are
 committed but INERT unless explicitly passed via `--config`; they never merge into the
 production `tauri.conf.json`, which stays TLS-only with no test pubkey.
+
+## What each overlay does
+
+JSON has no comments, and the Tauri CLI validates every config file against its schema,
+which rejects unknown keys. The overlays therefore carry no explanation of their own; it
+lives here. Until 2026-11-17 each overlay held a `"//"` comment key. The release build
+merges the production overlay only when the signing secret is present, so the first run
+with the secret (a release dry run on 2026-11-17) failed with "Additional properties are
+not allowed ('//' was unexpected)". `src/test/tauri-config.test.ts` now checks every
+`src-tauri/*.conf.json` against the installed CLI's schema on every pull request.
+
+- **`tauri.updater-prod.conf.json`: the release overlay.** `.github/workflows/release.yml`
+  deep-merges it into `tauri.conf.json` through `--config`, and only when the
+  `TAURI_SIGNING_PRIVATE_KEY` secret is present. It turns on
+  `bundle.createUpdaterArtifacts`, so the release build produces the signed updater
+  artifacts (`.sig` files) and the `latest.json` manifest. Per-push CI (`pnpm tauri build`
+  in `ci.yml`) does not apply it, so a build without the key never hits the "signing key
+  required" failure. The committed `tauri.conf.json` keeps `createUpdaterArtifacts` off.
+  The public key and the endpoints stay in the base config.
+- **`tauri.updater-e2e.conf.json`: the test-only E2E overlay.** The local E2E procedure
+  above merges it through `--config`. It (1) opts into plain-http transport with
+  `dangerousInsecureTransportProtocol`, because production builds enforce TLS on updater
+  endpoints and the local channel is `http://localhost`; (2) points the endpoint at a
+  local file server; (3) carries the disposable test pubkey sentinel, which the E2E
+  procedure replaces at runtime with a throwaway public key that never ships; and (4)
+  turns on `createUpdaterArtifacts` so the local build produces the updater artifact and
+  its `.sig`. The production config must contain none of these markers, which the
+  config-hygiene gate above enforces.
