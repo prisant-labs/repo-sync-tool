@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { GroupSummary, RepoSummary, SummaryItem } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
+import { countTitle, formatCount } from "@/lib/format-count";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AsyncPanel } from "@/components/async-panel";
@@ -553,7 +554,8 @@ function attentionReasons(repo: RepoSummary | undefined, fallbackDetail: string 
     reasons.push({
       category: "remote",
       icon: ArrowDown,
-      label: `${repo.behindCount} behind`,
+      label: `${formatCount(repo.behindCount ?? 0)} behind`,
+      title: countTitle(repo.behindCount ?? 0, "behind"),
       tone: STATUS_STYLE.behind.text,
     });
   }
