@@ -413,7 +413,9 @@ export function ReposScreen({
         frozen: true,
         cell: (r) => (
           <div className="min-w-0 py-2">
-            <div className="truncate font-mono text-body font-semibold">{r.localName}</div>
+            <div className="truncate font-mono text-body font-semibold" title={r.localName}>
+              {r.localName}
+            </div>
             <div className="truncate font-mono text-meta text-muted-foreground">{r.hostType}</div>
             <IntelSignals
               latestReleaseTag={r.latestReleaseTag}
@@ -467,7 +469,15 @@ export function ReposScreen({
           // "no commits", "never run". Each is muted ink plus the column's
           // GitBranch glyph, which only appears when this returns non-null - so
           // a labelled reason still reads as subordinate to a real branch name.
-          if (r.activeBranch !== null) return r.activeBranch;
+          if (r.activeBranch !== null) {
+            // One line, ellipsis, full name on hover: a long branch used to
+            // clip mid-word and wrap, growing the row (BL-NI-118).
+            return (
+              <span className="min-w-0 truncate" title={r.activeBranch}>
+                {r.activeBranch}
+              </span>
+            );
+          }
           const reason =
             r.headState === "detached"
               ? "detached"
@@ -585,7 +595,7 @@ export function ReposScreen({
         cell: (r) => (
           <button
             type="button"
-            title="Open in File Explorer"
+            title={`Open in File Explorer: ${r.localPath}`}
             aria-label={`Open ${r.localName} in File Explorer`}
             onClick={(e) => {
               e.stopPropagation();
@@ -601,7 +611,13 @@ export function ReposScreen({
             className="inline-flex w-full min-w-0 items-center gap-1.5 truncate rounded-sm text-left font-mono text-meta font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Folder aria-hidden className="size-3 shrink-0 opacity-70" />
-            <span className="truncate">{r.localPath}</span>
+            {/* `dir="rtl"` puts the ellipsis at the START so the folder's own
+                name stays visible; the inner `bdi` keeps the characters in
+                their normal order (same technique as the gallery's quiet
+                Repos proposal). */}
+            <span dir="rtl" className="min-w-0 truncate">
+              <bdi dir="ltr">{r.localPath}</bdi>
+            </span>
           </button>
         ),
         sortValue: (r) => r.localPath.toLowerCase(),

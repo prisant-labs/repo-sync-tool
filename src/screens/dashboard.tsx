@@ -607,7 +607,9 @@ function AttentionRow({
       >
         <Icon className={cn("mt-0.5 size-4 shrink-0", STATUS_STYLE[status].text)} />
         <div className="min-w-0 flex-1">
-          <div className="truncate font-mono text-body font-semibold">{item.localName}</div>
+          <div className="truncate font-mono text-body font-semibold" title={item.localName}>
+            {item.localName}
+          </div>
           {reasons.length > 0 && (
             <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
               {/*
